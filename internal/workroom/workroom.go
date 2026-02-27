@@ -5,6 +5,7 @@ import (
 	"io"
 	"math/rand/v2"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -24,14 +25,15 @@ type ConfirmFunc func(message string) (bool, error)
 
 // Service orchestrates workroom create/delete/list operations.
 type Service struct {
-	Config      *config.Config
-	VCS         vcs.VCS
-	Out         io.Writer
-	Verbose     bool
-	Pretend     bool
-	PromptFn    PromptFunc
-	ConfirmFn   ConfirmFunc
-	NameGenFunc func() string // override for testing
+	Config         *config.Config
+	VCS            vcs.VCS
+	Out            io.Writer
+	Verbose        bool
+	Pretend        bool
+	PromptFn       PromptFunc
+	ConfirmFn      ConfirmFunc
+	NameGenFunc    func() string                   // override for testing
+	OpenEditorFunc func(editor, path string) error // override for testing
 }
 
 func (s *Service) output() io.Writer {
@@ -99,6 +101,19 @@ func (s *Service) workroomPath(name string) (string, error) {
 		return "", err
 	}
 	return filepath.Join(dir, name), nil
+}
+
+func (s *Service) openEditor(editor, path string) error {
+	if s.OpenEditorFunc != nil {
+		return s.OpenEditorFunc(editor, path)
+	}
+	parts := strings.Fields(editor)
+	args := append(parts[1:], path)
+	cmd := exec.Command(parts[0], args...)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
 }
 
 func (s *Service) generateName() string {
@@ -184,6 +199,20 @@ func (s *Service) Create(dir string) error {
 		s.say("")
 		s.sayColor("Setup script output:", "blue")
 		s.say(strings.TrimSpace(setupOutput))
+	}
+
+	// Offer to open the workroom in the user's editor
+	editor := os.Getenv("EDITOR")
+	if editor != "" && !s.Pretend {
+		open, err := s.ConfirmFn(fmt.Sprintf("Open workroom in %s?", editor))
+		if err != nil {
+			return err
+		}
+		if open {
+			if err := s.openEditor(editor, wrPath); err != nil {
+				return fmt.Errorf("failed to open editor: %w", err)
+			}
+		}
 	}
 
 	return nil

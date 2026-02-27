@@ -140,6 +140,11 @@ goreleaser build --snapshot --clean
 
 This produces binaries in `dist/` without publishing anything.
 
+## Ideas
+
+- list git/jj workspaces
+- open in... (vscode, iterm, etc.)
+
 ## License
 
 [MIT](MIT-LICENSE)

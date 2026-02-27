@@ -45,11 +45,12 @@ func newTestService(t *testing.T, v vcs.VCS) (*Service, *bytes.Buffer, *config.C
 	cfg := newTestConfig(t, filepath.Join(dir, "config.json"))
 	var buf bytes.Buffer
 	svc := &Service{
-		Config:    cfg,
-		VCS:       v,
-		Out:       &buf,
-		ConfirmFn: func(string) (bool, error) { return true, nil },
-		PromptFn:  func(string, []string) ([]string, error) { return nil, nil },
+		Config:         cfg,
+		VCS:            v,
+		Out:            &buf,
+		ConfirmFn:      func(string) (bool, error) { return true, nil },
+		PromptFn:       func(string, []string) ([]string, error) { return nil, nil },
+		OpenEditorFunc: func(string, string) error { return nil },
 	}
 	return svc, &buf, cfg
 }
@@ -391,6 +392,144 @@ func TestCreateUpdatesConfig(t *testing.T) {
 	foo := workrooms["foo"].(map[string]any)
 	if foo["path"] != filepath.Join(workroomsDir, "foo") {
 		t.Fatalf("expected workroom path, got %v", foo["path"])
+	}
+}
+
+// --- Create: Editor prompt ---
+
+func TestCreatePromptsToOpenEditorWhenSet(t *testing.T) {
+	dir := t.TempDir()
+	os.Mkdir(filepath.Join(dir, ".jj"), 0o755)
+	workroomsDir := filepath.Join(dir, "workrooms")
+
+	mock := &mockExecutor{output: "default: mk 6ec05f05 (no description set)"}
+	jj := &vcs.JJ{Executor: mock}
+
+	svc, _, _ := newTestService(t, jj)
+	svc.Config = newTestConfig(t, filepath.Join(dir, "config.json"))
+	svc.Config.SetWorkroomsDir(workroomsDir)
+	svc.NameGenFunc = func() string { return "foo" }
+
+	t.Setenv("EDITOR", "code")
+
+	confirmCalled := false
+	svc.ConfirmFn = func(msg string) (bool, error) {
+		if strings.Contains(msg, "Open workroom in code?") {
+			confirmCalled = true
+		}
+		return false, nil
+	}
+	svc.OpenEditorFunc = func(editor, path string) error {
+		t.Fatal("editor should not be opened when user declines")
+		return nil
+	}
+
+	err := svc.Create(dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !confirmCalled {
+		t.Fatal("expected editor confirm prompt")
+	}
+}
+
+func TestCreateDoesNotPromptEditorWhenUnset(t *testing.T) {
+	dir := t.TempDir()
+	os.Mkdir(filepath.Join(dir, ".jj"), 0o755)
+	workroomsDir := filepath.Join(dir, "workrooms")
+
+	mock := &mockExecutor{output: "default: mk 6ec05f05 (no description set)"}
+	jj := &vcs.JJ{Executor: mock}
+
+	svc, _, _ := newTestService(t, jj)
+	svc.Config = newTestConfig(t, filepath.Join(dir, "config.json"))
+	svc.Config.SetWorkroomsDir(workroomsDir)
+	svc.NameGenFunc = func() string { return "foo" }
+
+	t.Setenv("EDITOR", "")
+
+	editorPrompted := false
+	svc.ConfirmFn = func(msg string) (bool, error) {
+		if strings.Contains(msg, "Open workroom in") {
+			editorPrompted = true
+		}
+		return false, nil
+	}
+
+	err := svc.Create(dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if editorPrompted {
+		t.Fatal("should not prompt for editor when EDITOR is unset")
+	}
+}
+
+func TestCreateOpensEditorWhenConfirmed(t *testing.T) {
+	dir := t.TempDir()
+	os.Mkdir(filepath.Join(dir, ".jj"), 0o755)
+	workroomsDir := filepath.Join(dir, "workrooms")
+
+	mock := &mockExecutor{output: "default: mk 6ec05f05 (no description set)"}
+	jj := &vcs.JJ{Executor: mock}
+
+	svc, _, _ := newTestService(t, jj)
+	svc.Config = newTestConfig(t, filepath.Join(dir, "config.json"))
+	svc.Config.SetWorkroomsDir(workroomsDir)
+	svc.NameGenFunc = func() string { return "foo" }
+
+	t.Setenv("EDITOR", "myeditor")
+
+	var openedEditor, openedPath string
+	svc.ConfirmFn = func(msg string) (bool, error) { return true, nil }
+	svc.OpenEditorFunc = func(editor, path string) error {
+		openedEditor = editor
+		openedPath = path
+		return nil
+	}
+
+	err := svc.Create(dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if openedEditor != "myeditor" {
+		t.Fatalf("expected editor 'myeditor', got %q", openedEditor)
+	}
+	if openedPath != filepath.Join(workroomsDir, "foo") {
+		t.Fatalf("expected path %q, got %q", filepath.Join(workroomsDir, "foo"), openedPath)
+	}
+}
+
+func TestCreateSkipsEditorPromptInPretendMode(t *testing.T) {
+	dir := t.TempDir()
+	os.Mkdir(filepath.Join(dir, ".jj"), 0o755)
+	workroomsDir := filepath.Join(dir, "workrooms")
+
+	mock := &mockExecutor{output: "default: mk 6ec05f05 (no description set)"}
+	jj := &vcs.JJ{Executor: mock}
+
+	svc, _, _ := newTestService(t, jj)
+	svc.Config = newTestConfig(t, filepath.Join(dir, "config.json"))
+	svc.Config.SetWorkroomsDir(workroomsDir)
+	svc.NameGenFunc = func() string { return "foo" }
+	svc.Pretend = true
+
+	t.Setenv("EDITOR", "code")
+
+	editorPrompted := false
+	svc.ConfirmFn = func(msg string) (bool, error) {
+		if strings.Contains(msg, "Open workroom in") {
+			editorPrompted = true
+		}
+		return false, nil
+	}
+
+	err := svc.Create(dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if editorPrompted {
+		t.Fatal("should not prompt for editor in pretend mode")
 	}
 }
 
