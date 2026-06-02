@@ -9,3 +9,10 @@ CLAUDE.local.md
 
 # GoReleaser
 /dist/
+
+# macOS app (macapp/)
+/macapp/build/
+/macapp/DerivedData/
+/macapp/WorkroomApp.xcodeproj/
+*.xcuserstate
+.xcode.env.local

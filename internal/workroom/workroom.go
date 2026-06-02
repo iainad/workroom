@@ -34,6 +34,14 @@ type Service struct {
 	ConfirmFn      ConfirmFunc
 	NameGenFunc    func() string                   // override for testing
 	OpenEditorFunc func(editor, path string) error // override for testing
+	VCSForTypeFunc func(vcs.Type) (vcs.VCS, error) // override for testing (used by ListData)
+
+	// SuppressEditor disables the post-create "open in $EDITOR" prompt. Set by
+	// --no-editor and implied by --json (a GUI/machine caller must never block).
+	SuppressEditor bool
+	// KeepEmptyProject leaves a project registered after its last workroom is
+	// deleted. Set by GUI callers that pin empty projects in the sidebar.
+	KeepEmptyProject bool
 }
 
 func (s *Service) output() io.Writer {
@@ -123,39 +131,66 @@ func (s *Service) generateName() string {
 	return namegen.Generate()
 }
 
-// Create generates a unique name and creates a new workroom.
-func (s *Service) Create(dir string) error {
+// vcsForType constructs a VCS from a stored type string, allowing tests to inject a
+// mock executor (the real path uses vcs.New with a RealExecutor).
+func (s *Service) vcsForType(t vcs.Type) (vcs.VCS, error) {
+	if s.VCSForTypeFunc != nil {
+		return s.VCSForTypeFunc(t)
+	}
+	return vcs.New(t)
+}
+
+// CreateResult describes a newly created workroom. SetupOutput is captured for the
+// human renderer and is not part of the machine payload.
+type CreateResult struct {
+	Name        string `json:"name"`
+	Path        string `json:"path"`
+	VCS         string `json:"vcs"`
+	Project     string `json:"project"`
+	SetupOutput string `json:"-"`
+}
+
+// CreateNamed generates a unique name, creates the VCS workspace, updates config,
+// and runs the setup script, returning a structured result. It writes nothing to
+// stdout beyond verbose status lines (which go to s.Out). The human-facing success
+// message and the editor prompt live in the Create wrapper.
+//
+// Create is not transactional: if the setup script fails the workspace and config
+// entry already exist, so the returned CreateResult is populated (Name/Path) even
+// when err is non-nil, letting callers report "created, but setup failed".
+func (s *Service) CreateNamed(dir string) (CreateResult, error) {
+	var res CreateResult
 	if err := s.CheckNotInWorkroom(dir); err != nil {
-		return err
+		return res, err
 	}
 	if err := s.detectVCS(dir); err != nil {
-		return err
+		return res, err
 	}
 
 	name, err := s.generateUniqueName(dir)
 	if err != nil {
-		return err
+		return res, err
 	}
 
 	wrPath, err := s.workroomPath(name)
 	if err != nil {
-		return err
+		return res, err
 	}
 
 	if !s.Pretend {
 		exists, err := s.VCS.WorkroomExists(dir, name)
 		if err != nil {
-			return err
+			return res, err
 		}
 		if exists {
 			if s.VCS.Type() == vcs.TypeJJ {
-				return fmt.Errorf("%w: %s '%s' already exists", ErrJJWorkspaceExists, s.VCS.Label(), name)
+				return res, fmt.Errorf("%w: %s '%s' already exists", ErrJJWorkspaceExists, s.VCS.Label(), name)
 			}
-			return fmt.Errorf("%w: %s '%s' already exists", ErrGitWorktreeExists, s.VCS.Label(), name)
+			return res, fmt.Errorf("%w: %s '%s' already exists", ErrGitWorktreeExists, s.VCS.Label(), name)
 		}
 
 		if _, err := os.Stat(wrPath); err == nil {
-			return fmt.Errorf("%w: workroom directory '%s' already exists", ErrDirExists, ui.DisplayPath(wrPath))
+			return res, fmt.Errorf("%w: workroom directory '%s' already exists", ErrDirExists, ui.DisplayPath(wrPath))
 		}
 	}
 
@@ -163,53 +198,67 @@ func (s *Service) Create(dir string) error {
 	if !s.Pretend {
 		wrDir, err := s.Config.WorkroomsDir()
 		if err != nil {
-			return err
+			return res, err
 		}
 		if err := os.MkdirAll(wrDir, 0o755); err != nil {
-			return err
+			return res, err
 		}
 		if _, err := s.VCS.Create(dir, s.vcsName(name), wrPath); err != nil {
-			return fmt.Errorf("failed to create workspace: %w", err)
+			return res, fmt.Errorf("%w: %v", ErrVCSCommand, err)
 		}
 	}
 
 	// Update config
 	if !s.Pretend {
 		if err := s.Config.AddWorkroom(dir, name, wrPath, string(s.VCS.Type())); err != nil {
-			return err
+			return res, err
 		}
 	}
 
+	// From here the workroom exists; populate the result so partial-failure callers
+	// can still report what was created.
+	res = CreateResult{Name: name, Path: wrPath, VCS: string(s.VCS.Type()), Project: dir}
+
 	// Run setup script
-	var setupOutput string
 	setupScript := filepath.Join(dir, "scripts", "workroom_setup")
 	if _, err := os.Stat(setupScript); err == nil {
 		s.sayStatus("setup", fmt.Sprintf("Running %s from %q", setupScript, wrPath))
 		if !s.Pretend {
-			setupOutput, err = script.Run("setup", setupScript, wrPath, name, dir)
-			if err != nil {
-				return err
+			out, scriptErr := script.Run("setup", setupScript, wrPath, name, dir)
+			res.SetupOutput = out
+			if scriptErr != nil {
+				return res, scriptErr
 			}
 		}
 	}
 
-	s.sayColor(fmt.Sprintf("Workroom '%s' created successfully at %s.", name, ui.DisplayPath(wrPath)), "green")
+	return res, nil
+}
 
-	if setupOutput != "" {
+// Create generates a unique name and creates a new workroom (human-facing).
+func (s *Service) Create(dir string) error {
+	res, err := s.CreateNamed(dir)
+	if err != nil {
+		return err
+	}
+
+	s.sayColor(fmt.Sprintf("Workroom '%s' created successfully at %s.", res.Name, ui.DisplayPath(res.Path)), "green")
+
+	if res.SetupOutput != "" {
 		s.say("")
 		s.sayColor("Setup script output:", "blue")
-		s.say(strings.TrimSpace(setupOutput))
+		s.say(strings.TrimSpace(res.SetupOutput))
 	}
 
 	// Offer to open the workroom in the user's editor
 	editor := os.Getenv("EDITOR")
-	if editor != "" && !s.Pretend {
+	if editor != "" && !s.Pretend && !s.SuppressEditor {
 		open, err := s.ConfirmFn(fmt.Sprintf("Open workroom in %s?", editor))
 		if err != nil {
 			return err
 		}
 		if open {
-			if err := s.openEditor(editor, wrPath); err != nil {
+			if err := s.openEditor(editor, res.Path); err != nil {
 				return fmt.Errorf("failed to open editor: %w", err)
 			}
 		}
@@ -405,7 +454,7 @@ func (s *Service) Delete(dir, name, confirmValue string) error {
 
 		if confirmValue != "" {
 			if confirmValue != name {
-				return fmt.Errorf("--confirm value '%s' does not match workroom name '%s'", confirmValue, name)
+				return fmt.Errorf("%w: --confirm value '%s' does not match workroom name '%s'", ErrConfirmMismatch, confirmValue, name)
 			}
 		} else {
 			confirmed, err := s.ConfirmFn(fmt.Sprintf("Are you sure you want to delete workroom '%s'?", name))
@@ -506,7 +555,7 @@ func (s *Service) deleteByName(dir, name string) error {
 	// Delete VCS workspace
 	if !s.Pretend {
 		if _, err := s.VCS.Delete(dir, s.vcsName(name), wrPath); err != nil {
-			return fmt.Errorf("failed to delete workspace: %w", err)
+			return fmt.Errorf("%w: %v", ErrVCSCommand, err)
 		}
 	}
 
@@ -523,8 +572,14 @@ func (s *Service) deleteByName(dir, name string) error {
 
 	// Update config
 	if !s.Pretend {
-		if err := s.Config.RemoveWorkroom(dir, name); err != nil {
-			return err
+		if s.KeepEmptyProject {
+			if err := s.Config.RemoveWorkroomKeepProject(dir, name); err != nil {
+				return err
+			}
+		} else {
+			if err := s.Config.RemoveWorkroom(dir, name); err != nil {
+				return err
+			}
 		}
 	}
 

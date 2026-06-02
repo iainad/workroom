@@ -14,4 +14,7 @@ var (
 	ErrGitWorktreeNotFound = errs.ErrGitWorktreeNotFound
 	ErrSetup               = errs.ErrSetup
 	ErrTeardown            = errs.ErrTeardown
+	ErrConfirmMismatch     = errs.ErrConfirmMismatch
+	ErrCancelled           = errs.ErrCancelled
+	ErrVCSCommand          = errs.ErrVCSCommand
 )

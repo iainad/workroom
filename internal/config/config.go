@@ -6,6 +6,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
+
+	"github.com/joelmoss/workroom/internal/errs"
 )
 
 const DefaultWorkroomsDir = "~/workrooms"
@@ -39,79 +42,204 @@ func (c *Config) Read() (map[string]any, error) {
 		if os.IsNotExist(err) {
 			return map[string]any{}, nil
 		}
-		return nil, fmt.Errorf("read config %s: %w", c.path, err)
+		return nil, fmt.Errorf("%w %s: %v", errs.ErrConfigRead, c.path, err)
 	}
 	var result map[string]any
 	if err := json.Unmarshal(data, &result); err != nil {
-		return nil, fmt.Errorf("parse config %s: %w", c.path, err)
+		return nil, fmt.Errorf("%w %s: %v", errs.ErrConfigRead, c.path, err)
 	}
 	return result, nil
 }
 
-// Write persists the config data to disk, creating directories as needed.
+// Write persists the config data to disk atomically (temp file + rename) so a
+// concurrent reader never observes a truncated or partial file.
 func (c *Config) Write(data map[string]any) error {
 	dir := filepath.Dir(c.path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("create config directory %s: %w", dir, err)
+		return fmt.Errorf("%w: create config directory %s: %v", errs.ErrConfigWrite, dir, err)
 	}
 	b, err := json.MarshalIndent(data, "", "  ")
 	if err != nil {
-		return fmt.Errorf("marshal config: %w", err)
+		return fmt.Errorf("%w: marshal config: %v", errs.ErrConfigWrite, err)
 	}
-	if err := os.WriteFile(c.path, b, 0o644); err != nil {
-		return fmt.Errorf("write config %s: %w", c.path, err)
+
+	tmp, err := os.CreateTemp(dir, ".config-*.json.tmp")
+	if err != nil {
+		return fmt.Errorf("%w: create temp file: %v", errs.ErrConfigWrite, err)
+	}
+	tmpName := tmp.Name()
+	cleanup := func() { _ = os.Remove(tmpName) }
+
+	if _, err := tmp.Write(b); err != nil {
+		tmp.Close()
+		cleanup()
+		return fmt.Errorf("%w %s: %v", errs.ErrConfigWrite, tmpName, err)
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		cleanup()
+		return fmt.Errorf("%w %s: %v", errs.ErrConfigWrite, tmpName, err)
+	}
+	if err := tmp.Close(); err != nil {
+		cleanup()
+		return fmt.Errorf("%w %s: %v", errs.ErrConfigWrite, tmpName, err)
+	}
+	if err := os.Chmod(tmpName, 0o644); err != nil {
+		cleanup()
+		return fmt.Errorf("%w %s: %v", errs.ErrConfigWrite, tmpName, err)
+	}
+	if err := os.Rename(tmpName, c.path); err != nil {
+		cleanup()
+		return fmt.Errorf("%w %s: %v", errs.ErrConfigWrite, c.path, err)
 	}
 	return nil
 }
 
+// withLock runs fn while holding a best-effort cross-process advisory lock on the
+// config (an exclusive sidecar lock file). It serialises read-modify-write cycles
+// between the standalone CLI and the desktop app's bundled binary. It is
+// best-effort: on any lock-acquisition trouble it degrades to running fn unlocked
+// rather than failing the operation, and it steals a stale lock left by a crashed
+// process.
+func (c *Config) withLock(fn func() error) error {
+	lockPath := c.path + ".lock"
+	if err := os.MkdirAll(filepath.Dir(lockPath), 0o755); err != nil {
+		return fn()
+	}
+	const staleAfter = 10 * time.Second
+	for range 200 {
+		f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+		if err == nil {
+			f.Close()
+			defer func() { _ = os.Remove(lockPath) }()
+			return fn()
+		}
+		if !os.IsExist(err) {
+			// Cannot create the lock for some other reason; proceed unlocked.
+			return fn()
+		}
+		if info, e := os.Stat(lockPath); e == nil && time.Since(info.ModTime()) > staleAfter {
+			_ = os.Remove(lockPath) // steal a stale lock from a crashed process
+			continue
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	// Gave up waiting (~2s); proceed unlocked rather than block forever.
+	return fn()
+}
+
+// CanonicalPath resolves a path to an absolute, symlink-evaluated form so that
+// the same project referenced via a symlink or trailing slash maps to one key.
+// If the path does not exist (EvalSymlinks fails), the absolute form is returned.
+func CanonicalPath(p string) (string, error) {
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		return "", err
+	}
+	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+		return resolved, nil
+	}
+	return abs, nil
+}
+
 // AddWorkroom adds a workroom entry under the given parent project path.
 func (c *Config) AddWorkroom(parentPath, name, workroomPath, vcs string) error {
-	data, err := c.Read()
-	if err != nil {
-		return err
-	}
+	return c.withLock(func() error {
+		data, err := c.Read()
+		if err != nil {
+			return err
+		}
 
-	project, ok := data[parentPath].(map[string]any)
-	if !ok {
-		project = map[string]any{"vcs": vcs, "workrooms": map[string]any{}}
-		data[parentPath] = project
-	}
-	project["vcs"] = vcs
+		project, ok := data[parentPath].(map[string]any)
+		if !ok {
+			project = map[string]any{"vcs": vcs, "workrooms": map[string]any{}}
+			data[parentPath] = project
+		}
+		project["vcs"] = vcs
 
-	workrooms, ok := project["workrooms"].(map[string]any)
-	if !ok {
-		workrooms = map[string]any{}
-		project["workrooms"] = workrooms
-	}
-	workrooms[name] = map[string]any{"path": workroomPath}
+		workrooms, ok := project["workrooms"].(map[string]any)
+		if !ok {
+			workrooms = map[string]any{}
+			project["workrooms"] = workrooms
+		}
+		workrooms[name] = map[string]any{"path": workroomPath}
 
-	return c.Write(data)
+		return c.Write(data)
+	})
+}
+
+// AddProject registers a project with no workrooms (idempotent). An existing
+// project's workrooms are never clobbered; only its vcs is refreshed.
+func (c *Config) AddProject(parentPath, vcs string) error {
+	return c.withLock(func() error {
+		data, err := c.Read()
+		if err != nil {
+			return err
+		}
+		if project, ok := data[parentPath].(map[string]any); ok {
+			project["vcs"] = vcs
+			if _, ok := project["workrooms"].(map[string]any); !ok {
+				project["workrooms"] = map[string]any{}
+			}
+		} else {
+			data[parentPath] = map[string]any{"vcs": vcs, "workrooms": map[string]any{}}
+		}
+		return c.Write(data)
+	})
 }
 
 // RemoveWorkroom removes a workroom entry. If the parent has no remaining workrooms, it is removed.
 func (c *Config) RemoveWorkroom(parentPath, name string) error {
-	data, err := c.Read()
-	if err != nil {
-		return err
-	}
+	return c.withLock(func() error {
+		data, err := c.Read()
+		if err != nil {
+			return err
+		}
 
-	project, ok := data[parentPath].(map[string]any)
-	if !ok {
-		return nil
-	}
+		project, ok := data[parentPath].(map[string]any)
+		if !ok {
+			return nil
+		}
 
-	workrooms, ok := project["workrooms"].(map[string]any)
-	if !ok {
-		return nil
-	}
+		workrooms, ok := project["workrooms"].(map[string]any)
+		if !ok {
+			return nil
+		}
 
-	delete(workrooms, name)
+		delete(workrooms, name)
 
-	if len(workrooms) == 0 {
-		delete(data, parentPath)
-	}
+		if len(workrooms) == 0 {
+			delete(data, parentPath)
+		}
 
-	return c.Write(data)
+		return c.Write(data)
+	})
+}
+
+// RemoveWorkroomKeepProject removes a workroom entry but leaves the parent project
+// registered even when it has no remaining workrooms. Used by GUI callers that pin
+// empty projects in the sidebar.
+func (c *Config) RemoveWorkroomKeepProject(parentPath, name string) error {
+	return c.withLock(func() error {
+		data, err := c.Read()
+		if err != nil {
+			return err
+		}
+
+		project, ok := data[parentPath].(map[string]any)
+		if !ok {
+			return nil
+		}
+
+		workrooms, ok := project["workrooms"].(map[string]any)
+		if !ok {
+			return nil
+		}
+
+		delete(workrooms, name)
+
+		return c.Write(data)
+	})
 }
 
 // FindCurrentProject finds the project for the given directory. If cwd is a project path in the
@@ -172,6 +300,25 @@ func (c *Config) ProjectsWithWorkrooms() (map[string]map[string]any, error) {
 	return result, nil
 }
 
+// AllProjects returns every registered project, including those with zero
+// workrooms. Non-project top-level keys (e.g. workrooms_dir) are skipped.
+func (c *Config) AllProjects() (map[string]map[string]any, error) {
+	data, err := c.Read()
+	if err != nil {
+		return nil, err
+	}
+
+	result := map[string]map[string]any{}
+	for path, v := range data {
+		project, ok := v.(map[string]any)
+		if !ok {
+			continue
+		}
+		result[path] = project
+	}
+	return result, nil
+}
+
 // WorkroomsDir returns the configured workrooms directory, or the default ~/workrooms.
 func (c *Config) WorkroomsDir() (string, error) {
 	data, err := c.Read()
@@ -187,12 +334,14 @@ func (c *Config) WorkroomsDir() (string, error) {
 
 // SetWorkroomsDir sets the workrooms_dir key in the config.
 func (c *Config) SetWorkroomsDir(path string) error {
-	data, err := c.Read()
-	if err != nil {
-		return err
-	}
-	data["workrooms_dir"] = path
-	return c.Write(data)
+	return c.withLock(func() error {
+		data, err := c.Read()
+		if err != nil {
+			return err
+		}
+		data["workrooms_dir"] = path
+		return c.Write(data)
+	})
 }
 
 // expandPath replaces a leading ~ with the user's home directory.

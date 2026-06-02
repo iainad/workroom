@@ -36,3 +36,17 @@ func Detect(dir string) (VCS, error) {
 	}
 	return nil, errs.ErrUnsupportedVCS
 }
+
+// New constructs a VCS implementation from a stored type string (e.g. the "vcs"
+// field persisted in config), without touching the filesystem. Used when listing
+// workrooms for a project whose directory may not currently exist.
+func New(t Type) (VCS, error) {
+	switch t {
+	case TypeJJ:
+		return &JJ{Executor: &RealExecutor{}}, nil
+	case TypeGit:
+		return &Git{Executor: &RealExecutor{}}, nil
+	default:
+		return nil, errs.ErrUnsupportedVCS
+	}
+}

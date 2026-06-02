@@ -1,0 +1,71 @@
+# XcodeGen spec for the Workroom macOS app.
+#
+# Generate the Xcode project from this file (the .xcodeproj is gitignored):
+#     brew install xcodegen        # one-time
+#     cd macapp && xcodegen generate && open WorkroomApp.xcodeproj
+#
+# If you'd rather not use XcodeGen, create a SwiftUI macOS App target in Xcode,
+# add the SwiftTerm Swift Package, drop in the WorkroomApp/ sources, and add the
+# Scripts/build-helper.sh as a post-build Run Script phase (see README.md).
+
+name: WorkroomApp
+options:
+  bundleIdPrefix: com.developwithstyle
+  deploymentTarget:
+    macOS: "13.0"
+  createIntermediateGroups: true
+
+packages:
+  SwiftTerm:
+    url: https://github.com/migueldeicaza/SwiftTerm
+    # Pinned to a release that exposes startProcess(... currentDirectory:) AND compiles
+    # cleanly. (Tip-of-main currently references an undefined `SyncDebug` and fails to
+    # build — hence an exact tag, not a moving branch.)
+    exactVersion: 1.13.0
+
+targets:
+  WorkroomApp:
+    type: application
+    platform: macOS
+    sources:
+      - path: WorkroomApp
+    dependencies:
+      - package: SwiftTerm
+    info:
+      path: WorkroomApp/Info.plist
+      properties:
+        CFBundleDisplayName: Workroom
+        CFBundleName: Workroom
+        LSMinimumSystemVersion: "13.0"
+        NSHighResolutionCapable: true
+        LSApplicationCategoryType: public.app-category.developer-tools
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.developwithstyle.workroom
+        PRODUCT_NAME: Workroom
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        ENABLE_HARDENED_RUNTIME: YES
+        # Non-sandboxed (Developer ID): the app spawns git/jj and the bundled
+        # workroom binary, and opens terminals in arbitrary project directories.
+        ENABLE_APP_SANDBOX: NO
+        SWIFT_VERSION: "5.0"
+        DEAD_CODE_STRIPPING: YES
+        DEVELOPMENT_TEAM: B898J443L9
+      configs:
+        Debug:
+          # Local runs (⌘R): automatic signing with the Apple Development cert.
+          CODE_SIGN_STYLE: Automatic
+          CODE_SIGN_IDENTITY: "Apple Development"
+        Release:
+          # Distribution: Developer ID Application + hardened runtime + secure timestamp.
+          # The embedded helper is signed the same way by Scripts/build-helper.sh.
+          CODE_SIGN_STYLE: Manual
+          CODE_SIGN_IDENTITY: "Developer ID Application"
+          OTHER_CODE_SIGN_FLAGS: "--timestamp"
+    postCompileScripts:
+      - name: Build & embed workroom helper
+        # Runs before Xcode's final code-sign so the embedded binary is covered by
+        # the app signature. See Scripts/build-helper.sh.
+        basedOnDependencyAnalysis: false
+        script: '"${SRCROOT}/Scripts/build-helper.sh"'
