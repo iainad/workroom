@@ -18,8 +18,6 @@ struct ProjectSidebar: View {
             } else {
                 List(store.projects, selection: $store.selectedProjectID) { project in
                     HStack {
-                        Image(systemName: "folder")
-                            .foregroundStyle(.secondary)
                         VStack(alignment: .leading, spacing: 1) {
                             Text(project.displayName).fontWeight(.medium)
                             Text(displayPath(project.path))

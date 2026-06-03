@@ -64,14 +64,7 @@ struct WorkroomListView: View {
     @ViewBuilder
     private func row(_ workroom: Workroom) -> some View {
         HStack {
-            VStack(alignment: .leading, spacing: 1) {
-                Text(workroom.name).fontWeight(.medium)
-                Text(workroom.path)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            }
+            Text(workroom.name).fontWeight(.medium)
             Spacer()
             if isBusy {
                 ProgressView().controlSize(.small)
@@ -82,5 +75,6 @@ struct WorkroomListView: View {
                     .help(warning.message)
             }
         }
+        .padding(.vertical, 6)
     }
 }
