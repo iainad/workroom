@@ -3,6 +3,7 @@ import AppKit
 
 struct RootView: View {
     @EnvironmentObject var store: AppStore
+    @AppStorage(ThemePreference.storageKey) private var theme: ThemePreference = .system
 
     var body: some View {
         NavigationSplitView {
@@ -34,6 +35,14 @@ struct RootView: View {
         } message: {
             Text(store.errorMessage ?? "")
         }
+        .onAppear { applyAppearance() }
+        .onChange(of: theme) { _ in applyAppearance() }
+    }
+
+    /// Pushes the chosen appearance onto the running app. nil (System) tells AppKit to
+    /// follow the OS appearance and keep tracking it.
+    private func applyAppearance() {
+        NSApp.appearance = theme.nsAppearance
     }
 
     @ViewBuilder

@@ -4,6 +4,7 @@ import UniformTypeIdentifiers
 struct ProjectSidebar: View {
     @EnvironmentObject var store: AppStore
     @State private var showImporter = false
+    @AppStorage(ThemePreference.storageKey) private var theme: ThemePreference = .system
 
     var body: some View {
         Group {
@@ -36,6 +37,7 @@ struct ProjectSidebar: View {
                 }
             }
         }
+        .safeAreaInset(edge: .bottom, spacing: 0) { themeToggle }
         .navigationTitle("Projects")
         .toolbar {
             ToolbarItem {
@@ -59,6 +61,28 @@ struct ProjectSidebar: View {
                 Task { await store.addProject(url) }
             }
         }
+    }
+
+    /// Bottom-left appearance toggle. One click cycles System → Light → Dark; the icon
+    /// and tooltip reflect the active mode.
+    private var themeToggle: some View {
+        HStack {
+            Button {
+                theme = theme.next
+            } label: {
+                Image(systemName: theme.symbol)
+                    .font(.system(size: 14))
+                    .frame(width: 28, height: 28)
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .help("Theme: \(theme.label) — click to switch to \(theme.next.label)")
+            .accessibilityLabel("Theme: \(theme.label)")
+
+            Spacer()
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
     }
 
     private func displayPath(_ path: String) -> String {
