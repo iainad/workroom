@@ -11,6 +11,7 @@ struct ProjectSidebar: View {
     /// Project paths the user has collapsed. Absence means expanded (the default).
     @State private var collapsed: Set<String> = []
     @State private var hovered: SidebarID?
+    @State private var themeHovering = false
     @State private var pendingDelete: PendingDelete?
     @AppStorage(ThemePreference.storageKey) private var theme: ThemePreference = .system
 
@@ -225,10 +226,15 @@ struct ProjectSidebar: View {
             } label: {
                 Image(systemName: theme.symbol)
                     .font(.system(size: 14))
+                    .foregroundStyle(.secondary)
                     .frame(width: 28, height: 28)
+                    .background(
+                        RoundedRectangle(cornerRadius: 6)
+                            .fill(Color.primary.opacity(themeHovering ? 0.1 : 0))
+                    )
             }
             .buttonStyle(.plain)
-            .foregroundStyle(.secondary)
+            .onHover { themeHovering = $0 }
             .help("Theme: \(theme.label) — click to switch to \(theme.next.label)")
             .accessibilityLabel("Theme: \(theme.label)")
 

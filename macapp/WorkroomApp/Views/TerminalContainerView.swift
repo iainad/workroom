@@ -1,12 +1,12 @@
 import AppKit
+import SwiftTerm
 import SwiftUI
 
-/// Hosts the selected workroom's terminal. Switching swaps which cached terminal is
-/// mounted in the container; unmounted terminals stay alive in `TerminalSessions`
-/// (retained, just detached from the view hierarchy) so their shells keep running.
+/// Hosts a single terminal view, clipped to rounded corners. Terminals live in
+/// `TerminalSessions` (retained across switches); this view just mounts whichever one
+/// it's given and re-mounts when that changes.
 struct TerminalContainerView: NSViewRepresentable {
-  let workroom: Workroom
-  let sessions: TerminalSessions
+  let terminal: LocalProcessTerminalView
 
   func makeNSView(context: Context) -> NSView {
     let container = NSView()
@@ -25,22 +25,21 @@ struct TerminalContainerView: NSViewRepresentable {
   }
 
   private func mount(in container: NSView) {
-    let term = sessions.view(for: workroom)
-    if term.superview === container { return }
+    if terminal.superview === container { return }
 
     // Detach whatever was shown (do NOT terminate — it lives on in the cache).
     for sub in container.subviews {
       sub.removeFromSuperview()
     }
 
-    term.translatesAutoresizingMaskIntoConstraints = false
-    container.addSubview(term)
+    terminal.translatesAutoresizingMaskIntoConstraints = false
+    container.addSubview(terminal)
     NSLayoutConstraint.activate([
-      term.topAnchor.constraint(equalTo: container.topAnchor),
-      term.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-      term.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-      term.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+      terminal.topAnchor.constraint(equalTo: container.topAnchor),
+      terminal.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+      terminal.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+      terminal.trailingAnchor.constraint(equalTo: container.trailingAnchor),
     ])
-    DispatchQueue.main.async { container.window?.makeFirstResponder(term) }
+    DispatchQueue.main.async { container.window?.makeFirstResponder(terminal) }
   }
 }

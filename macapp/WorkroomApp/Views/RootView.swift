@@ -62,9 +62,7 @@ struct RootView: View {
     @ViewBuilder
     private func workroomDetail(_ workroom: Workroom) -> some View {
         VStack(spacing: 0) {
-            TerminalContainerView(workroom: workroom, sessions: store.terminals)
-                .id(workroom.id) // mount the right cached terminal; others stay alive
-                .padding(8)
+            WorkroomTerminalsView(workroom: workroom, sessions: store.terminals)
 
             if let log = store.logs[workroom.id] {
                 Divider()
