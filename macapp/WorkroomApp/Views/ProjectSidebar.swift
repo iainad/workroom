@@ -12,10 +12,7 @@ struct ProjectSidebar: View {
     @State private var collapsed: Set<String> = []
     @State private var hovered: SidebarID?
     @State private var themeHovering = false
-    @State private var pendingDelete: PendingDelete?
     @AppStorage(ThemePreference.storageKey) private var theme: ThemePreference = .system
-
-    private struct PendingDelete { let workroom: Workroom; let project: Project }
 
     /// Only workrooms are selectable (clicking a project toggles its expansion instead),
     /// so the List selection maps to the selected workroom — or nil — and back onto the
@@ -77,17 +74,17 @@ struct ProjectSidebar: View {
             }
         }
         .confirmationDialog(
-            pendingDelete.map { "Delete '\($0.workroom.name)'?" } ?? "Delete workroom?",
-            isPresented: Binding(get: { pendingDelete != nil }, set: { if !$0 { pendingDelete = nil } }),
+            store.pendingDeletion.map { "Delete '\($0.workroom.name)'?" } ?? "Delete workroom?",
+            isPresented: Binding(get: { store.pendingDeletion != nil }, set: { if !$0 { store.pendingDeletion = nil } }),
             titleVisibility: .visible
         ) {
             Button("Delete", role: .destructive) {
-                if let target = pendingDelete {
-                    Task { await store.deleteWorkroom(target.workroom, in: target.project) }
+                if let target = store.pendingDeletion {
+                    store.deleteWorkroom(target.workroom, in: target.project)
                 }
-                pendingDelete = nil
+                store.pendingDeletion = nil
             }
-            Button("Cancel", role: .cancel) { pendingDelete = nil }
+            Button("Cancel", role: .cancel) { store.pendingDeletion = nil }
         } message: {
             Text("This removes the workroom's directory and runs its teardown script. For Git, the branch is left in place.")
         }
@@ -175,7 +172,7 @@ struct ProjectSidebar: View {
                     .help(warning.message)
             }
             DeleteRowButton(name: workroom.name, visible: hovered == id) {
-                pendingDelete = PendingDelete(workroom: workroom, project: project)
+                store.pendingDeletion = PendingWorkroomDeletion(workroom: workroom, project: project)
             }
         }
         .padding(.vertical, 2)
@@ -187,7 +184,7 @@ struct ProjectSidebar: View {
         }
         .contextMenu {
             Button(role: .destructive) {
-                pendingDelete = PendingDelete(workroom: workroom, project: project)
+                store.pendingDeletion = PendingWorkroomDeletion(workroom: workroom, project: project)
             } label: {
                 Label("Delete \(workroom.name)", systemImage: "trash")
             }

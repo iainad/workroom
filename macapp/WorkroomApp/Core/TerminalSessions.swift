@@ -32,9 +32,10 @@ final class TerminalSessions: ObservableObject {
         return tabs.first
     }
 
-    /// Make sure a workroom has at least one terminal (called when its pane appears).
+    /// Create the workroom's first terminal the first time its pane appears. Once it has
+    /// been opened, an emptied tab set is left as-is (the user closed them on purpose).
     func ensureTab(for workroom: Workroom) {
-        if tabsByWorkroom[workroom.id]?.isEmpty ?? true {
+        if tabsByWorkroom[workroom.id] == nil {
             addTab(for: workroom)
         }
     }
@@ -51,16 +52,17 @@ final class TerminalSessions: ObservableObject {
         activeByWorkroom[workroom.id] = tabID
     }
 
-    /// Close a tab. The last remaining tab can't be closed (a workroom always keeps one).
+    /// Close a tab. Closing the last one leaves the workroom with no terminals — the tab
+    /// bar (and its add button) stays, and the active tab becomes nil.
     func closeTab(_ tabID: TerminalTab.ID, for workroom: Workroom) {
         guard var tabs = tabsByWorkroom[workroom.id],
-              tabs.count > 1,
               let idx = tabs.firstIndex(where: { $0.id == tabID }) else { return }
         let removed = tabs.remove(at: idx)
         terminate(removed.view)
         tabsByWorkroom[workroom.id] = tabs
         if activeByWorkroom[workroom.id] == tabID {
-            // Activate the neighbour that slid into this slot, else the new last tab.
+            // Activate the neighbour that slid into this slot, else the new last tab
+            // (nil when none remain).
             activeByWorkroom[workroom.id] = (idx < tabs.count ? tabs[idx] : tabs.last)?.id
         }
     }

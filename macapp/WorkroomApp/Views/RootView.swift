@@ -25,6 +25,8 @@ struct RootView: View {
         }
         .onAppear { applyAppearance() }
         .onChange(of: theme) { _ in applyAppearance() }
+        // Publish selection state for menu-command enablement (see WorkroomCommands).
+        .focusedSceneValue(\.workroomSelected, store.selectedWorkroom != nil)
     }
 
     /// Pushes the chosen appearance onto the running app. nil (System) tells AppKit to

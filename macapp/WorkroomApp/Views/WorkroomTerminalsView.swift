@@ -20,11 +20,18 @@ struct WorkroomTerminalsView: View {
                     .id(active.id) // re-mount when the active tab changes
                     .padding(8)
             } else {
-                Color.clear
+                EmptyStateView(
+                    systemImage: "terminal",
+                    title: "No terminal",
+                    message: "Open one with the + button or ⌘T.",
+                    action: (label: "New Terminal", run: { sessions.addTab(for: workroom) })
+                )
             }
         }
         // Create the first terminal once the pane appears (and for each new workroom).
         .task(id: workroom.id) { sessions.ensureTab(for: workroom) }
+        // Drive the "Close Terminal" menu command's enabled state.
+        .focusedSceneValue(\.hasTerminal, !tabs.isEmpty)
     }
 
     private func tabBar(_ tabs: [TerminalTab], activeID: TerminalTab.ID?) -> some View {
@@ -32,7 +39,7 @@ struct WorkroomTerminalsView: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 4) {
                     ForEach(tabs) { tab in
-                        tabChip(tab, isActive: tab.id == activeID, canClose: tabs.count > 1)
+                        tabChip(tab, isActive: tab.id == activeID)
                     }
                 }
                 .padding(.horizontal, 8)
@@ -57,8 +64,8 @@ struct WorkroomTerminalsView: View {
         .padding(.vertical, 4)
     }
 
-    private func tabChip(_ tab: TerminalTab, isActive: Bool, canClose: Bool) -> some View {
-        let showClose = canClose && hoveredTab == tab.id
+    private func tabChip(_ tab: TerminalTab, isActive: Bool) -> some View {
+        let showClose = hoveredTab == tab.id
         return Text(tab.title)
             .font(.callout)
             .lineLimit(1)

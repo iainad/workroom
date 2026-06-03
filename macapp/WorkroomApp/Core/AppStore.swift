@@ -8,6 +8,14 @@ enum SidebarID: Hashable {
     case workroom(project: String, name: String)
 }
 
+/// A workroom queued for deletion, awaiting the user's confirmation. Held on the store so
+/// both the sidebar's delete affordances and the Delete menu command (⌘⌫) raise the same
+/// confirmation prompt.
+struct PendingWorkroomDeletion {
+    let workroom: Workroom
+    let project: Project
+}
+
 /// App-wide state and actions. A single shared instance is used so the App, views,
 /// and menu Commands all act on the same store. All CLI work is awaited (it runs off
 /// the main thread inside WorkroomCLI), keeping the UI responsive.
@@ -28,6 +36,8 @@ final class AppStore: ObservableObject {
     @Published var busyProjects: Set<String> = []
     /// Set by the "Add Project" menu command to trigger the sidebar's file importer.
     @Published var requestAddProject = false
+    /// A workroom awaiting delete confirmation; setting it raises the confirmation prompt.
+    @Published var pendingDeletion: PendingWorkroomDeletion?
     /// Setup logs scoped per workroom, rendered under that workroom's terminal. Kept
     /// until the user closes them (or the workroom is deleted) so the output stays
     /// available for review. Streaming starts as soon as the CLI reports the workroom
@@ -148,28 +158,39 @@ final class AppStore: ObservableObject {
         selectedWorkroomID = name
     }
 
-    func deleteWorkroom(_ workroom: Workroom, in project: Project) async {
-        busyProjects.insert(project.path)
-        defer { busyProjects.remove(project.path) }
-        // Tear down its terminal and forget its setup log before removing the workspace.
+    /// Removes the workroom from the sidebar immediately, then runs its teardown (script +
+    /// workspace removal) in the background. On success the optimistic removal already
+    /// matches reality; on failure we reload (so it reappears if it still exists) and
+    /// surface the error.
+    func deleteWorkroom(_ workroom: Workroom, in project: Project) {
+        // Optimistic: drop it from the model now, reap its terminals/log, clear selection.
+        removeWorkroomLocally(workroom, in: project)
         terminals.reap(workroom.id)
         logs[workroom.id] = nil
         if selectedWorkroomID == workroom.id {
             selectedWorkroomID = nil
         }
 
-        // Teardown runs in the background — no panel. We still collect its output so a
-        // failure can be surfaced in an alert.
-        let log = ScriptLogSession(title: "Tearing down \(workroom.name)", phase: "teardown")
-        do {
-            try await WorkroomCLI.shared.delete(name: workroom.name, project: project.path) { text in
-                DispatchQueue.main.async { log.append(text) }
+        // Teardown continues in the background. We still collect its output so a failure
+        // can be surfaced in an alert.
+        Task {
+            let log = ScriptLogSession(title: "Tearing down \(workroom.name)", phase: "teardown")
+            do {
+                try await WorkroomCLI.shared.delete(name: workroom.name, project: project.path) { text in
+                    DispatchQueue.main.async { log.append(text) }
+                }
+            } catch {
+                await reload()
+                presentTeardownFailure(workroom, error: error, log: log)
             }
-            await reload()
-        } catch {
-            await reload()
-            presentTeardownFailure(workroom, error: error, log: log)
         }
+    }
+
+    /// Drops a workroom from the in-memory project list so the sidebar updates instantly.
+    private func removeWorkroomLocally(_ workroom: Workroom, in project: Project) {
+        guard let idx = projects.firstIndex(where: { $0.id == project.id }) else { return }
+        let p = projects[idx]
+        projects[idx] = Project(path: p.path, vcs: p.vcs, workrooms: p.workrooms.filter { $0.id != workroom.id })
     }
 
     /// Teardown failed (it ran in the background): pop an alert carrying the captured
@@ -186,14 +207,26 @@ final class AppStore: ObservableObject {
 
     // MARK: Menu-command convenience
 
-    func createInSelectedProject() async {
-        guard let project = selectedProject else { return }
-        await createWorkroom(in: project)
+    /// Open a new terminal tab in the selected workroom (⌘T).
+    func newTerminalInSelectedWorkroom() {
+        guard let workroom = selectedWorkroom, !workroom.hasBlockingWarning else { return }
+        terminals.addTab(for: workroom)
     }
 
-    func deleteSelectedWorkroom() async {
-        guard let project = selectedProject, let workroom = selectedWorkroom else { return }
-        await deleteWorkroom(workroom, in: project)
+    /// Close the active terminal tab in the selected workroom (⌘W).
+    func closeCurrentTerminalTab() {
+        guard let workroom = selectedWorkroom,
+              let active = terminals.activeTab(for: workroom) else { return }
+        terminals.closeTab(active.id, for: workroom)
+    }
+
+    /// Focus the terminal tab at `index` (0-based, left-to-right) in the selected
+    /// workroom (⌘1…⌘9). No-ops if there's no tab at that position.
+    func focusTerminalTab(at index: Int) {
+        guard let workroom = selectedWorkroom else { return }
+        let tabs = terminals.tabs(for: workroom)
+        guard tabs.indices.contains(index) else { return }
+        terminals.select(tabs[index].id, for: workroom)
     }
 
     // MARK: Errors

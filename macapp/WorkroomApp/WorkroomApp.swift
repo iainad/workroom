@@ -1,7 +1,9 @@
+import AppKit
 import SwiftUI
 
 @main
 struct WorkroomApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var store = AppStore.shared
 
     init() {
@@ -22,33 +24,76 @@ struct WorkroomApp: App {
     }
 }
 
+/// Installs a local key monitor for ⌘1…⌘9 to focus the workroom's Nth terminal tab.
+/// Handled here (rather than as menu items) so the shortcuts work without cluttering the
+/// menu, and the monitor sees the keys before the focused terminal does.
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    private var monitor: Any?
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            let flags = event.modifierFlags.intersection([.command, .shift, .option, .control])
+            guard flags == .command,
+                  let chars = event.charactersIgnoringModifiers,
+                  let digit = Int(chars), (1...9).contains(digit)
+            else { return event }
+            Task { @MainActor in AppStore.shared.focusTerminalTab(at: digit - 1) }
+            return nil // consume so it doesn't reach the terminal
+        }
+    }
+}
+
+/// Whether the focused window has a workroom selected. Published via `focusedSceneValue`
+/// (see RootView) so menu commands can enable/disable against it — a Commands body doesn't
+/// re-evaluate when the shared store changes directly, but it does track focused values.
+struct WorkroomSelectedKey: FocusedValueKey {
+    typealias Value = Bool
+}
+
+/// Whether the selected workroom has at least one open terminal — published by
+/// WorkroomTerminalsView (which observes the sessions), so "Close Terminal" can disable
+/// when there's nothing to close.
+struct HasTerminalKey: FocusedValueKey {
+    typealias Value = Bool
+}
+
+extension FocusedValues {
+    var workroomSelected: Bool? {
+        get { self[WorkroomSelectedKey.self] }
+        set { self[WorkroomSelectedKey.self] = newValue }
+    }
+    var hasTerminal: Bool? {
+        get { self[HasTerminalKey.self] }
+        set { self[HasTerminalKey.self] = newValue }
+    }
+}
+
 /// Menu-bar commands + keyboard shortcuts. They act on the shared store so they work
 /// regardless of which pane has focus.
 struct WorkroomCommands: Commands {
+    @FocusedValue(\.workroomSelected) private var workroomSelected
+    @FocusedValue(\.hasTerminal) private var hasTerminal
+
     var body: some Commands {
         CommandGroup(after: .newItem) {
-            Button("New Workroom") {
-                Task { await AppStore.shared.createInSelectedProject() }
+            Button("New Terminal") {
+                AppStore.shared.newTerminalInSelectedWorkroom()
             }
-            .keyboardShortcut("n", modifiers: .command)
+            .keyboardShortcut("t", modifiers: .command)
+            .disabled(workroomSelected != true)
+
+            // ⌘W: "Close Terminal" sits above the standard File ▸ Close, so it wins the ⌘W
+            // equivalent while enabled (Close keeps no shortcut).
+            Button("Close Terminal") {
+                AppStore.shared.closeCurrentTerminalTab()
+            }
+            .keyboardShortcut("w", modifiers: .command)
+            .disabled(hasTerminal != true)
 
             Button("Add Project…") {
                 AppStore.shared.requestAddProject = true
             }
             .keyboardShortcut("o", modifiers: .command)
-
-            Button("Reload") {
-                Task { await AppStore.shared.reload() }
-            }
-            .keyboardShortcut("r", modifiers: .command)
-
-            Divider()
-
-            Button("Delete Workroom") {
-                Task { await AppStore.shared.deleteSelectedWorkroom() }
-            }
-            .keyboardShortcut(.delete, modifiers: .command)
-            .disabled(AppStore.shared.selectedWorkroom == nil)
         }
     }
 }
