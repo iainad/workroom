@@ -8,19 +8,7 @@ struct RootView: View {
     var body: some View {
         NavigationSplitView {
             ProjectSidebar()
-                .frame(minWidth: 220)
-        } content: {
-            if let project = store.selectedProject {
-                WorkroomListView(project: project)
-                    .frame(minWidth: 240)
-            } else {
-                EmptyStateView(
-                    systemImage: "sidebar.left",
-                    title: "Select a project",
-                    message: "Choose a project on the left, or add one."
-                )
                 .frame(minWidth: 240)
-            }
         } detail: {
             detail
         }
@@ -63,6 +51,10 @@ struct RootView: View {
                 title: "No workroom selected",
                 message: "Select a workroom to open a terminal in its directory, or create one."
             )
+            // No workroom → nothing to title, so drop the toolbar bar/separator and the
+            // window title for a clean empty state.
+            .navigationTitle("")
+            .toolbarBackground(.hidden, for: .windowToolbar)
         }
     }
 
@@ -72,6 +64,7 @@ struct RootView: View {
         VStack(spacing: 0) {
             TerminalContainerView(workroom: workroom, sessions: store.terminals)
                 .id(workroom.id) // mount the right cached terminal; others stay alive
+                .padding(8)
 
             if let log = store.logs[workroom.id] {
                 Divider()

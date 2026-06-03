@@ -1,6 +1,13 @@
 import Foundation
 import SwiftUI
 
+/// Identifies a row in the unified project → workroom sidebar tree. Workroom names can
+/// repeat across projects, so a workroom is identified by its project path plus name.
+enum SidebarID: Hashable {
+    case project(String)
+    case workroom(project: String, name: String)
+}
+
 /// App-wide state and actions. A single shared instance is used so the App, views,
 /// and menu Commands all act on the same store. All CLI work is awaited (it runs off
 /// the main thread inside WorkroomCLI), keeping the UI responsive.
