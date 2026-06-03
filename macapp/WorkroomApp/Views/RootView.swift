@@ -4,6 +4,9 @@ import AppKit
 struct RootView: View {
     @EnvironmentObject var store: AppStore
     @AppStorage(ThemePreference.storageKey) private var theme: ThemePreference = .system
+    /// Bundle id of the last editor picked from the "Open in…" menu — the toolbar button's
+    /// primary action reopens in it.
+    @AppStorage("openInEditorBundleID") private var lastEditorID = ""
 
     var body: some View {
         NavigationSplitView {
@@ -75,6 +78,25 @@ struct RootView: View {
         .navigationSubtitle(workroom.path)
         .toolbar {
             ToolbarItemGroup {
+                let editors = ExternalEditor.installed
+                if !editors.isEmpty {
+                    // Primary action reopens in the remembered editor; the menu switches it.
+                    let remembered = editors.first { $0.id == lastEditorID } ?? editors[0]
+                    Menu {
+                        ForEach(editors) { editor in
+                            Button(editor.name) {
+                                lastEditorID = editor.id
+                                editor.open(workroom.path)
+                            }
+                        }
+                    } label: {
+                        Label("Open in…", systemImage: "arrow.up.forward.app")
+                    } primaryAction: {
+                        remembered.open(workroom.path)
+                    }
+                    .help("Open in \(remembered.name)")
+                }
+
                 Button {
                     NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: workroom.path)])
                 } label: {
