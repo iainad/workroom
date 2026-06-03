@@ -42,6 +42,16 @@ type Service struct {
 	// KeepEmptyProject leaves a project registered after its last workroom is
 	// deleted. Set by GUI callers that pin empty projects in the sidebar.
 	KeepEmptyProject bool
+	// ScriptLogWriter, when set, receives setup/teardown script output as it runs.
+	// It is the --json mode sink (an NDJSON event stream on stderr) and takes the
+	// place of the human terminal log panel. The captured output is still returned,
+	// but on failure the surfaced error stays concise (the output already streamed).
+	ScriptLogWriter io.Writer
+	// OnReady, when set, is called once the workroom exists (VCS workspace + config
+	// written) but before the setup script runs. --json mode uses it to emit an early
+	// "created" event so a GUI can mount the new workroom and stream the setup log
+	// beneath its terminal from the start.
+	OnReady func(CreateResult)
 }
 
 func (s *Service) output() io.Writer {
@@ -155,10 +165,14 @@ type CreateResult struct {
 // stdout beyond verbose status lines (which go to s.Out). The human-facing success
 // message and the editor prompt live in the Create wrapper.
 //
+// If setupOut is non-nil the setup script's output is streamed to it live as the
+// script runs; the full output is also captured into res.SetupOutput regardless.
+// Machine callers (--json) pass nil.
+//
 // Create is not transactional: if the setup script fails the workspace and config
 // entry already exist, so the returned CreateResult is populated (Name/Path) even
 // when err is non-nil, letting callers report "created, but setup failed".
-func (s *Service) CreateNamed(dir string) (CreateResult, error) {
+func (s *Service) CreateNamed(dir string, setupOut io.Writer) (CreateResult, error) {
 	var res CreateResult
 	if err := s.CheckNotInWorkroom(dir); err != nil {
 		return res, err
@@ -219,12 +233,22 @@ func (s *Service) CreateNamed(dir string) (CreateResult, error) {
 	// can still report what was created.
 	res = CreateResult{Name: name, Path: wrPath, VCS: string(s.VCS.Type()), Project: dir}
 
-	// Run setup script
+	// Signal readiness before the (potentially slow) setup script runs, so a GUI can
+	// show the workroom and stream setup output beneath its terminal immediately.
+	if !s.Pretend && s.OnReady != nil {
+		s.OnReady(res)
+	}
+
+	// Run setup script. The human terminal passes a log panel via setupOut; --json
+	// mode leaves it nil and routes through ScriptLogWriter (NDJSON on stderr).
+	if setupOut == nil {
+		setupOut = s.ScriptLogWriter
+	}
 	setupScript := filepath.Join(dir, "scripts", "workroom_setup")
 	if _, err := os.Stat(setupScript); err == nil {
 		s.sayStatus("setup", fmt.Sprintf("Running %s from %q", setupScript, wrPath))
 		if !s.Pretend {
-			out, scriptErr := script.Run("setup", setupScript, wrPath, name, dir)
+			out, scriptErr := script.Run("setup", setupScript, wrPath, name, dir, setupOut)
 			res.SetupOutput = out
 			if scriptErr != nil {
 				return res, scriptErr
@@ -237,18 +261,19 @@ func (s *Service) CreateNamed(dir string) (CreateResult, error) {
 
 // Create generates a unique name and creates a new workroom (human-facing).
 func (s *Service) Create(dir string) error {
-	res, err := s.CreateNamed(dir)
+	// The setup script's output streams live into this panel as it runs. The panel
+	// renders lazily on first output, so a script with no output draws nothing.
+	panel := ui.NewLogPanel(s.output(), "Setup")
+	res, err := s.CreateNamed(dir, panel)
+	panel.Close(err == nil)
 	if err != nil {
 		return err
 	}
 
-	s.sayColor(fmt.Sprintf("Workroom '%s' created successfully at %s.", res.Name, ui.DisplayPath(res.Path)), "green")
-
-	if res.SetupOutput != "" {
+	if panel.Shown() {
 		s.say("")
-		s.sayColor("Setup script output:", "blue")
-		s.say(strings.TrimSpace(res.SetupOutput))
 	}
+	s.sayColor(fmt.Sprintf("Workroom '%s' created successfully at %s.", res.Name, ui.DisplayPath(res.Path)), "green")
 
 	// Offer to open the workroom in the user's editor
 	editor := os.Getenv("EDITOR")
@@ -538,16 +563,32 @@ func (s *Service) deleteByName(dir, name string) error {
 		return err
 	}
 
-	// Run teardown script
+	// Run teardown script, streaming its output as it runs. --json mode supplies an
+	// NDJSON sink (ScriptLogWriter); otherwise the human terminal gets a live log
+	// panel. When neither applies (output discarded, no sink) the stream is nil, so
+	// script.Run keeps the captured output in the returned error instead of dropping
+	// it.
 	teardownScript := filepath.Join(dir, "scripts", "workroom_teardown")
-	var teardownOutput string
 	if _, err := os.Stat(teardownScript); err == nil {
 		s.sayStatus("teardown", fmt.Sprintf("Running %s from %q", teardownScript, wrPath))
 		if !s.Pretend {
-			var scriptErr error
-			teardownOutput, scriptErr = script.Run("teardown", teardownScript, wrPath, name, dir)
+			var panel *ui.LogPanel
+			stream := s.ScriptLogWriter
+			if stream == nil {
+				if out := s.output(); out != io.Discard {
+					panel = ui.NewLogPanel(out, "Teardown")
+					stream = panel
+				}
+			}
+			_, scriptErr := script.Run("teardown", teardownScript, wrPath, name, dir, stream)
+			if panel != nil {
+				panel.Close(scriptErr == nil)
+			}
 			if scriptErr != nil {
 				return scriptErr
+			}
+			if panel != nil && panel.Shown() {
+				s.say("")
 			}
 		}
 	}
@@ -589,12 +630,6 @@ func (s *Service) deleteByName(dir, name string) error {
 		s.say("")
 		s.say(fmt.Sprintf("Note: Git branch '%s' was not deleted.", s.vcsName(name)))
 		s.say(fmt.Sprintf("      Delete manually with `git branch -D %s` if needed.", s.vcsName(name)))
-	}
-
-	if teardownOutput != "" {
-		s.say("")
-		s.sayColor("Teardown script output:", "blue")
-		s.say(strings.TrimSpace(teardownOutput))
 	}
 
 	return nil

@@ -38,7 +38,13 @@ var deleteCmd = &cobra.Command{
 			if confirmFlag == "" {
 				return fmt.Errorf("%w: --confirm <name> is required in --json mode", errs.ErrConfirmMismatch)
 			}
-			if err := svc.Delete(dir, name, confirmFlag); err != nil {
+			// Stream teardown output as NDJSON log events on stderr; the result
+			// envelope stays on stdout. The macOS app reads these live.
+			logWriter := newJSONLogWriter(os.Stderr, "teardown")
+			svc.ScriptLogWriter = logWriter
+			err = svc.Delete(dir, name, confirmFlag)
+			logWriter.Flush()
+			if err != nil {
 				return err
 			}
 			return writeJSONSuccess(os.Stdout, "delete", map[string]any{"name": name})

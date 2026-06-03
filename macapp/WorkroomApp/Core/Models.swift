@@ -72,3 +72,15 @@ struct CreateResponse: Codable {
     let vcs: String
     let project: String
 }
+
+/// A streamed event from the CLI's stderr in --json mode (one NDJSON object per line)
+/// while the result envelope stays on stdout. `type` discriminates:
+///  - "log": a line of setup/teardown output (`text`, `phase`).
+///  - "created": the new workroom exists (`name`, `path`) but setup is still running.
+struct StreamEvent: Decodable {
+    let type: String
+    let phase: String?
+    let text: String?
+    let name: String?
+    let path: String?
+}

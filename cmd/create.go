@@ -3,6 +3,7 @@ package cmd
 import (
 	"os"
 
+	"github.com/joelmoss/workroom/internal/workroom"
 	"github.com/spf13/cobra"
 )
 
@@ -32,7 +33,19 @@ var createCmd = &cobra.Command{
 		}
 
 		if jsonOutput {
-			res, err := svc.CreateNamed(dir)
+			// Stream setup output as NDJSON log events on stderr; the result envelope
+			// stays on stdout. The macOS app reads these live.
+			logWriter := newJSONLogWriter(os.Stderr, "setup")
+			svc.ScriptLogWriter = logWriter
+			// Emit an early "created" event (before setup runs) so the GUI can mount
+			// the workroom and dock the streaming setup log under its terminal.
+			svc.OnReady = func(r workroom.CreateResult) {
+				writeJSONEvent(os.Stderr, map[string]any{
+					"type": "created", "name": r.Name, "path": r.Path, "vcs": r.VCS, "project": r.Project,
+				})
+			}
+			res, err := svc.CreateNamed(dir, nil)
+			logWriter.Flush()
 			if err != nil {
 				// Create is not transactional: on setup failure the workroom already
 				// exists, so report it so the GUI can offer to delete it.

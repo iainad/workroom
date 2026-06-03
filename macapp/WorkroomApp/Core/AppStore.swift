@@ -13,11 +13,19 @@ final class AppStore: ObservableObject {
     @Published var selectedWorkroomID: Workroom.ID?
 
     @Published var errorMessage: String?
+    /// Title for the error alert. Nil falls back to the generic title; specific
+    /// failures (e.g. teardown) set their own.
+    @Published var errorTitle: String?
     @Published var isLoading = false
     /// Project paths with an in-flight create/delete (for per-row progress + disabling).
     @Published var busyProjects: Set<String> = []
     /// Set by the "Add Project" menu command to trigger the sidebar's file importer.
     @Published var requestAddProject = false
+    /// Setup logs scoped per workroom, rendered under that workroom's terminal. Kept
+    /// until the user closes them (or the workroom is deleted) so the output stays
+    /// available for review. Streaming starts as soon as the CLI reports the workroom
+    /// exists (its early "created" event), before setup finishes.
+    @Published var logs: [Workroom.ID: ScriptLogSession] = [:]
 
     let terminals = TerminalSessions()
 
@@ -85,32 +93,88 @@ final class AppStore: ObservableObject {
     func createWorkroom(in project: Project) async {
         busyProjects.insert(project.path)
         defer { busyProjects.remove(project.path) }
+
+        let session = ScriptLogSession(title: "Setting up new workroom in \(project.displayName)", phase: "setup")
         do {
-            let created = try await WorkroomCLI.shared.create(project: project.path)
+            let created = try await WorkroomCLI.shared.create(
+                project: project.path,
+                onLog: { text in
+                    DispatchQueue.main.async { session.append(text) }
+                },
+                onReady: { name, _ in
+                    // The workroom now exists; mount it and dock the streaming log under
+                    // its terminal so setup output appears live from the start.
+                    DispatchQueue.main.async {
+                        Task { @MainActor in await self.mountSetupLog(session, workroom: name, project: project) }
+                    }
+                }
+            )
+            session.finish()
             await reload()
-            selectedProjectID = project.id
-            selectedWorkroomID = created.name
+            // Mount now if the early "created" event never arrived (older CLI).
+            if session.workroomID == nil { await mountSetupLog(session, workroom: created.name, project: project) }
+            // A run with no output leaves nothing to dock.
+            if session.lines.isEmpty { logs[created.name] = nil }
         } catch {
             // Even on (partial) failure, reload so a "created but setup failed" workroom shows up.
             await reload()
-            present(error)
+            if let name = session.workroomID {
+                // The workroom exists; show the failure in its docked log.
+                logs[name] = session
+                selectedProjectID = project.id
+                selectedWorkroomID = name
+                session.finish(failure: errorText(error))
+            } else {
+                // Failed before the workroom existed — nothing to dock under.
+                present(error)
+            }
         }
+    }
+
+    /// Mounts a just-created workroom (selecting it so its terminal opens) and docks the
+    /// setup log under it. Safe to call more than once.
+    private func mountSetupLog(_ session: ScriptLogSession, workroom name: String, project: Project) async {
+        session.workroomID = name
+        logs[name] = session
+        await reload()
+        selectedProjectID = project.id
+        selectedWorkroomID = name
     }
 
     func deleteWorkroom(_ workroom: Workroom, in project: Project) async {
         busyProjects.insert(project.path)
         defer { busyProjects.remove(project.path) }
-        // Tear down its terminal before removing the workspace.
+        // Tear down its terminal and forget its setup log before removing the workspace.
         terminals.reap(workroom.id)
+        logs[workroom.id] = nil
         if selectedWorkroomID == workroom.id {
             selectedWorkroomID = nil
         }
+
+        // Teardown runs in the background — no panel. We still collect its output so a
+        // failure can be surfaced in an alert.
+        let log = ScriptLogSession(title: "Tearing down \(workroom.name)", phase: "teardown")
         do {
-            try await WorkroomCLI.shared.delete(name: workroom.name, project: project.path)
+            try await WorkroomCLI.shared.delete(name: workroom.name, project: project.path) { text in
+                DispatchQueue.main.async { log.append(text) }
+            }
             await reload()
         } catch {
-            present(error)
+            await reload()
+            presentTeardownFailure(workroom, error: error, log: log)
         }
+    }
+
+    /// Teardown failed (it ran in the background): pop an alert carrying the captured
+    /// script output so the user can see why.
+    private func presentTeardownFailure(_ workroom: Workroom, error: Error, log: ScriptLogSession) {
+        let output = log.lines.map(\.text).joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        errorTitle = "Teardown of ‘\(workroom.name)’ failed"
+        errorMessage = output.isEmpty ? errorText(error) : output
+    }
+
+    private func errorText(_ error: Error) -> String {
+        (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
     }
 
     // MARK: Menu-command convenience
@@ -128,6 +192,50 @@ final class AppStore: ObservableObject {
     // MARK: Errors
 
     private func present(_ error: Error) {
-        errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+        errorTitle = nil // generic title
+        errorMessage = errorText(error)
+    }
+}
+
+/// The live log for one create/delete run. Lines stream in from the CLI's NDJSON
+/// stderr (see WorkroomCLI). A plain ObservableObject — all mutations happen on the
+/// main thread (the store hops there before appending), so SwiftUI sees them safely.
+final class ScriptLogSession: ObservableObject, Identifiable {
+    let id = UUID()
+    let title: String
+    let phase: String
+    /// The workroom this log is docked under, once the CLI reports it exists. nil while
+    /// the workroom is still being created.
+    var workroomID: Workroom.ID?
+    @Published private(set) var lines: [LogLine] = []
+    @Published private(set) var isFinished = false
+    @Published private(set) var failureMessage: String?
+
+    init(title: String, phase: String) {
+        self.title = title
+        self.phase = phase
+    }
+
+    func append(_ text: String) {
+        lines.append(LogLine(index: lines.count, text: Self.stripANSI(text)))
+    }
+
+    func finish(failure: String? = nil) {
+        failureMessage = failure
+        isFinished = true
+    }
+
+    struct LogLine: Identifiable {
+        let index: Int
+        let text: String
+        var id: Int { index }
+    }
+
+    /// Strips ANSI SGR/escape sequences (e.g. color codes a setup script emits) so the
+    /// log renders as clean text.
+    private static let ansiRegex = try? NSRegularExpression(pattern: "\u{001B}\\[[0-9;]*[A-Za-z]")
+    static func stripANSI(_ s: String) -> String {
+        guard let re = ansiRegex else { return s }
+        return re.stringByReplacingMatches(in: s, range: NSRange(s.startIndex..., in: s), withTemplate: "")
     }
 }

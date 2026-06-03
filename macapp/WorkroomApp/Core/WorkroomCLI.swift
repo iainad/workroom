@@ -44,15 +44,49 @@ private struct CLIResult {
 private final class RunState: @unchecked Sendable {
     private let lock = NSLock()
     private var _stdout = Data()
-    private var _stderr = Data()
     private var _finished = false
 
     func setStdout(_ d: Data) { lock.lock(); _stdout = d; lock.unlock() }
-    func setStderr(_ d: Data) { lock.lock(); _stderr = d; lock.unlock() }
     func markFinished() { lock.lock(); _finished = true; lock.unlock() }
     var isFinished: Bool { lock.lock(); defer { lock.unlock() }; return _finished }
     var stdout: Data { lock.lock(); defer { lock.unlock() }; return _stdout }
-    var stderr: Data { lock.lock(); defer { lock.unlock() }; return _stderr }
+}
+
+/// Reads stderr incrementally, splitting on newlines so NDJSON log events surface
+/// live (rather than only after the process exits). It also keeps the raw bytes for
+/// the fallback error path (a non-zero exit without a decodable stdout envelope).
+/// `@unchecked Sendable` because the file handle's readability callbacks are
+/// serialized, and the lock guards the buffers regardless.
+private final class StderrCollector: @unchecked Sendable {
+    private let lock = NSLock()
+    private var raw = Data()
+    private var pending = Data()
+    private let onEvent: ((StreamEvent) -> Void)?
+
+    init(onEvent: ((StreamEvent) -> Void)?) { self.onEvent = onEvent }
+
+    func consume(_ data: Data) {
+        lock.lock()
+        raw.append(data)
+        var events: [StreamEvent] = []
+        if onEvent != nil {
+            pending.append(data)
+            while let nl = pending.firstIndex(of: 0x0A) {
+                let line = Data(pending[pending.startIndex..<nl])
+                pending = Data(pending[(nl + 1)...])
+                if let event = try? JSONDecoder().decode(StreamEvent.self, from: line) {
+                    events.append(event)
+                }
+            }
+        }
+        lock.unlock()
+        if let onEvent { events.forEach(onEvent) }
+    }
+
+    var rawString: String {
+        lock.lock(); defer { lock.unlock() }
+        return String(data: raw, encoding: .utf8) ?? ""
+    }
 }
 
 /// Drives the bundled `workroom` binary over its `--json` contract. All work runs
@@ -76,14 +110,26 @@ final class WorkroomCLI {
         try throwIfError(result)
     }
 
+    /// Creates a workroom. `onReady(name, path)` fires when the workroom exists but
+    /// setup is still running; `onLog` streams setup output lines as they arrive.
     @discardableResult
-    func create(project: String) async throws -> CreateResponse {
-        let result = try await run(["create", "--json", "--no-editor", "--project", project], timeout: 600)
+    func create(project: String,
+                onLog: ((String) -> Void)? = nil,
+                onReady: ((String, String) -> Void)? = nil) async throws -> CreateResponse {
+        let result = try await run(["create", "--json", "--no-editor", "--project", project], timeout: 600) { event in
+            switch event.type {
+            case "log": if let text = event.text { onLog?(text) }
+            case "created": if let name = event.name, let path = event.path { onReady?(name, path) }
+            default: break
+            }
+        }
         return try decode(CreateResponse.self, from: result)
     }
 
-    func delete(name: String, project: String) async throws {
-        let result = try await run(["delete", name, "--json", "--project", project, "--confirm", name], timeout: 600)
+    func delete(name: String, project: String, onLog: ((String) -> Void)? = nil) async throws {
+        let result = try await run(["delete", name, "--json", "--project", project, "--confirm", name], timeout: 600) { event in
+            if event.type == "log", let text = event.text { onLog?(text) }
+        }
         try throwIfError(result)
     }
 
@@ -128,10 +174,11 @@ final class WorkroomCLI {
 
     // MARK: Process execution
 
-    /// Runs the helper with `args`, draining stdout and stderr concurrently (so a full
-    /// pipe buffer can't deadlock) and enforcing a timeout. On timeout the process is
+    /// Runs the helper with `args`, draining stdout (read to end for the single JSON
+    /// envelope) and stderr (read incrementally so `onLog` fires per NDJSON line as the
+    /// script runs) concurrently, and enforcing a timeout. On timeout the process is
     /// terminated then killed.
-    private func run(_ args: [String], timeout: TimeInterval) async throws -> CLIResult {
+    private func run(_ args: [String], timeout: TimeInterval, onEvent: ((StreamEvent) -> Void)? = nil) async throws -> CLIResult {
         let url = try binaryURL()
         return try await withCheckedThrowingContinuation { continuation in
             let proc = Process()
@@ -150,16 +197,24 @@ final class WorkroomCLI {
             proc.standardError = errPipe
 
             let state = RunState()
+            let collector = StderrCollector(onEvent: onEvent)
             let drain = DispatchGroup()
+
             drain.enter()
             DispatchQueue.global().async {
                 state.setStdout(outPipe.fileHandleForReading.readDataToEndOfFile())
                 drain.leave()
             }
+
             drain.enter()
-            DispatchQueue.global().async {
-                state.setStderr(errPipe.fileHandleForReading.readDataToEndOfFile())
-                drain.leave()
+            errPipe.fileHandleForReading.readabilityHandler = { handle in
+                let data = handle.availableData
+                if data.isEmpty {
+                    handle.readabilityHandler = nil // EOF: pipe closed
+                    drain.leave()
+                    return
+                }
+                collector.consume(data)
             }
 
             let timeoutItem = DispatchWorkItem {
@@ -180,7 +235,7 @@ final class WorkroomCLI {
                 drain.wait()
                 continuation.resume(returning: CLIResult(
                     stdout: state.stdout,
-                    stderr: String(data: state.stderr, encoding: .utf8) ?? "",
+                    stderr: collector.rawString,
                     exitCode: finishedProc.terminationStatus
                 ))
             }
@@ -188,6 +243,7 @@ final class WorkroomCLI {
             do {
                 try proc.run()
             } catch {
+                errPipe.fileHandleForReading.readabilityHandler = nil
                 continuation.resume(throwing: error)
             }
         }

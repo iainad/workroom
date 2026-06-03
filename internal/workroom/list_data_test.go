@@ -127,7 +127,7 @@ func TestCreateNamedReturnsResult(t *testing.T) {
 	svc.Config.SetWorkroomsDir(workroomsDir)
 	svc.NameGenFunc = func() string { return "fixed-name" }
 
-	res, err := svc.CreateNamed(dir)
+	res, err := svc.CreateNamed(dir, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

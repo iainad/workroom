@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -214,11 +215,64 @@ func TestCreateRunsSetupScript(t *testing.T) {
 	}
 
 	output := buf.String()
-	if !strings.Contains(output, "I succeeded") {
-		t.Fatalf("expected setup output in result, got %q", output)
+	// Setup output is rendered inside a titled log panel with a gutter border.
+	if !strings.Contains(output, "╭─ Setup ") {
+		t.Fatalf("expected setup log panel header, got %q", output)
+	}
+	if !strings.Contains(output, "│ I succeeded") {
+		t.Fatalf("expected gutter-prefixed setup output, got %q", output)
 	}
 	if !strings.Contains(output, "Workroom 'foo' created successfully") {
 		t.Fatalf("expected success message, got %q", output)
+	}
+}
+
+func TestCreateOnReadyFiresBeforeSetup(t *testing.T) {
+	dir := t.TempDir()
+	os.Mkdir(filepath.Join(dir, ".jj"), 0o755)
+	workroomsDir := filepath.Join(dir, "workrooms")
+
+	// Setup script records a marker so we can assert ordering relative to OnReady.
+	scriptsDir := filepath.Join(dir, "scripts")
+	os.MkdirAll(scriptsDir, 0o755)
+	marker := filepath.Join(dir, "setup-ran")
+	scriptPath := filepath.Join(scriptsDir, "workroom_setup")
+	os.WriteFile(scriptPath, []byte("#!/usr/bin/env bash\ntouch "+marker+"\n"), 0o755)
+
+	mock := &mockExecutor{
+		output: "default: mk 6ec05f05 (no description set)",
+		onRun: func(_, name string, args []string) {
+			if name == "jj" && len(args) > 1 && args[0] == "workspace" && args[1] == "add" {
+				os.MkdirAll(args[2], 0o755)
+			}
+		},
+	}
+	jj := &vcs.JJ{Executor: mock}
+
+	svc, _, _ := newTestService(t, jj)
+	svc.Config = newTestConfig(t, filepath.Join(dir, "config.json"))
+	svc.Config.SetWorkroomsDir(workroomsDir)
+	svc.NameGenFunc = func() string { return "foo" }
+
+	var ready *CreateResult
+	var setupRanWhenReady bool
+	svc.OnReady = func(r CreateResult) {
+		ready = &r
+		_, err := os.Stat(marker)
+		setupRanWhenReady = err == nil // setup must NOT have run yet
+	}
+
+	if _, err := svc.CreateNamed(dir, nil); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if ready == nil {
+		t.Fatal("OnReady was not called")
+	}
+	if ready.Name != "foo" || ready.Path != filepath.Join(workroomsDir, "foo") {
+		t.Fatalf("OnReady got unexpected result: %+v", *ready)
+	}
+	if setupRanWhenReady {
+		t.Fatal("OnReady fired after the setup script ran; it must fire before")
 	}
 }
 
@@ -899,8 +953,12 @@ func TestDeleteRunsTeardownScript(t *testing.T) {
 	}
 
 	output := buf.String()
-	if !strings.Contains(output, "I teared down") {
-		t.Fatalf("expected teardown output, got %q", output)
+	// Teardown output is rendered inside a titled log panel with a gutter border.
+	if !strings.Contains(output, "╭─ Teardown ") {
+		t.Fatalf("expected teardown log panel header, got %q", output)
+	}
+	if !strings.Contains(output, "│ I teared down") {
+		t.Fatalf("expected gutter-prefixed teardown output, got %q", output)
 	}
 	if !strings.Contains(output, "Workroom 'foo' deleted successfully.") {
 		t.Fatalf("expected success message, got %q", output)
@@ -935,6 +993,50 @@ func TestDeleteErrorsOnFailedTeardownScript(t *testing.T) {
 	}
 	if !errors.Is(err, ErrTeardown) {
 		t.Fatalf("expected ErrTeardown, got %v", err)
+	}
+}
+
+// In --json mode a ScriptLogWriter is supplied (the NDJSON stderr stream). The
+// teardown output must flow there live, and the returned error stays concise since
+// the output has already been streamed rather than being folded into the envelope.
+func TestDeleteTeardownFailureStreamsToScriptLogWriter(t *testing.T) {
+	dir := t.TempDir()
+	os.Mkdir(filepath.Join(dir, ".jj"), 0o755)
+	workroomsDir := filepath.Join(dir, "workrooms")
+	wrPath := filepath.Join(workroomsDir, "foo")
+	os.MkdirAll(wrPath, 0o755)
+
+	scriptsDir := filepath.Join(dir, "scripts")
+	os.MkdirAll(scriptsDir, 0o755)
+	scriptPath := filepath.Join(scriptsDir, "workroom_teardown")
+	os.WriteFile(scriptPath, []byte("#!/usr/bin/env bash\necho \"boom diagnostic\"\nexit 1\n"), 0o755)
+
+	mock := &mockExecutor{
+		output: "default: mk 6ec05f05 (no description set)\nworkroom/foo: mk 6ec05f05 (no description set)\n",
+	}
+	jj := &vcs.JJ{Executor: mock}
+
+	svc, _, _ := newTestService(t, jj)
+	svc.Out = io.Discard // machine/JSON mode discards human output
+	var logged bytes.Buffer
+	svc.ScriptLogWriter = &logged // ...but script output streams here
+	svc.Config = newTestConfig(t, filepath.Join(dir, "config.json"))
+	svc.Config.SetWorkroomsDir(workroomsDir)
+	svc.Config.AddWorkroom(dir, "foo", wrPath, "jj")
+
+	err := svc.Delete(dir, "foo", "foo")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !errors.Is(err, ErrTeardown) {
+		t.Fatalf("expected ErrTeardown, got %v", err)
+	}
+	if !strings.Contains(logged.String(), "boom diagnostic") {
+		t.Fatalf("teardown output should stream to ScriptLogWriter, got %q", logged.String())
+	}
+	// Output already streamed, so the error must not duplicate it.
+	if strings.Contains(err.Error(), "boom diagnostic") {
+		t.Fatalf("error should stay concise when streaming, got %q", err.Error())
 	}
 }
 
