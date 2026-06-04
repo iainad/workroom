@@ -23,6 +23,21 @@ xcodebuild test -project WorkroomApp.xcodeproj -scheme WorkroomApp \
 
 Reuse `DerivedData/` so SwiftTerm isn't re-resolved every build.
 
+## Formatting & linting
+
+Swift is formatted and linted with **swift-format** (bundled with the Xcode toolchain — run via
+`xcrun swift-format`, no install needed). Config is `macapp/.swift-format` (2-space indent, 100
+columns); it covers `WorkroomApp/` + `WorkroomAppTests/` only (not the `Scripts/*.swift` tools).
+
+```bash
+make format    # = Scripts/format.sh — rewrite sources in place
+make lint      # = Scripts/lint.sh   — --strict, non-zero on any violation (CI gate)
+```
+
+Every Xcode/`xcodebuild` build also runs a `swift-format lint` pre-build phase that surfaces
+violations as **warnings** (non-fatal, so it won't block local builds — `make lint` is the hard
+gate). Run `make format` before committing.
+
 ## Gotchas
 
 - **The Swift module is `Workroom`, not `WorkroomApp`** (the target is `WorkroomApp`, but
