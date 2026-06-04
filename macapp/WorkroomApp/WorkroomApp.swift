@@ -44,10 +44,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return nil // consume so it doesn't reach the terminal
         }
 
-        // Copy-on-select: after each left-mouse-up, copy the focused terminal's selection
-        // (if any) to the pasteboard. A monitor — not a `mouseUp` override — because
-        // SwiftTerm's `mouseUp` is `public`, not `open`. See `CopyOnSelect`.
+        // On left-mouse-up: first, a ⌘-click on a file path opens it in $EDITOR (consuming the
+        // event so SwiftTerm doesn't also hand it to NSWorkspace — see `TerminalLinkOpener`).
+        // Otherwise, copy-on-select copies the focused terminal's selection (if any) to the
+        // pasteboard. Monitors — not a `mouseUp` override — because SwiftTerm's `mouseUp` is
+        // `public`, not `open`. See `CopyOnSelect`.
         mouseUpMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseUp) { event in
+            if TerminalLinkOpener.handleCommandClick(event) {
+                return nil // opened in the editor; consume so SwiftTerm doesn't double-handle it
+            }
             Task { @MainActor in CopyOnSelect.copyActiveSelection() }
             return event // don't consume — the terminal still needs the event
         }
