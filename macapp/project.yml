@@ -36,6 +36,7 @@ targets:
       properties:
         CFBundleDisplayName: Workroom
         CFBundleName: Workroom
+        CFBundleIconName: AppIcon
         LSMinimumSystemVersion: "13.0"
         NSHighResolutionCapable: true
         LSApplicationCategoryType: public.app-category.developer-tools
@@ -52,6 +53,7 @@ targets:
         SWIFT_VERSION: "5.0"
         DEAD_CODE_STRIPPING: YES
         DEVELOPMENT_TEAM: B898J443L9
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
       configs:
         Debug:
           # Local runs (⌘R): automatic signing with the Apple Development cert.

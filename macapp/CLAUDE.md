@@ -38,4 +38,5 @@ Reuse `DerivedData/` so SwiftTerm isn't re-resolved every build.
 
 `WorkroomApp/Core/` — store, CLI wrapper, terminal sessions, models, theme.
 `WorkroomApp/Views/` — `NavigationSplitView` tree sidebar + terminal detail.
-`Scripts/` — `run.sh` (local), `build-helper.sh` (embeds+signs the Go binary), `release.sh`.
+`Scripts/` — `run.sh` (local), `build-helper.sh` (embeds+signs the Go binary), `release.sh`,
+`make-icon.swift` (regenerates the `AppIcon` PNGs in `Assets.xcassets` — run `swift Scripts/make-icon.swift`).
