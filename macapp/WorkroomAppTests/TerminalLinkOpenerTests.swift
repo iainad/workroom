@@ -42,4 +42,26 @@ final class TerminalLinkOpenerTests: XCTestCase {
         // No working directory known → can't resolve a relative path.
         XCTAssertNil(TerminalLinkOpener.absolutePath(for: "src/main.go", cwd: nil))
     }
+
+    // openArguments(path:editorBundleID:) — default app vs a chosen, installed editor.
+
+    func testNoEditorUsesDefaultApp() {
+        XCTAssertEqual(TerminalLinkOpener.openArguments(path: "/x.txt", editorBundleID: nil), ["/x.txt"])
+        XCTAssertEqual(TerminalLinkOpener.openArguments(path: "/x.txt", editorBundleID: ""), ["/x.txt"])
+    }
+
+    func testInstalledEditorOpensWithBundleID() {
+        // Finder is always installed, so it stands in for a chosen editor here.
+        XCTAssertEqual(
+            TerminalLinkOpener.openArguments(path: "/x.txt", editorBundleID: "com.apple.finder"),
+            ["-b", "com.apple.finder", "/x.txt"]
+        )
+    }
+
+    func testUninstalledEditorFallsBackToDefaultApp() {
+        XCTAssertEqual(
+            TerminalLinkOpener.openArguments(path: "/x.txt", editorBundleID: "com.example.nope"),
+            ["/x.txt"]
+        )
+    }
 }
