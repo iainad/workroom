@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import UserNotifications
 
 @main
 struct WorkroomApp: App {
@@ -17,6 +18,7 @@ struct WorkroomApp: App {
     WindowGroup {
       RootView()
         .environmentObject(store)
+        .environmentObject(store.notifications)
         .frame(minWidth: 900, minHeight: 560)
         .task { await store.bootstrap() }
     }
@@ -27,13 +29,16 @@ struct WorkroomApp: App {
 /// Installs a local key monitor for ⌘1…⌘9 to focus the workroom's Nth terminal tab.
 /// Handled here (rather than as menu items) so the shortcuts work without cluttering the
 /// menu, and the monitor sees the keys before the focused terminal does.
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
   private var monitor: Any?
   private var mouseUpMonitor: Any?
   private var mouseMovedMonitor: Any?
   private var flagsChangedMonitor: Any?
 
   func applicationDidFinishLaunching(_ notification: Notification) {
+    // Receive notification clicks (authorization is requested lazily on first post).
+    UNUserNotificationCenter.current().delegate = self
+
     monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
       let flags = event.modifierFlags.intersection([.command, .shift, .option, .control])
       guard flags == .command,
@@ -70,6 +75,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       Task { @MainActor in LinkCursor.update() }
       return event
     }
+  }
+
+  /// A notification was clicked: route to its terminal (the ids ride in `userInfo`). Reuses the
+  /// same `openTerminal` path as an in-app panel tap, so there's one routing implementation.
+  func userNotificationCenter(
+    _ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
+    withCompletionHandler completionHandler: @escaping () -> Void
+  ) {
+    let info = response.notification.request.content.userInfo
+    if let targetID = info["targetID"] as? String {
+      let tabID = (info["tabID"] as? String).flatMap(UUID.init(uuidString:))
+      let notifID = (info["notifID"] as? String).flatMap(UUID.init(uuidString:))
+      Task { @MainActor in
+        AppStore.shared.openTerminal(targetID: targetID, tabID: tabID, notifID: notifID)
+      }
+    }
+    completionHandler()
   }
 
   /// Always confirm before quitting: quitting tears down every terminal (and anything
@@ -121,12 +143,20 @@ struct WorkroomCommands: Commands {
   @AppStorage(CopyOnSelect.storageKey) private var copyOnSelect = true
   // Bundle id of the editor for ⌘-clicked file paths; "" = the file's default app.
   @AppStorage(TerminalLinkOpener.editorStorageKey) private var pathEditor = ""
+  // Shared with RootView's inspector + toolbar toggle (same key) so all three stay in sync.
+  @AppStorage(NotificationsInspector.storageKey) private var showNotifications = false
 
   var body: some Commands {
     // Edit menu: a checkmarked Copy on Select toggle, set off from Cut/Copy/Paste by a divider.
     CommandGroup(after: .pasteboard) {
       Divider()
       Toggle("Copy on Select", isOn: $copyOnSelect)
+    }
+
+    CommandGroup(after: .sidebar) {
+      // View menu: toggle the notifications inspector (checkmark reflects open/closed).
+      Toggle("Show Notifications", isOn: $showNotifications)
+        .keyboardShortcut("n", modifiers: [.command, .option])
     }
 
     // View menu: which app a ⌘-clicked terminal file path opens in. A submenu of radio items:

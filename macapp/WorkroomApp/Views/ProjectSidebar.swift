@@ -7,11 +7,13 @@ import UniformTypeIdentifiers
 /// leading chevron.
 struct ProjectSidebar: View {
   @EnvironmentObject var store: AppStore
+  @EnvironmentObject var notifications: NotificationCenterStore
   @State private var showImporter = false
   /// Project paths the user has collapsed. Absence means expanded (the default).
   @State private var collapsed: Set<String> = []
   @State private var hovered: SidebarID?
   @State private var themeHovering = false
+  @State private var addProjectHovering = false
   @AppStorage(ThemePreference.storageKey) private var theme: ThemePreference = .system
 
   /// Width of the leading icon gutter shared by every child row, so the root's house icon
@@ -54,19 +56,8 @@ struct ProjectSidebar: View {
         tree
       }
     }
-    .safeAreaInset(edge: .bottom, spacing: 0) { themeToggle }
+    .safeAreaInset(edge: .bottom, spacing: 0) { bottomBar }
     .navigationTitle("Projects")
-    .toolbar {
-      ToolbarItem {
-        Button {
-          showImporter = true
-        } label: {
-          Label("Add Project", systemImage: "plus")
-        }
-        .keyboardShortcut("o", modifiers: .command)
-        .help("Add a project folder")
-      }
-    }
     .onChange(of: store.requestAddProject) { request in
       if request {
         showImporter = true
@@ -128,6 +119,7 @@ struct ProjectSidebar: View {
   @ViewBuilder
   private func projectRow(_ project: Project) -> some View {
     let id = SidebarID.project(project.path)
+    let unread = projectUnread(project)
     HStack(spacing: 6) {
       // The whole name/chevron area toggles expansion; clicking anywhere on it
       // (including the trailing empty space) collapses or expands the project.
@@ -145,6 +137,9 @@ struct ProjectSidebar: View {
         .contentShape(Rectangle())
       }
       .buttonStyle(.plain)
+
+      // Aggregate dot so notifications are visible even when the project is collapsed.
+      UnreadDot(count: unread)
 
       if store.busyProjects.contains(project.path) {
         ProgressView().controlSize(.small)
@@ -191,6 +186,7 @@ struct ProjectSidebar: View {
           .foregroundStyle(.secondary)
       }
       Spacer(minLength: 0)
+      UnreadDot(count: notifications.unread(target: target.id))
       if target.isMissing {
         Image(systemName: "exclamationmark.triangle.fill")
           .foregroundStyle(.yellow)
@@ -212,12 +208,15 @@ struct ProjectSidebar: View {
   @ViewBuilder
   private func workroomRow(_ workroom: Workroom, in project: Project) -> some View {
     let id = SidebarID.workroom(project: project.path, name: workroom.name)
+    let unread = notifications.unread(
+      target: TerminalTarget.workroomID(project: project.path, name: workroom.name))
     HStack(spacing: 6) {
       // No icon gutter: the workroom label sits at the root's left (icon) edge, so the
       // root and its workrooms read as siblings rather than nesting workrooms under the
       // root's branch text.
       Text(workroom.name).font(.callout)
       Spacer()
+      UnreadDot(count: unread)
       ForEach(workroom.warnings, id: \.kind) { warning in
         Image(systemName: "exclamationmark.triangle.fill")
           .foregroundStyle(.yellow)
@@ -239,6 +238,18 @@ struct ProjectSidebar: View {
         Label("Delete \(workroom.name)", systemImage: "trash")
       }
     }
+  }
+
+  /// Total unread for a project: its root plus every workroom. Lets the (possibly collapsed)
+  /// project row surface activity from any child. Reuses `unread(target:)` and the canonical id
+  /// builders, so no target-id string parsing leaks in here.
+  private func projectUnread(_ project: Project) -> Int {
+    var total = notifications.unread(target: TerminalTarget.rootID(project: project.path))
+    for workroom in project.workrooms {
+      total += notifications.unread(
+        target: TerminalTarget.workroomID(project: project.path, name: workroom.name))
+    }
+    return total
   }
 
   /// Row highlight drawn at the row-background level so hover and selection share the
@@ -264,9 +275,8 @@ struct ProjectSidebar: View {
 
   // MARK: Chrome
 
-  /// Bottom-left appearance toggle. One click cycles System → Light → Dark; the icon
-  /// and tooltip reflect the active mode.
-  private var themeToggle: some View {
+  /// The sidebar's bottom bar: the appearance toggle on the left, "Add Project" on the right.
+  private var bottomBar: some View {
     HStack {
       Button {
         theme = theme.next
@@ -286,6 +296,24 @@ struct ProjectSidebar: View {
       .accessibilityLabel("Theme: \(theme.label)")
 
       Spacer()
+
+      // Add Project, bottom-right. ⌘O is bound on the File-menu command (WorkroomCommands).
+      Button {
+        showImporter = true
+      } label: {
+        Image(systemName: "plus")
+          .font(.system(size: 14))
+          .foregroundStyle(.secondary)
+          .frame(width: 28, height: 28)
+          .background(
+            RoundedRectangle(cornerRadius: 6)
+              .fill(Color.primary.opacity(addProjectHovering ? 0.1 : 0))
+          )
+      }
+      .buttonStyle(.plain)
+      .onHover { addProjectHovering = $0 }
+      .help("Add a project folder (⌘O)")
+      .accessibilityLabel("Add Project")
     }
     .padding(.horizontal, 8)
     .padding(.vertical, 6)

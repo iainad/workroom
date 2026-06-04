@@ -20,7 +20,12 @@ import SwiftTerm
 ///     instant it remounts.
 /// A detached background tab gets none of these, so `TerminalSessions.applyThemeToAll()` sweeps
 /// every live terminal on an explicit toggle.
-final class ThemedTerminalView: LocalProcessTerminalView {
+///
+/// Non-`final` so `ActivityTerminalView` can layer notification detection (OSC 9/99/777 + bell)
+/// on top of theming — both are concerns of the one terminal subclass the app instantiates, kept
+/// in separate files. `TerminalSessions.applyThemeToAll()`'s `as? ThemedTerminalView` cast still
+/// matches the `ActivityTerminalView` subclass.
+class ThemedTerminalView: LocalProcessTerminalView {
   override init(frame: CGRect) {
     super.init(frame: frame)
     applyTheme()

@@ -53,6 +53,12 @@ final class AppStore: ObservableObject {
   @Published var logs: [TerminalTarget.ID: ScriptLogSession] = [:]
 
   let terminals = TerminalSessions()
+  /// In-memory notification spine driving the badges + inspector (issue #10). Owned here,
+  /// mirroring `terminals`; views observe it directly via `@EnvironmentObject`.
+  let notifications = NotificationCenterStore()
+  /// Posts native banners. Behind a protocol for testability; the real one wraps
+  /// `UNUserNotificationCenter`.
+  let systemNotifier: SystemNotifying = SystemNotifier()
 
   private let resolver = BranchResolver()
   /// The in-flight branch-resolution sweep; cancelled and replaced on each reload so a
@@ -61,7 +67,13 @@ final class AppStore: ObservableObject {
   /// When the project list was last loaded — used to throttle the on-focus refresh.
   private var lastLoadAt: Date = .distantPast
 
-  private init() {}
+  private init() {
+    // Route each terminal's activity (OSC/bell) through the notification spine, gated on
+    // focus, and raise a native banner only when the app is backgrounded.
+    terminals.activityHandler = { [weak self] targetID, tabID, activity in
+      self?.handleActivity(targetID: targetID, tabID: tabID, activity: activity)
+    }
+  }
 
   var selectedProject: Project? {
     projects.first { $0.id == selectedProjectID }
@@ -270,6 +282,8 @@ final class AppStore: ObservableObject {
     removeWorkroomLocally(workroom, in: project)
     terminals.reap(targetID)
     logs[targetID] = nil
+    // Drop the gone workroom's notifications and pull any banners it already delivered.
+    systemNotifier.withdraw(tabIDs: notifications.removeForTarget(targetID))
     if selectedTargetID == .workroom(project: project.path, name: workroom.name) {
       selectedTargetID = nil
     }
@@ -340,6 +354,98 @@ final class AppStore: ObservableObject {
     let tabs = terminals.tabs(for: target)
     guard tabs.indices.contains(index) else { return }
     terminals.select(tabs[index].id, for: target)
+  }
+
+  // MARK: Notifications
+
+  /// Record a terminal's activity, then post a native banner only if the app is backgrounded
+  /// (foreground gets in-app badges only — decision 1.2). `record` drops the event entirely
+  /// when the user is already looking at that terminal.
+  private func handleActivity(
+    targetID: TerminalTarget.ID, tabID: TerminalTab.ID, activity: TerminalActivity
+  ) {
+    let focused = isFocused(targetID: targetID, tabID: tabID)
+    guard
+      let note = notifications.record(
+        targetID: targetID, tabID: tabID, source: notificationSource(forTargetID: targetID),
+        activity: activity, focused: focused)
+    else { return }
+    guard NotificationGate.shouldPostBanner(recorded: true, appActive: NSApp.isActive) else {
+      return
+    }
+    Task { @MainActor in
+      if await systemNotifier.ensureAuthorized() {
+        systemNotifier.post(note)
+      }
+    }
+  }
+
+  /// Whether the user is currently looking at this exact terminal: the app is frontmost, one of
+  /// its windows is key, and this is the selected target's active tab. Window-aware so a sheet,
+  /// a background window, or a non-frontmost app don't count as focused (issue #10, tension 2).
+  func isFocused(targetID: TerminalTarget.ID, tabID: TerminalTab.ID) -> Bool {
+    guard NSApp.isActive, NSApp.keyWindow != nil else { return false }
+    guard let target = selectedTarget, target.id == targetID else { return false }
+    return terminals.activeTab(for: target)?.id == tabID
+  }
+
+  /// Bring the app forward and select the terminal a notification came from, marking it read.
+  /// Reused by both the native-banner click (AppDelegate) and the in-app panel tap. No-ops (and
+  /// withdraws any stale banner) when the target/tab no longer exists.
+  func openTerminal(targetID: TerminalTarget.ID, tabID: TerminalTab.ID?, notifID: UUID? = nil) {
+    NSApp.activate(ignoringOtherApps: true)
+    guard let sid = Self.sidebarID(forTargetID: targetID, in: projects) else {
+      if let tabID { systemNotifier.withdraw(tabIDs: [tabID]) }
+      return
+    }
+    switch sid {
+    case .root(let path), .workroom(let path, _): selectedProjectID = path
+    case .project: break
+    }
+    selectedTargetID = sid
+    if let tabID, let target = selectedTarget {
+      terminals.select(tabID, for: target)
+    }
+    if let notifID {
+      notifications.markRead(notifID: notifID)
+    } else if let tabID {
+      notifications.markRead(tab: tabID)
+    }
+  }
+
+  /// On app refocus, clear unread for the now-visible terminal (the selected target's active
+  /// tab). Called from `RootView`'s `didBecomeActive` hook.
+  func markFocusedTerminalRead() {
+    guard let target = selectedTarget, let active = terminals.activeTab(for: target) else { return }
+    notifications.markRead(tab: active.id)
+  }
+
+  /// Human-readable origin for a notification: the project name, plus the workroom for a
+  /// workroom terminal (e.g. "platform" for a root, "platform / fix-auth" for a workroom).
+  /// Resolved against the live projects (no string parsing of the id).
+  private func notificationSource(forTargetID id: TerminalTarget.ID) -> String {
+    for p in projects {
+      if TerminalTarget.rootID(project: p.path) == id { return p.displayName }
+      for w in p.workrooms where TerminalTarget.workroomID(project: p.path, name: w.name) == id {
+        return "\(p.displayName) / \(w.name)"
+      }
+    }
+    return ""
+  }
+
+  /// Reverse a `TerminalTarget.ID` to its `SidebarID` by matching the live projects (robust to
+  /// the `wr|project|name` delimiter — no string parsing). Pure + nonisolated so it's directly
+  /// unit-testable, mirroring `validatedSelection`.
+  nonisolated static func sidebarID(forTargetID id: TerminalTarget.ID, in projects: [Project])
+    -> SidebarID?
+  {
+    for p in projects {
+      if TerminalTarget.rootID(project: p.path) == id { return .root(project: p.path) }
+      for w in p.workrooms where TerminalTarget.workroomID(project: p.path, name: w.name) == id {
+        return .workroom(project: p.path, name: w.name)
+      }
+    }
+    return nil
   }
 
   // MARK: Errors

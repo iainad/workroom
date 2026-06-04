@@ -21,6 +21,10 @@ final class TerminalSessions: ObservableObject {
   /// Per-target running counter so tab titles ("Terminal 1", "2", …) stay stable across
   /// closes rather than renumbering.
   private var counts: [TerminalTarget.ID: Int] = [:]
+  /// Set once by `AppStore`: forwards each terminal's notification-worthy activity (OSC/bell)
+  /// up to the notification spine. A closure (not a store reference) so sessions stay ignorant
+  /// of `AppStore`.
+  var activityHandler: ((TerminalTarget.ID, TerminalTab.ID, TerminalActivity) -> Void)?
 
   func tabs(for target: TerminalTarget) -> [TerminalTab] {
     tabsByTarget[target.id] ?? []
@@ -45,7 +49,15 @@ final class TerminalSessions: ObservableObject {
   func addTab(for target: TerminalTarget) {
     let count = (counts[target.id] ?? 0) + 1
     counts[target.id] = count
-    let tab = TerminalTab(view: makeTerminal(for: target), title: "Terminal \(count)")
+    let term = makeTerminal(for: target)
+    let tab = TerminalTab(view: term, title: "Terminal \(count)")
+    // Forward this terminal's activity, tagged with its target + tab id, to the handler.
+    // [weak self] + value-type-only captures: the view must not retain sessions or itself.
+    let targetID = target.id
+    let tabID = tab.id
+    term.onActivity = { [weak self] activity in
+      Task { @MainActor in self?.activityHandler?(targetID, tabID, activity) }
+    }
     tabsByTarget[target.id, default: []].append(tab)
     activeByTarget[target.id] = tab.id
   }
@@ -105,8 +117,8 @@ final class TerminalSessions: ObservableObject {
     }
   }
 
-  private func makeTerminal(for target: TerminalTarget) -> LocalProcessTerminalView {
-    let term = ThemedTerminalView(frame: .zero)
+  private func makeTerminal(for target: TerminalTarget) -> ActivityTerminalView {
+    let term = ActivityTerminalView(frame: .zero)
 
     let shell = ShellEnvironment.loginShell()
     let shellName = (shell as NSString).lastPathComponent
@@ -125,6 +137,9 @@ final class TerminalSessions: ObservableObject {
   }
 
   private func terminate(_ term: LocalProcessTerminalView) {
+    // Drop the activity callback so the closed terminal can't emit (and to break any retain
+    // path) before it goes away.
+    (term as? ActivityTerminalView)?.onActivity = nil
     // SwiftTerm v1.13.0 exposes the child via `process`; terminate() sends SIGTERM to
     // the shell so we don't leak login shells on switch / close / delete / quit.
     if term.process?.running == true {

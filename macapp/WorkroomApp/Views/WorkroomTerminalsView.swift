@@ -6,6 +6,7 @@ import SwiftUI
 struct WorkroomTerminalsView: View {
   let target: TerminalTarget
   @ObservedObject var sessions: TerminalSessions
+  @EnvironmentObject var notifications: NotificationCenterStore
   @State private var hoveredTab: TerminalTab.ID?
   @State private var addHovering = false
 
@@ -21,9 +22,10 @@ struct WorkroomTerminalsView: View {
   var body: some View {
     let tabs = sessions.tabs(for: target)
     let active = sessions.activeTab(for: target)
-    VStack(spacing: 0) {
-      tabBar(tabs, activeID: active?.id)
-      Divider()
+    // The terminal (or empty state) fills the pane; the tab bar rides on safeAreaInset so it only
+    // ever takes its natural height — otherwise the tab bar's horizontal ScrollView grabs the
+    // vertical slack when there's no terminal below it and balloons.
+    Group {
       if let active {
         TerminalContainerView(terminal: active.view)
           .id(active.id)  // re-mount when the active tab changes
@@ -32,10 +34,21 @@ struct WorkroomTerminalsView: View {
         ContentUnavailableView {
           Label("No terminal", systemImage: "terminal")
         } description: {
-          Text("Open one with the + button or ⌘T.")
+          Text("Open one with ⌘T.")
         } actions: {
           Button("New Terminal") { sessions.addTab(for: target) }
             .buttonStyle(.borderedProminent)
+        }
+      }
+    }
+    .frame(maxWidth: .infinity, maxHeight: .infinity)
+    .safeAreaInset(edge: .top, spacing: 0) {
+      // No tab bar when there are no terminals: the empty state's "New Terminal" button (and ⌘T)
+      // cover adding one, so the strip and its "+" would be redundant.
+      if !tabs.isEmpty {
+        VStack(spacing: 0) {
+          tabBar(tabs, activeID: active?.id)
+          Divider()
         }
       }
     }
@@ -72,6 +85,9 @@ struct WorkroomTerminalsView: View {
         .padding(.horizontal, 8)
         .onPreferenceChange(TabWidthKey.self) { widths = $0 }
       }
+      // Hug the chips' height; otherwise the horizontal ScrollView grabs all the vertical slack
+      // when there's no terminal below it (the empty state), ballooning the tab bar.
+      .fixedSize(horizontal: false, vertical: true)
       Button {
         sessions.addTab(for: target)
       } label: {
@@ -94,9 +110,13 @@ struct WorkroomTerminalsView: View {
 
   private func tabChip(_ tab: TerminalTab, isActive: Bool, isDragging: Bool) -> some View {
     let showClose = hoveredTab == tab.id && draggingID == nil
+    // Activity in an unfocused tab highlights the tab itself (accent title + faint accent
+    // fill) instead of a count — a tab is too narrow for a number.
+    let hasUnread = notifications.unread(tab: tab.id) > 0
     return Text(tab.title)
       .font(.callout)
       .lineLimit(1)
+      .foregroundStyle(hasUnread ? Color.accentColor : Color.primary)
       // On hover, fade the title's right edge so the close button — overlaid on top of
       // the text and taking no layout space — reads cleanly.
       .mask(
@@ -130,6 +150,11 @@ struct WorkroomTerminalsView: View {
         RoundedRectangle(cornerRadius: 6)
           .fill(Color.primary.opacity(isActive ? 0.1 : (showClose ? 0.05 : 0)))
       }
+      // Unread activity tints the whole tab with the accent color (pairs with the accent title).
+      .background {
+        RoundedRectangle(cornerRadius: 6)
+          .fill(Color.accentColor.opacity(hasUnread ? 0.15 : 0))
+      }
       .background {
         RoundedRectangle(cornerRadius: 6)
           .fill(.thickMaterial)
@@ -151,7 +176,10 @@ struct WorkroomTerminalsView: View {
       .onHover { inside in
         if inside { hoveredTab = tab.id } else if hoveredTab == tab.id { hoveredTab = nil }
       }
-      .onTapGesture { sessions.select(tab.id, for: target) }
+      .onTapGesture {
+        sessions.select(tab.id, for: target)
+        notifications.markRead(tab: tab.id)
+      }
       // Measure in .global space: a .local drag reads coordinates relative to the
       // chip, which itself moves via .offset(dragTranslation) — that feedback loop
       // dampens the translation so the chip lags the cursor. Global space is fixed.

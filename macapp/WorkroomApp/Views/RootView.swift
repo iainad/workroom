@@ -3,10 +3,14 @@ import SwiftUI
 
 struct RootView: View {
   @EnvironmentObject var store: AppStore
+  @EnvironmentObject var notifications: NotificationCenterStore
   @AppStorage(ThemePreference.storageKey) private var theme: ThemePreference = .system
   /// Bundle id of the last editor picked from the "Open in…" menu — the toolbar button's
   /// primary action reopens in it.
   @AppStorage("openInEditorBundleID") private var lastEditorID = ""
+  /// Whether the right-hand notifications inspector is open. `@AppStorage` (not `@State`) so the
+  /// View-menu command (WorkroomCommands) toggles the same value.
+  @AppStorage(NotificationsInspector.storageKey) private var showNotifications = false
 
   var body: some View {
     NavigationSplitView {
@@ -34,12 +38,36 @@ struct RootView: View {
     } message: {
       Text(store.errorMessage ?? "")
     }
+    // The notifications inspector + its toolbar toggle live at the split-view level so they're
+    // available even when nothing is selected (a backgrounded terminal can fire any time).
+    .toolbar {
+      ToolbarItem {
+        Button {
+          showNotifications.toggle()
+        } label: {
+          HStack(spacing: 3) {
+            Image(systemName: "bell")
+            UnreadBadge(count: notifications.totalUnread)
+          }
+        }
+        .help("Notifications")
+        .accessibilityLabel(
+          notifications.totalUnread > 0
+            ? "Notifications, \(notifications.totalUnread) unread" : "Notifications")
+      }
+    }
+    .inspector(isPresented: $showNotifications) {
+      NotificationsPanel(isOpen: showNotifications)
+        .inspectorColumnWidth(min: 260, ideal: 300, max: 420)
+    }
     .onAppear { applyAppearance() }
     .onChange(of: theme) { _ in applyAppearance() }
     // Keep the root branch labels reasonably current: refresh when the app regains
     // focus (throttled, so rapid alt-tabbing doesn't fork a git/jj process per project).
+    // Regaining focus also clears the now-visible terminal's unread (you're looking at it).
     .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification))
     { _ in
+      store.markFocusedTerminalRead()
       Task { await store.reloadIfStale() }
     }
     // Publish selection state for menu-command enablement (see WorkroomCommands).
