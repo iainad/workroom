@@ -7,7 +7,7 @@ on:
     branches: [master]
 
 jobs:
-  ci:
+  cli:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -28,3 +28,32 @@ jobs:
 
       - name: Test
         run: go test ./...
+
+  app:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      # Xcode 16+ bundles swift-format (used by `make app-lint`) and builds for macOS 14+.
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      # Scripts/build-helper.sh compiles + embeds the workroom CLI during the test build.
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Lint (swift-format --strict)
+        run: make app-lint
+
+      # Hosted runners have no signing cert / dev team: ad-hoc sign, clear the team, manual
+      # style so xcodebuild won't provision against Apple's servers. Lets the non-sandboxed
+      # app build and the unit tests launch their host app. (`make app-test` also builds.)
+      - name: Test
+        run: >-
+          make app-test
+          APP_SIGN_FLAGS="CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=YES DEVELOPMENT_TEAM="

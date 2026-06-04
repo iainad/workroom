@@ -34,7 +34,7 @@ make app-test       # run WorkroomAppTests
 make app-format     # swift-format, rewrite sources in place
 make app-lint       # swift-format --strict
 make app-generate   # force-regenerate the .xcodeproj
-make app-release    # notarized Release build (see below)
+make app-release    # notarized Release build + DMG installer (see below)
 ```
 
 > **Adding a source file?** Run `make app-generate` first. XcodeGen expands the `WorkroomApp/`
@@ -57,10 +57,12 @@ The project is configured for team **B898J443L9**:
   timestamp. `Scripts/build-helper.sh` signs the embedded helper the same way before the
   app's final signature.
 
-To produce a notarized, stapled `Workroom.app`, first store notary credentials once
-(app-specific password from appleid.apple.com — not your Apple ID password):
+To produce a notarized, stapled `Workroom.dmg` installer (the app inside is notarized +
+stapled too), first install `create-dmg` and store notary credentials once (app-specific
+password from appleid.apple.com — not your Apple ID password):
 
 ```bash
+brew install create-dmg
 xcrun notarytool store-credentials "workroom-notary" \
     --apple-id "you@example.com" --team-id B898J443L9 --password "abcd-efgh-ijkl-mnop"
 ```
@@ -68,8 +70,12 @@ xcrun notarytool store-credentials "workroom-notary" \
 Then:
 
 ```bash
-make app-release   # builds Release, verifies signing, notarizes, staples, spctl-checks (Scripts/release.sh)
+make app-release   # Release build → notarize → staple → drag-to-Applications DMG (Scripts/release.sh)
 ```
+
+CI authenticates notarytool with an App Store Connect API key instead of the keychain
+profile — set `NOTARY_KEY_PATH` (a `.p8`), `NOTARY_KEY_ID`, and `NOTARY_ISSUER_ID` and the
+script uses those automatically.
 
 Prefer not to use XcodeGen? Create a SwiftUI macOS App target manually, add the
 SwiftTerm package, add the `WorkroomApp/` sources, and add `Scripts/build-helper.sh`
@@ -100,7 +106,7 @@ as a Run Script phase **after Compile Sources**.
    switch/delete workrooms repeatedly and confirm no orphaned shells in `ps`.
 3. **Signing/notarization**: ✓ configured (Developer ID for Release, team B898J443L9;
    helper signed by `Scripts/build-helper.sh`). Run `Scripts/release.sh` to build + notarize
-   + staple (after the one-time `notarytool store-credentials` above). See "Signing &
-   distribution".
+   + staple + package the DMG installer (after the one-time `notarytool store-credentials`
+   above). See "Signing & distribution".
 4. **Process-group kill** (`WorkroomCLI.run`): the MVP uses `terminate()` + non-interactive
    git env; a full group-kill of git/jj grandchildren would need a `posix_spawn` launch.

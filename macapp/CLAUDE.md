@@ -16,7 +16,7 @@ make app-test       # xcodebuild test (WorkroomAppTests)
 make app-generate   # force-regenerate the (gitignored) .xcodeproj from project.yml
 make app-format     # swift-format, rewrite sources in place
 make app-lint       # swift-format --strict (non-zero on any violation — the hard gate)
-make app-release    # Release build → notarize → staple (Scripts/release.sh)
+make app-release    # Release build → notarize → staple → DMG installer (Scripts/release.sh)
 make app-icon       # regenerate AppIcon PNGs (Scripts/make-icon.swift)
 make app-clean      # remove DerivedData + .xcodeproj
 ```

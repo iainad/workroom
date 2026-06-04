@@ -40,6 +40,12 @@ APP_BUNDLE  := DerivedData/Build/Products/Debug/Workroom.app
 APP_XCODEBUILD := xcodebuild -project $(APP_PROJECT) -scheme WorkroomApp -configuration Debug \
   -derivedDataPath DerivedData -clonedSourcePackagesDirPath DerivedData/SourcePackages
 
+# Extra xcodebuild build-setting overrides, appended to app-build/app-test. Empty locally so
+# ⌘R-style automatic signing is used; CI sets this to ad-hoc / no-team signing because hosted
+# runners have no signing cert or DEVELOPMENT_TEAM (e.g.
+# `make app-test APP_SIGN_FLAGS="CODE_SIGN_IDENTITY=- CODE_SIGNING_REQUIRED=NO DEVELOPMENT_TEAM="`).
+APP_SIGN_FLAGS ?=
+
 app-run: app-build ## Build (Debug) and launch the app, replacing any running instance
 	cd macapp || exit 1; \
 	pkill -x Workroom 2>/dev/null || true; \
@@ -51,10 +57,10 @@ app-run: app-build ## Build (Debug) and launch the app, replacing any running in
 	open "$(APP_BUNDLE)"
 
 app-build: ## Build the app (Debug)
-	cd macapp && { [ -d $(APP_PROJECT) ] || xcodegen generate; } && $(APP_XCODEBUILD) build
+	cd macapp && { [ -d $(APP_PROJECT) ] || xcodegen generate; } && $(APP_XCODEBUILD) build $(APP_SIGN_FLAGS)
 
 app-test: ## Run the app's unit tests
-	cd macapp && { [ -d $(APP_PROJECT) ] || xcodegen generate; } && $(APP_XCODEBUILD) -destination 'platform=macOS' test
+	cd macapp && { [ -d $(APP_PROJECT) ] || xcodegen generate; } && $(APP_XCODEBUILD) -destination 'platform=macOS' test $(APP_SIGN_FLAGS)
 
 app-generate: ## Force-regenerate the (gitignored) .xcodeproj from project.yml
 	cd macapp && xcodegen generate
@@ -65,7 +71,7 @@ app-format: ## Format Swift sources in place (swift-format)
 app-lint: ## Lint Swift with swift-format (--strict)
 	cd macapp && xcrun swift-format lint --strict --parallel --recursive WorkroomApp WorkroomAppTests
 
-app-release: ## Build, notarize and staple a Release app (macapp/Scripts/release.sh)
+app-release: ## Build, notarize, staple + package a DMG installer (macapp/Scripts/release.sh)
 	cd macapp && Scripts/release.sh
 
 app-icon: ## Regenerate the AppIcon PNGs (macapp/Scripts/make-icon.swift)

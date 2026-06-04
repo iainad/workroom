@@ -18,7 +18,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.23"
+          go-version-file: go.mod
 
       - uses: goreleaser/goreleaser-action@v6
         with:
@@ -26,3 +26,60 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Build a Developer ID-signed, notarized, stapled Workroom.dmg and attach it to the release
+  # goreleaser created above. Requires repo secrets: MACOS_CERTIFICATE / MACOS_CERTIFICATE_PWD
+  # (base64 .p12 + password), KEYCHAIN_PASSWORD, and the App Store Connect notary API key
+  # NOTARY_KEY / NOTARY_KEY_ID / NOTARY_ISSUER_ID.
+  macapp:
+    needs: release
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      # Scripts/build-helper.sh compiles + embeds the workroom CLI into the app bundle.
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Install XcodeGen + create-dmg
+        run: brew install xcodegen create-dmg
+
+      - name: Import Developer ID signing certificate
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_PWD: ${{ secrets.MACOS_CERTIFICATE_PWD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          CERT="$RUNNER_TEMP/dev-id.p12"
+          KEYCHAIN="$RUNNER_TEMP/app-signing.keychain-db"
+          echo "$MACOS_CERTIFICATE" | openssl base64 -d -A > "$CERT"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import "$CERT" -P "$MACOS_CERTIFICATE_PWD" -A -t cert -f pkcs12 -k "$KEYCHAIN"
+          security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security list-keychain -d user -s "$KEYCHAIN" login.keychain
+
+      - name: Build, sign, notarize, staple, package DMG
+        env:
+          NOTARY_KEY: ${{ secrets.NOTARY_KEY }}
+          NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
+        run: |
+          echo "$NOTARY_KEY" | openssl base64 -d -A > "$RUNNER_TEMP/notary.p8"
+          NOTARY_KEY_PATH="$RUNNER_TEMP/notary.p8" make app-release
+
+      - name: Upload installer to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ASSET="$RUNNER_TEMP/Workroom-${GITHUB_REF_NAME}.dmg"
+          cp macapp/build/release/Workroom.dmg "$ASSET"
+          gh release upload "$GITHUB_REF_NAME" "$ASSET" --clobber
