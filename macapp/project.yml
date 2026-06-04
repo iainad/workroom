@@ -65,6 +65,10 @@ targets:
           CODE_SIGN_STYLE: Manual
           CODE_SIGN_IDENTITY: "Developer ID Application"
           OTHER_CODE_SIGN_FLAGS: "--timestamp"
+          # `xcodebuild build` (vs archive) injects com.apple.security.get-task-allow=1, a debug
+          # entitlement notarization rejects ("The executable requests the get-task-allow
+          # entitlement"). The app needs no entitlements, so suppress the base injection.
+          CODE_SIGN_INJECT_BASE_ENTITLEMENTS: NO
     preBuildScripts:
       - name: swift-format lint
         # Surfaces swift-format violations as build warnings (non-fatal — won't block local
