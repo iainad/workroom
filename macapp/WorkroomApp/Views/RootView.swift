@@ -56,20 +56,22 @@ struct RootView: View {
   private var detail: some View {
     if let target = store.selectedTarget {
       if target.isMissing {
-        EmptyStateView(
+        ContentUnavailableView(
+          "Directory not found",
           systemImage: "questionmark.folder",
-          title: "Directory not found",
-          message: "\(target.title) points at a path that no longer exists.\n\(target.path)"
+          description: Text(
+            "\(target.title) points at a path that no longer exists.\n\(target.path)")
         )
       } else {
         targetDetail(target)
       }
     } else {
-      EmptyStateView(
+      ContentUnavailableView(
+        "Nothing selected",
         systemImage: "terminal",
-        title: "Nothing selected",
-        message:
+        description: Text(
           "Select a project's root or a workroom to open a terminal in its directory, or create one."
+        )
       )
       // Nothing selected → nothing to title, so drop the toolbar bar/separator and the
       // window title for a clean empty state.

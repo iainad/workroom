@@ -12,7 +12,7 @@ binary** and shelling out over its `--json` contract — no cgo, no duplicated l
 
 ## Prerequisites
 
-- Xcode 15+ (macOS 13+ deployment target)
+- Xcode 15+ (macOS 14+ deployment target)
 - Go (to build the embedded helper) — must be on `PATH`, or edit `Scripts/build-helper.sh`
 - [XcodeGen](https://github.com/yonaskolb/XcodeGen): `brew install xcodegen`
 

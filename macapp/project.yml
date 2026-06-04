@@ -12,7 +12,7 @@ name: WorkroomApp
 options:
   bundleIdPrefix: com.developwithstyle
   deploymentTarget:
-    macOS: "13.0"
+    macOS: "14.0"
   createIntermediateGroups: true
 
 packages:
@@ -37,7 +37,7 @@ targets:
         CFBundleDisplayName: Workroom
         CFBundleName: Workroom
         CFBundleIconName: AppIcon
-        LSMinimumSystemVersion: "13.0"
+        LSMinimumSystemVersion: "14.0"
         NSHighResolutionCapable: true
         LSApplicationCategoryType: public.app-category.developer-tools
     settings:

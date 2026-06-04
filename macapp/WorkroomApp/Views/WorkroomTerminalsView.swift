@@ -29,12 +29,14 @@ struct WorkroomTerminalsView: View {
           .id(active.id)  // re-mount when the active tab changes
           .padding(8)
       } else {
-        EmptyStateView(
-          systemImage: "terminal",
-          title: "No terminal",
-          message: "Open one with the + button or ⌘T.",
-          action: (label: "New Terminal", run: { sessions.addTab(for: target) })
-        )
+        ContentUnavailableView {
+          Label("No terminal", systemImage: "terminal")
+        } description: {
+          Text("Open one with the + button or ⌘T.")
+        } actions: {
+          Button("New Terminal") { sessions.addTab(for: target) }
+            .buttonStyle(.borderedProminent)
+        }
       }
     }
     // Create the first terminal once the pane appears (and for each new target).

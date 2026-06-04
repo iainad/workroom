@@ -42,12 +42,14 @@ struct ProjectSidebar: View {
   var body: some View {
     Group {
       if store.projects.isEmpty {
-        EmptyStateView(
-          systemImage: "folder.badge.plus",
-          title: "No projects yet",
-          message: "Add a Git or Jujutsu project folder to start managing its workrooms.",
-          action: (label: "Add Project…", run: { showImporter = true })
-        )
+        ContentUnavailableView {
+          Label("No projects yet", systemImage: "folder.badge.plus")
+        } description: {
+          Text("Add a Git or Jujutsu project folder to start managing its workrooms.")
+        } actions: {
+          Button("Add Project…") { showImporter = true }
+            .buttonStyle(.borderedProminent)
+        }
       } else {
         tree
       }
