@@ -43,9 +43,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
-/// Whether the focused window has a workroom selected. Published via `focusedSceneValue`
-/// (see RootView) so menu commands can enable/disable against it — a Commands body doesn't
-/// re-evaluate when the shared store changes directly, but it does track focused values.
+/// Whether the focused window has a usable terminal target selected (a root or a workroom,
+/// and not a missing directory). Published via `focusedSceneValue` (see RootView) so menu
+/// commands can enable/disable against it — a Commands body doesn't re-evaluate when the
+/// shared store changes directly, but it does track focused values.
 struct WorkroomSelectedKey: FocusedValueKey {
     typealias Value = Bool
 }
@@ -77,7 +78,7 @@ struct WorkroomCommands: Commands {
     var body: some Commands {
         CommandGroup(after: .newItem) {
             Button("New Terminal") {
-                AppStore.shared.newTerminalInSelectedWorkroom()
+                AppStore.shared.newTerminalInSelectedTarget()
             }
             .keyboardShortcut("t", modifiers: .command)
             .disabled(workroomSelected != true)

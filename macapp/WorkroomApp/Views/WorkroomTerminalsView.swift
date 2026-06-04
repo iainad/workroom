@@ -1,10 +1,10 @@
 import SwiftUI
 
-/// The detail pane's terminals for one workroom: a horizontal tab strip below the title
-/// bar plus the active terminal. Observes `TerminalSessions` so adding, closing, and
-/// switching tabs all update live.
+/// The detail pane's terminals for one target (a workroom or a project root): a horizontal
+/// tab strip below the title bar plus the active terminal. Observes `TerminalSessions` so
+/// adding, closing, and switching tabs all update live.
 struct WorkroomTerminalsView: View {
-    let workroom: Workroom
+    let target: TerminalTarget
     @ObservedObject var sessions: TerminalSessions
     @State private var hoveredTab: TerminalTab.ID?
     @State private var addHovering = false
@@ -19,8 +19,8 @@ struct WorkroomTerminalsView: View {
     private let tabSpacing: CGFloat = 4
 
     var body: some View {
-        let tabs = sessions.tabs(for: workroom)
-        let active = sessions.activeTab(for: workroom)
+        let tabs = sessions.tabs(for: target)
+        let active = sessions.activeTab(for: target)
         VStack(spacing: 0) {
             tabBar(tabs, activeID: active?.id)
             Divider()
@@ -33,12 +33,12 @@ struct WorkroomTerminalsView: View {
                     systemImage: "terminal",
                     title: "No terminal",
                     message: "Open one with the + button or ⌘T.",
-                    action: (label: "New Terminal", run: { sessions.addTab(for: workroom) })
+                    action: (label: "New Terminal", run: { sessions.addTab(for: target) })
                 )
             }
         }
-        // Create the first terminal once the pane appears (and for each new workroom).
-        .task(id: workroom.id) { sessions.ensureTab(for: workroom) }
+        // Create the first terminal once the pane appears (and for each new target).
+        .task(id: target.id) { sessions.ensureTab(for: target) }
         // Drive the "Close Terminal" menu command's enabled state.
         .focusedSceneValue(\.hasTerminal, !tabs.isEmpty)
     }
@@ -46,7 +46,7 @@ struct WorkroomTerminalsView: View {
     private func tabBar(_ tabs: [TerminalTab], activeID: TerminalTab.ID?) -> some View {
         // Resolve the drag once per layout: which tab is dragging, and where it would land.
         let draggedIndex = draggingID.flatMap { id in tabs.firstIndex { $0.id == id } }
-        let target = draggedIndex.map { dropTargetIndex(tabs, draggedIndex: $0) }
+        let dropTarget = draggedIndex.map { dropTargetIndex(tabs, draggedIndex: $0) }
         let draggedWidth = draggingID.flatMap { widths[$0] } ?? 0
 
         return HStack(spacing: 0) {
@@ -57,7 +57,7 @@ struct WorkroomTerminalsView: View {
                         // Dragged chip tracks the cursor; the rest shift to open the gap.
                         let offsetX = isDragging
                             ? dragTranslation
-                            : gapShift(for: index, draggedIndex: draggedIndex, target: target, amount: draggedWidth + tabSpacing)
+                            : gapShift(for: index, draggedIndex: draggedIndex, target: dropTarget, amount: draggedWidth + tabSpacing)
                         tabChip(tab, isActive: tab.id == activeID, isDragging: isDragging)
                             .offset(x: offsetX)
                             .zIndex(isDragging ? 1 : 0)
@@ -68,7 +68,7 @@ struct WorkroomTerminalsView: View {
                 .onPreferenceChange(TabWidthKey.self) { widths = $0 }
             }
             Button {
-                sessions.addTab(for: workroom)
+                sessions.addTab(for: target)
             } label: {
                 Image(systemName: "plus")
                     .font(.system(size: 11))
@@ -113,7 +113,7 @@ struct WorkroomTerminalsView: View {
             .padding(.vertical, 4)
             .overlay(alignment: .trailing) {
                 TabCloseButton {
-                    sessions.closeTab(tab.id, for: workroom)
+                    sessions.closeTab(tab.id, for: target)
                 }
                 .help("Close \(tab.title)")
                 .opacity(showClose ? 1 : 0)
@@ -146,7 +146,7 @@ struct WorkroomTerminalsView: View {
             .onHover { inside in
                 if inside { hoveredTab = tab.id } else if hoveredTab == tab.id { hoveredTab = nil }
             }
-            .onTapGesture { sessions.select(tab.id, for: workroom) }
+            .onTapGesture { sessions.select(tab.id, for: target) }
             // Measure in .global space: a .local drag reads coordinates relative to the
             // chip, which itself moves via .offset(dragTranslation) — that feedback loop
             // dampens the translation so the chip lags the cursor. Global space is fixed.
@@ -196,11 +196,11 @@ struct WorkroomTerminalsView: View {
 
     /// Commit the reorder on drop, then clear drag state (animated, so everything settles).
     private func commitDrag() {
-        let tabs = sessions.tabs(for: workroom)
+        let tabs = sessions.tabs(for: target)
         if let id = draggingID, let di = tabs.firstIndex(where: { $0.id == id }) {
             let ti = dropTargetIndex(tabs, draggedIndex: di)
             withAnimation(.easeInOut(duration: 0.2)) {
-                sessions.moveTab(id, toIndex: ti, for: workroom)
+                sessions.moveTab(id, toIndex: ti, for: target)
                 draggingID = nil
                 dragTranslation = 0
             }

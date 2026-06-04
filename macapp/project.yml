@@ -71,3 +71,30 @@ targets:
         # the app signature. See Scripts/build-helper.sh.
         basedOnDependencyAnalysis: false
         script: '"${SRCROOT}/Scripts/build-helper.sh"'
+    # Wire the unit tests into the app's scheme so `xcodebuild test -scheme WorkroomApp` runs
+    # them. Debug builds enable testability, so `@testable import WorkroomApp` sees internals.
+    scheme:
+      testTargets:
+        - WorkroomAppTests
+
+  # Pure-logic unit tests (host-based so internal types are visible via @testable import).
+  # XcodeGen wires TEST_HOST/BUNDLE_LOADER to WorkroomApp from the target dependency.
+  WorkroomAppTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: WorkroomAppTests
+    dependencies:
+      - target: WorkroomApp
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: com.developwithstyle.workroom.tests
+        SWIFT_VERSION: "5.0"
+        DEVELOPMENT_TEAM: B898J443L9
+        CODE_SIGN_STYLE: Automatic
+        # The host app's PRODUCT_NAME is "Workroom" (not the target name "WorkroomApp"), so
+        # XcodeGen's auto-derived TEST_HOST points at the wrong bundle. Set it to the real
+        # product so the unit tests load into the app via @testable import.
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Workroom.app/Contents/MacOS/Workroom"
+        BUNDLE_LOADER: "$(TEST_HOST)"

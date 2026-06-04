@@ -28,8 +28,13 @@ struct RootView: View {
         }
         .onAppear { applyAppearance() }
         .onChange(of: theme) { _ in applyAppearance() }
+        // Keep the root branch labels reasonably current: refresh when the app regains
+        // focus (throttled, so rapid alt-tabbing doesn't fork a git/jj process per project).
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            Task { await store.reloadIfStale() }
+        }
         // Publish selection state for menu-command enablement (see WorkroomCommands).
-        .focusedSceneValue(\.workroomSelected, store.selectedWorkroom != nil)
+        .focusedSceneValue(\.workroomSelected, store.selectedTarget.map { !$0.isMissing } ?? false)
     }
 
     /// Pushes the chosen appearance onto the running app. nil (System) tells AppKit to
@@ -40,42 +45,43 @@ struct RootView: View {
 
     @ViewBuilder
     private var detail: some View {
-        if let workroom = store.selectedWorkroom {
-            if workroom.hasBlockingWarning {
+        if let target = store.selectedTarget {
+            if target.isMissing {
                 EmptyStateView(
                     systemImage: "questionmark.folder",
                     title: "Directory not found",
-                    message: "\(workroom.name) points at a path that no longer exists.\n\(workroom.path)"
+                    message: "\(target.title) points at a path that no longer exists.\n\(target.path)"
                 )
             } else {
-                workroomDetail(workroom)
+                targetDetail(target)
             }
         } else {
             EmptyStateView(
                 systemImage: "terminal",
-                title: "No workroom selected",
-                message: "Select a workroom to open a terminal in its directory, or create one."
+                title: "Nothing selected",
+                message: "Select a project's root or a workroom to open a terminal in its directory, or create one."
             )
-            // No workroom → nothing to title, so drop the toolbar bar/separator and the
+            // Nothing selected → nothing to title, so drop the toolbar bar/separator and the
             // window title for a clean empty state.
             .navigationTitle("")
             .toolbarBackground(.hidden, for: .windowToolbar)
         }
     }
 
-    /// A workroom's terminal, with its setup log (if any) docked underneath.
+    /// A target's terminal (root or workroom), with its setup log (if any) docked beneath.
+    /// Only workrooms ever have a docked log; for a root, `logs[target.id]` is always nil.
     @ViewBuilder
-    private func workroomDetail(_ workroom: Workroom) -> some View {
+    private func targetDetail(_ target: TerminalTarget) -> some View {
         VStack(spacing: 0) {
-            WorkroomTerminalsView(workroom: workroom, sessions: store.terminals)
+            WorkroomTerminalsView(target: target, sessions: store.terminals)
 
-            if let log = store.logs[workroom.id] {
+            if let log = store.logs[target.id] {
                 Divider()
-                ScriptLogPanel(session: log) { store.logs[workroom.id] = nil }
+                ScriptLogPanel(session: log) { store.logs[target.id] = nil }
             }
         }
-        .navigationTitle(workroom.name)
-        .navigationSubtitle(workroom.path)
+        .navigationTitle(target.title)
+        .navigationSubtitle(target.path)
         .toolbar {
             ToolbarItemGroup {
                 let editors = ExternalEditor.installed
@@ -86,19 +92,19 @@ struct RootView: View {
                         ForEach(editors) { editor in
                             Button(editor.name) {
                                 lastEditorID = editor.id
-                                editor.open(workroom.path)
+                                editor.open(target.path)
                             }
                         }
                     } label: {
                         Label("Open in…", systemImage: "arrow.up.forward.app")
                     } primaryAction: {
-                        remembered.open(workroom.path)
+                        remembered.open(target.path)
                     }
                     .help("Open in \(remembered.name)")
                 }
 
                 Button {
-                    NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: workroom.path)])
+                    NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: target.path)])
                 } label: {
                     Label("Reveal in Finder", systemImage: "folder")
                 }
@@ -106,11 +112,11 @@ struct RootView: View {
 
                 Button {
                     NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(workroom.path, forType: .string)
+                    NSPasteboard.general.setString(target.path, forType: .string)
                 } label: {
                     Label("Copy Path", systemImage: "doc.on.doc")
                 }
-                .help("Copy workroom path")
+                .help("Copy path")
             }
         }
     }

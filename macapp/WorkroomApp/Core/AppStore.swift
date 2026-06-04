@@ -1,10 +1,12 @@
 import Foundation
 import SwiftUI
 
-/// Identifies a row in the unified project → workroom sidebar tree. Workroom names can
-/// repeat across projects, so a workroom is identified by its project path plus name.
+/// Identifies a selectable row in the project → (root | workroom) sidebar tree. Workroom
+/// names can repeat across projects, and the root is per project, so both carry their
+/// project path. The selected *terminal target* is one of these.
 enum SidebarID: Hashable {
     case project(String)
+    case root(project: String)
     case workroom(project: String, name: String)
 }
 
@@ -25,7 +27,13 @@ final class AppStore: ObservableObject {
 
     @Published var projects: [Project] = []
     @Published var selectedProjectID: Project.ID?
-    @Published var selectedWorkroomID: Workroom.ID?
+    /// The selected terminal target — a `.root` or a `.workroom` (never `.project`), or nil
+    /// when nothing is selected (the launch state). `.project` is not a target; clicking a
+    /// project toggles its expansion instead.
+    @Published var selectedTargetID: SidebarID?
+    /// Per-project resolved root branch/bookmark labels, hydrated asynchronously after each
+    /// load (see `resolveBranches`). Absent ⇒ the root row shows a dim "root" until resolved.
+    @Published var rootRefs: [Project.ID: RootRef] = [:]
 
     @Published var errorMessage: String?
     /// Title for the error alert. Nil falls back to the generic title; specific
@@ -38,13 +46,20 @@ final class AppStore: ObservableObject {
     @Published var requestAddProject = false
     /// A workroom awaiting delete confirmation; setting it raises the confirmation prompt.
     @Published var pendingDeletion: PendingWorkroomDeletion?
-    /// Setup logs scoped per workroom, rendered under that workroom's terminal. Kept
-    /// until the user closes them (or the workroom is deleted) so the output stays
-    /// available for review. Streaming starts as soon as the CLI reports the workroom
-    /// exists (its early "created" event), before setup finishes.
-    @Published var logs: [Workroom.ID: ScriptLogSession] = [:]
+    /// Setup logs scoped per terminal target (a workroom's target id), rendered under that
+    /// workroom's terminal. Kept until the user closes them (or the workroom is deleted) so
+    /// the output stays available for review. Keyed on the target id (project-scoped) so
+    /// same-named workrooms across projects don't share a log.
+    @Published var logs: [TerminalTarget.ID: ScriptLogSession] = [:]
 
     let terminals = TerminalSessions()
+
+    private let resolver = BranchResolver()
+    /// The in-flight branch-resolution sweep; cancelled and replaced on each reload so a
+    /// slow sweep never writes stale labels over a newer one.
+    private var branchTask: Task<Void, Never>?
+    /// When the project list was last loaded — used to throttle the on-focus refresh.
+    private var lastLoadAt: Date = .distantPast
 
     private init() {}
 
@@ -52,13 +67,33 @@ final class AppStore: ObservableObject {
         projects.first { $0.id == selectedProjectID }
     }
 
+    /// The selected terminal target resolved against the current project list (nil if it no
+    /// longer exists).
+    var selectedTarget: TerminalTarget? {
+        switch selectedTargetID {
+        case .root(let path):
+            return projects.first { $0.id == path }?.rootTarget
+        case .workroom(let path, let name):
+            guard let project = projects.first(where: { $0.id == path }),
+                  let workroom = project.workrooms.first(where: { $0.id == name }) else { return nil }
+            return workroom.target(inProject: path)
+        case .project, .none:
+            return nil
+        }
+    }
+
+    /// The selected workroom, only when a workroom (not a root) is selected. Used by delete,
+    /// the setup-log dock, and menu commands that are workroom-specific.
     var selectedWorkroom: Workroom? {
-        selectedProject?.workrooms.first { $0.id == selectedWorkroomID }
+        guard case .workroom(let path, let name) = selectedTargetID,
+              let project = projects.first(where: { $0.id == path }) else { return nil }
+        return project.workrooms.first { $0.id == name }
     }
 
     // MARK: Loading
 
     /// Initial launch: render config-only (instant, no VCS calls), then refresh warnings.
+    /// Branch labels hydrate asynchronously off both passes (see `resolveBranches`).
     func bootstrap() async {
         await load(warnings: "none")
         await load(warnings: "fast")
@@ -68,12 +103,21 @@ final class AppStore: ObservableObject {
         await load(warnings: "fast")
     }
 
+    /// Reload only if it's been a while since the last load. Driven by the app regaining
+    /// focus, so alt-tabbing back doesn't fork a git/jj process per project every time.
+    func reloadIfStale(minInterval: TimeInterval = 4) async {
+        guard Date().timeIntervalSince(lastLoadAt) >= minInterval else { return }
+        await reload()
+    }
+
     private func load(warnings: String) async {
         isLoading = true
         defer { isLoading = false }
         do {
             let response = try await WorkroomCLI.shared.list(warnings: warnings)
             apply(response.projects)
+            lastLoadAt = Date()
+            resolveBranches()
         } catch {
             present(error)
         }
@@ -81,13 +125,58 @@ final class AppStore: ObservableObject {
 
     private func apply(_ fresh: [Project]) {
         projects = fresh
-        // Keep selection valid; default to the first project / first workroom.
+        // Keep a project as the New-Workroom context; default to the first.
         if selectedProjectID == nil || !fresh.contains(where: { $0.id == selectedProjectID }) {
             selectedProjectID = fresh.first?.id
         }
-        if let project = selectedProject,
-           selectedWorkroomID == nil || !project.workrooms.contains(where: { $0.id == selectedWorkroomID }) {
-            selectedWorkroomID = nil
+        // Keep the selected target only if it still exists. `validatedSelection` can only
+        // return the existing selection or nil — it never fabricates one, so a load/refresh
+        // can't auto-select a root or workroom the user didn't pick (D4).
+        selectedTargetID = Self.validatedSelection(selectedTargetID, in: fresh)
+        // Forget labels for projects that went away.
+        let liveIDs = Set(fresh.map(\.id))
+        rootRefs = rootRefs.filter { liveIDs.contains($0.key) }
+    }
+
+    /// Keeps the current selection if it still exists in `projects`, else nil. Never invents
+    /// a selection — this is the guarantee behind D4 (a load/refresh must not auto-open a
+    /// terminal). Pure + nonisolated so it's directly unit-testable (SelectionTests).
+    nonisolated static func validatedSelection(_ current: SidebarID?, in projects: [Project]) -> SidebarID? {
+        guard let current else { return nil }
+        return targetExists(current, in: projects) ? current : nil
+    }
+
+    nonisolated private static func targetExists(_ id: SidebarID, in projects: [Project]) -> Bool {
+        switch id {
+        case .root(let path):
+            return projects.contains { $0.id == path }
+        case .workroom(let path, let name):
+            return projects.first { $0.id == path }?.workrooms.contains { $0.id == name } ?? false
+        case .project:
+            return false
+        }
+    }
+
+    /// Hydrate each project's root branch/bookmark label off the main path. Per project,
+    /// concurrent, cancellable: a slow/wedged repo only delays its own label, and a newer
+    /// reload cancels this sweep so it can't write stale values. A resolution that comes
+    /// back `.none` does not clobber a previously-resolved label (no flash to "root" on
+    /// refresh). Project counts are small, so the group runs uncapped.
+    private func resolveBranches() {
+        branchTask?.cancel()
+        let resolver = self.resolver
+        let snapshot = projects.map { (id: $0.id, path: $0.path, vcs: $0.vcs) }
+        branchTask = Task { [weak self] in
+            await withTaskGroup(of: (String, RootRef).self) { group in
+                for p in snapshot {
+                    group.addTask { (p.id, await resolver.resolve(path: p.path, vcs: p.vcs)) }
+                }
+                for await (id, ref) in group {
+                    guard !Task.isCancelled, let self else { break }
+                    if ref.kind == .none, self.rootRefs[id] != nil { continue } // keep prior label
+                    self.rootRefs[id] = ref
+                }
+            }
         }
     }
 
@@ -97,10 +186,10 @@ final class AppStore: ObservableObject {
         do {
             try await WorkroomCLI.shared.addProject(url.path)
             await reload()
-            // Select the freshly added project.
+            // Select the freshly added project as context (no target — the root is one click away).
             if let match = projects.first(where: { $0.path == url.path || ($0.path as NSString).lastPathComponent == url.lastPathComponent }) {
                 selectedProjectID = match.id
-                selectedWorkroomID = nil
+                selectedTargetID = nil
             }
         } catch {
             present(error)
@@ -129,17 +218,17 @@ final class AppStore: ObservableObject {
             session.finish()
             await reload()
             // Mount now if the early "created" event never arrived (older CLI).
-            if session.workroomID == nil { await mountSetupLog(session, workroom: created.name, project: project) }
+            if session.targetID == nil { await mountSetupLog(session, workroom: created.name, project: project) }
             // A run with no output leaves nothing to dock.
-            if session.lines.isEmpty { logs[created.name] = nil }
+            if session.lines.isEmpty, let id = session.targetID { logs[id] = nil }
         } catch {
             // Even on (partial) failure, reload so a "created but setup failed" workroom shows up.
             await reload()
-            if let name = session.workroomID {
+            if let id = session.targetID {
                 // The workroom exists; show the failure in its docked log.
-                logs[name] = session
+                logs[id] = session
                 selectedProjectID = project.id
-                selectedWorkroomID = name
+                selectedTargetID = targetIDFromLogKey(id, project: project)
                 session.finish(failure: errorText(error))
             } else {
                 // Failed before the workroom existed — nothing to dock under.
@@ -151,11 +240,12 @@ final class AppStore: ObservableObject {
     /// Mounts a just-created workroom (selecting it so its terminal opens) and docks the
     /// setup log under it. Safe to call more than once.
     private func mountSetupLog(_ session: ScriptLogSession, workroom name: String, project: Project) async {
-        session.workroomID = name
-        logs[name] = session
+        let id = TerminalTarget.workroomID(project: project.path, name: name)
+        session.targetID = id
+        logs[id] = session
         await reload()
         selectedProjectID = project.id
-        selectedWorkroomID = name
+        selectedTargetID = .workroom(project: project.path, name: name)
     }
 
     /// Removes the workroom from the sidebar immediately, then runs its teardown (script +
@@ -163,12 +253,13 @@ final class AppStore: ObservableObject {
     /// matches reality; on failure we reload (so it reappears if it still exists) and
     /// surface the error.
     func deleteWorkroom(_ workroom: Workroom, in project: Project) {
+        let targetID = TerminalTarget.workroomID(project: project.path, name: workroom.name)
         // Optimistic: drop it from the model now, reap its terminals/log, clear selection.
         removeWorkroomLocally(workroom, in: project)
-        terminals.reap(workroom.id)
-        logs[workroom.id] = nil
-        if selectedWorkroomID == workroom.id {
-            selectedWorkroomID = nil
+        terminals.reap(targetID)
+        logs[targetID] = nil
+        if selectedTargetID == .workroom(project: project.path, name: workroom.name) {
+            selectedTargetID = nil
         }
 
         // Teardown continues in the background. We still collect its output so a failure
@@ -193,6 +284,13 @@ final class AppStore: ObservableObject {
         projects[idx] = Project(path: p.path, vcs: p.vcs, workrooms: p.workrooms.filter { $0.id != workroom.id })
     }
 
+    /// Maps a workroom log key ("wr|<project>|<name>") back to its selection id.
+    private func targetIDFromLogKey(_ key: TerminalTarget.ID, project: Project) -> SidebarID? {
+        let prefix = "wr|\(project.path)|"
+        guard key.hasPrefix(prefix) else { return nil }
+        return .workroom(project: project.path, name: String(key.dropFirst(prefix.count)))
+    }
+
     /// Teardown failed (it ran in the background): pop an alert carrying the captured
     /// script output so the user can see why.
     private func presentTeardownFailure(_ workroom: Workroom, error: Error, log: ScriptLogSession) {
@@ -207,26 +305,26 @@ final class AppStore: ObservableObject {
 
     // MARK: Menu-command convenience
 
-    /// Open a new terminal tab in the selected workroom (⌘T).
-    func newTerminalInSelectedWorkroom() {
-        guard let workroom = selectedWorkroom, !workroom.hasBlockingWarning else { return }
-        terminals.addTab(for: workroom)
+    /// Open a new terminal tab in the selected target — root or workroom (⌘T).
+    func newTerminalInSelectedTarget() {
+        guard let target = selectedTarget, !target.isMissing else { return }
+        terminals.addTab(for: target)
     }
 
-    /// Close the active terminal tab in the selected workroom (⌘W).
+    /// Close the active terminal tab in the selected target (⌘W).
     func closeCurrentTerminalTab() {
-        guard let workroom = selectedWorkroom,
-              let active = terminals.activeTab(for: workroom) else { return }
-        terminals.closeTab(active.id, for: workroom)
+        guard let target = selectedTarget,
+              let active = terminals.activeTab(for: target) else { return }
+        terminals.closeTab(active.id, for: target)
     }
 
-    /// Focus the terminal tab at `index` (0-based, left-to-right) in the selected
-    /// workroom (⌘1…⌘9). No-ops if there's no tab at that position.
+    /// Focus the terminal tab at `index` (0-based, left-to-right) in the selected target
+    /// (⌘1…⌘9). No-ops if there's no tab at that position.
     func focusTerminalTab(at index: Int) {
-        guard let workroom = selectedWorkroom else { return }
-        let tabs = terminals.tabs(for: workroom)
+        guard let target = selectedTarget else { return }
+        let tabs = terminals.tabs(for: target)
         guard tabs.indices.contains(index) else { return }
-        terminals.select(tabs[index].id, for: workroom)
+        terminals.select(tabs[index].id, for: target)
     }
 
     // MARK: Errors
@@ -244,9 +342,9 @@ final class ScriptLogSession: ObservableObject, Identifiable {
     let id = UUID()
     let title: String
     let phase: String
-    /// The workroom this log is docked under, once the CLI reports it exists. nil while
-    /// the workroom is still being created.
-    var workroomID: Workroom.ID?
+    /// The terminal target id this log is docked under, once the CLI reports the workroom
+    /// exists. nil while the workroom is still being created.
+    var targetID: TerminalTarget.ID?
     @Published private(set) var lines: [LogLine] = []
     @Published private(set) var isFinished = false
     @Published private(set) var failureMessage: String?

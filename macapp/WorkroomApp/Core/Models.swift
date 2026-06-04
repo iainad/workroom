@@ -34,6 +34,104 @@ struct Project: Codable, Identifiable, Hashable {
     var displayName: String { (path as NSString).lastPathComponent }
 }
 
+// MARK: - Project root (sidebar root row)
+//
+// The root is the project directory itself — always selectable, always the first child in
+// the sidebar, never deletable. Its branch/bookmark label is a GUI-only concern (the
+// `workroom` CLI never shows it), so it is resolved app-side by BranchResolver, NOT carried
+// in the `list --json` contract.
+
+/// What kind of reference the working copy is on. Drives the root row's label treatment
+/// (see RootPresentation). `ref_kind`-style, self-describing — the renderer needs no
+/// `project.vcs` cross-reference.
+enum RefKind: Hashable {
+    case branch    // git: on a branch · jj: bookmark(s) on @
+    case ancestor  // jj: no bookmark on @ — showing the nearest ancestor bookmark (the jj norm)
+    case detached  // git: detached HEAD — showing a short SHA
+    case none      // no branch/bookmark resolvable, or not yet resolved
+}
+
+/// A project root's resolved label. `branch` is normalized to nil (never "") so an empty
+/// result is unambiguously `.none`.
+struct RootRef: Hashable {
+    let branch: String?
+    let kind: RefKind
+
+    static let unresolved = RootRef(branch: nil, kind: .none)
+}
+
+/// A place a terminal can be opened: a workroom or a project root. The id is
+/// project-scoped, so same-named workrooms in different projects (and roots) never share a
+/// terminal or setup log.
+struct TerminalTarget: Identifiable, Hashable {
+    let id: String
+    let title: String
+    let path: String
+    let isMissing: Bool
+
+    // The id format lives ONLY here (and in the two builders below). Anything that needs a
+    // target id — terminal/log keying, reaping — goes through these, so the project-scoping
+    // that fixes the same-name collision can't drift.
+    static func workroomID(project: String, name: String) -> String { "wr|\(project)|\(name)" }
+    static func rootID(project: String) -> String { "root|\(project)" }
+}
+
+extension Workroom {
+    /// The terminal target for this workroom within `projectPath`.
+    func target(inProject projectPath: String) -> TerminalTarget {
+        TerminalTarget(id: TerminalTarget.workroomID(project: projectPath, name: name),
+                       title: name, path: path, isMissing: hasBlockingWarning)
+    }
+}
+
+extension Project {
+    /// The always-present project-root target. The project directory can disappear like a
+    /// workroom directory, so `isMissing` is checked against the filesystem.
+    var rootTarget: TerminalTarget {
+        TerminalTarget(id: TerminalTarget.rootID(project: path), title: displayName, path: path,
+                       isMissing: !FileManager.default.fileExists(atPath: path))
+    }
+}
+
+/// Pure mapping from a resolved `RootRef` to the root row's visual treatment. Extracted
+/// from the view so it is unit-testable. `dim` means "unusual" (detached / no branch); the
+/// jj-common `ancestor` state reads healthy (full strength + an `ahead` marker).
+enum RootPresentation {
+    struct Style: Equatable {
+        let label: String
+        let tooltip: String
+        let accessibility: String
+        let ahead: Bool   // trailing "↑" marker (jj ancestor)
+        let dim: Bool     // de-emphasize (detached / none)
+    }
+
+    static func make(_ ref: RootRef) -> Style {
+        switch ref.kind {
+        case .branch:
+            let name = normalized(ref.branch) ?? "root"
+            return Style(label: name, tooltip: "Project root · on \(name)",
+                         accessibility: "Project root, on \(name)", ahead: false, dim: false)
+        case .ancestor:
+            let name = normalized(ref.branch) ?? "root"
+            return Style(label: name, tooltip: "Project root · ahead of \(name)",
+                         accessibility: "Project root, ahead of \(name)", ahead: true, dim: false)
+        case .detached:
+            let name = normalized(ref.branch) ?? "detached"
+            return Style(label: name, tooltip: "Project root · detached HEAD",
+                         accessibility: "Project root, detached at \(name)", ahead: false, dim: true)
+        case .none:
+            return Style(label: "root", tooltip: "Project root",
+                         accessibility: "Project root", ahead: false, dim: true)
+        }
+    }
+
+    /// Treats "" / whitespace like nil (the Go side may emit "" rather than null).
+    private static func normalized(_ s: String?) -> String? {
+        guard let s, !s.trimmingCharacters(in: .whitespaces).isEmpty else { return nil }
+        return s
+    }
+}
+
 // MARK: - Envelopes
 
 /// Common envelope header present on every response; used to detect error responses
