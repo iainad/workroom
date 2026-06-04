@@ -34,3 +34,9 @@ changelog:
       - "^docs:"
       - "^test:"
       - "^chore:"
+
+release:
+  # A clean vX.Y.Z tag publishes as a normal ("Latest") release; a tag with a prerelease
+  # component (e.g. v1.4.0-rc1, -beta, -alpha) is auto-marked as a GitHub pre-release so it
+  # never becomes "Latest".
+  prerelease: auto
