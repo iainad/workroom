@@ -12,8 +12,7 @@ install:
 	go install -ldflags "-X main.version=$(VERSION)" .
 
 lint:
-	go vet ./...
-	test -z "$$(gofmt -l .)"
+	golangci-lint run
 
 clean:
 	rm -f workroom

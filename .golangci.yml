@@ -1,0 +1,23 @@
+# golangci-lint configuration (v1.x). Run with `make lint` or `golangci-lint run`.
+# Default linters (errcheck, gosimple, govet, ineffassign, staticcheck, unused) stay on; the
+# entries below add low-noise formatting/correctness checks. See https://golangci-lint.run.
+run:
+  timeout: 5m
+
+linters:
+  enable:
+    - gofmt # gofmt -s formatting
+    - goimports # import grouping/ordering
+    - misspell # common misspellings in comments/strings
+    - unconvert # redundant type conversions
+
+issues:
+  # Report everything (golangci-lint otherwise caps repeats), so the gate is honest.
+  max-issues-per-linter: 0
+  max-same-issues: 0
+  exclude-rules:
+    # Test setup routinely ignores errors from os.WriteFile/Mkdir, config seeding, etc.;
+    # a real failure surfaces as a failing assertion downstream.
+    - path: _test\.go
+      linters:
+        - errcheck

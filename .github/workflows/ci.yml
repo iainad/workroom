@@ -16,11 +16,12 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Vet
-        run: go vet ./...
-
-      - name: Check formatting
-        run: test -z "$(gofmt -l .)"
+      # golangci-lint subsumes `go vet` (govet) and the gofmt check (gofmt linter). Installed
+      # with `go install` so it's built with the project's Go toolchain (go.mod), matching local.
+      - name: Lint
+        run: |
+          go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64.8
+          "$(go env GOPATH)/bin/golangci-lint" run
 
       - name: Build
         run: go build -o workroom .

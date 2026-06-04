@@ -14,11 +14,13 @@ This repo has two components: the **Go CLI** (root, documented below) and a **ma
 go build -o workroom .              # build binary
 go test ./...                       # run all tests
 go test ./internal/workroom/ -v     # run workroom tests verbose
-go vet ./...                        # lint
+make lint                           # golangci-lint (config: .golangci.yml)
 make build                          # build with version injection
 make test                           # run tests
 make install                        # install to $GOBIN
 ```
+
+Requires `golangci-lint` (v1.x): `go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest`.
 
 ## Architecture
 
