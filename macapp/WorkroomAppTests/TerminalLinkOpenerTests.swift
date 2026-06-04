@@ -1,67 +1,74 @@
 import XCTest
+
 @testable import Workroom
 
 /// Covers the pure path classification/resolution behind ⌘-click-to-open. The actual launch
-/// (login shell + `$EDITOR`) and the kernel cwd lookup are side-effecting and out of scope here.
+/// (`open`) and the kernel cwd lookup are side-effecting and out of scope here.
 final class TerminalLinkOpenerTests: XCTestCase {
 
-    // filePath(from:) — web URLs are left to SwiftTerm (nil); everything else is a path.
+  // filePath(from:) — web URLs are left to SwiftTerm (nil); everything else is a path.
 
-    func testWebURLsAreNotFilePaths() {
-        for url in ["https://example.com/x", "http://a.b", "mailto:me@x.com", "ssh://host", "git://h/r"] {
-            XCTAssertNil(TerminalLinkOpener.filePath(from: url), "\(url) should pass through to the browser handler")
-        }
+  func testWebURLsAreNotFilePaths() {
+    for url in [
+      "https://example.com/x", "http://a.b", "mailto:me@x.com", "ssh://host", "git://h/r",
+    ] {
+      XCTAssertNil(
+        TerminalLinkOpener.filePath(from: url), "\(url) should pass through to the browser handler")
     }
+  }
 
-    func testFileURLBecomesPath() {
-        XCTAssertEqual(TerminalLinkOpener.filePath(from: "file:///tmp/a.txt"), "/tmp/a.txt")
-    }
+  func testFileURLBecomesPath() {
+    XCTAssertEqual(TerminalLinkOpener.filePath(from: "file:///tmp/a.txt"), "/tmp/a.txt")
+  }
 
-    func testBarePathsAreFilePaths() {
-        XCTAssertEqual(TerminalLinkOpener.filePath(from: "src/main.go"), "src/main.go")
-        XCTAssertEqual(TerminalLinkOpener.filePath(from: "/etc/hosts"), "/etc/hosts")
-        XCTAssertEqual(TerminalLinkOpener.filePath(from: "./rel.txt"), "./rel.txt")
-    }
+  func testBarePathsAreFilePaths() {
+    XCTAssertEqual(TerminalLinkOpener.filePath(from: "src/main.go"), "src/main.go")
+    XCTAssertEqual(TerminalLinkOpener.filePath(from: "/etc/hosts"), "/etc/hosts")
+    XCTAssertEqual(TerminalLinkOpener.filePath(from: "./rel.txt"), "./rel.txt")
+  }
 
-    // absolutePath(for:cwd:) — absolute stays put; ~ expands; relative joins the cwd.
+  // absolutePath(for:cwd:) — absolute stays put; ~ expands; relative joins the cwd.
 
-    func testAbsolutePathUnchanged() {
-        XCTAssertEqual(TerminalLinkOpener.absolutePath(for: "/etc/hosts", cwd: "/somewhere"), "/etc/hosts")
-    }
+  func testAbsolutePathUnchanged() {
+    XCTAssertEqual(
+      TerminalLinkOpener.absolutePath(for: "/etc/hosts", cwd: "/somewhere"), "/etc/hosts")
+  }
 
-    func testTildeExpands() {
-        let home = NSHomeDirectory()
-        XCTAssertEqual(TerminalLinkOpener.absolutePath(for: "~/x.txt", cwd: nil), "\(home)/x.txt")
-    }
+  func testTildeExpands() {
+    let home = NSHomeDirectory()
+    XCTAssertEqual(TerminalLinkOpener.absolutePath(for: "~/x.txt", cwd: nil), "\(home)/x.txt")
+  }
 
-    func testRelativeJoinsCwd() {
-        XCTAssertEqual(TerminalLinkOpener.absolutePath(for: "src/main.go", cwd: "/proj"), "/proj/src/main.go")
-    }
+  func testRelativeJoinsCwd() {
+    XCTAssertEqual(
+      TerminalLinkOpener.absolutePath(for: "src/main.go", cwd: "/proj"), "/proj/src/main.go")
+  }
 
-    func testRelativeWithoutCwdIsNil() {
-        // No working directory known → can't resolve a relative path.
-        XCTAssertNil(TerminalLinkOpener.absolutePath(for: "src/main.go", cwd: nil))
-    }
+  func testRelativeWithoutCwdIsNil() {
+    // No working directory known → can't resolve a relative path.
+    XCTAssertNil(TerminalLinkOpener.absolutePath(for: "src/main.go", cwd: nil))
+  }
 
-    // openArguments(path:editorBundleID:) — default app vs a chosen, installed editor.
+  // openArguments(path:editorBundleID:) — default app vs a chosen, installed editor.
 
-    func testNoEditorUsesDefaultApp() {
-        XCTAssertEqual(TerminalLinkOpener.openArguments(path: "/x.txt", editorBundleID: nil), ["/x.txt"])
-        XCTAssertEqual(TerminalLinkOpener.openArguments(path: "/x.txt", editorBundleID: ""), ["/x.txt"])
-    }
+  func testNoEditorUsesDefaultApp() {
+    XCTAssertEqual(
+      TerminalLinkOpener.openArguments(path: "/x.txt", editorBundleID: nil), ["/x.txt"])
+    XCTAssertEqual(TerminalLinkOpener.openArguments(path: "/x.txt", editorBundleID: ""), ["/x.txt"])
+  }
 
-    func testInstalledEditorOpensWithBundleID() {
-        // Finder is always installed, so it stands in for a chosen editor here.
-        XCTAssertEqual(
-            TerminalLinkOpener.openArguments(path: "/x.txt", editorBundleID: "com.apple.finder"),
-            ["-b", "com.apple.finder", "/x.txt"]
-        )
-    }
+  func testInstalledEditorOpensWithBundleID() {
+    // Finder is always installed, so it stands in for a chosen editor here.
+    XCTAssertEqual(
+      TerminalLinkOpener.openArguments(path: "/x.txt", editorBundleID: "com.apple.finder"),
+      ["-b", "com.apple.finder", "/x.txt"]
+    )
+  }
 
-    func testUninstalledEditorFallsBackToDefaultApp() {
-        XCTAssertEqual(
-            TerminalLinkOpener.openArguments(path: "/x.txt", editorBundleID: "com.example.nope"),
-            ["/x.txt"]
-        )
-    }
+  func testUninstalledEditorFallsBackToDefaultApp() {
+    XCTAssertEqual(
+      TerminalLinkOpener.openArguments(path: "/x.txt", editorBundleID: "com.example.nope"),
+      ["/x.txt"]
+    )
+  }
 }

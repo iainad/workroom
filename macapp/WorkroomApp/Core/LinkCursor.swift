@@ -14,27 +14,28 @@ import AppKit
 /// Link detection lives in `TerminalLinks` (shared with `TerminalLinkOpener`).
 @MainActor
 enum LinkCursor {
-    /// Whether *we* last forced the pointing-hand cursor. We only restore the I-beam when we
-    /// were the one who changed it, so we never stomp on cursors owned by other views.
-    private static var pointerActive = false
+  /// Whether *we* last forced the pointing-hand cursor. We only restore the I-beam when we
+  /// were the one who changed it, so we never stomp on cursors owned by other views.
+  private static var pointerActive = false
 
-    /// Re-evaluate the cursor for the current pointer location and modifier state. Cheap and
-    /// idempotent — safe to call on every mouse-moved / flags-changed event.
-    static func update() {
-        let terminal = TerminalLinks.terminalUnderMouse()
-        if let terminal,
-           NSEvent.modifierFlags.contains(.command),
-           TerminalLinks.linkUnderMouse(in: terminal) != nil {
-            NSCursor.pointingHand.set()
-            pointerActive = true
-        } else if pointerActive {
-            // Moving off a link *within* a terminal needs an explicit reset — no cursor-rect
-            // boundary is crossed, so AppKit won't restore the I-beam on its own. Once the
-            // pointer has left the terminal entirely, the destination view's cursor rect
-            // reasserts itself on the crossing, so we just drop our override rather than flash
-            // an I-beam over, say, the sidebar.
-            if terminal != nil { NSCursor.iBeam.set() }
-            pointerActive = false
-        }
+  /// Re-evaluate the cursor for the current pointer location and modifier state. Cheap and
+  /// idempotent — safe to call on every mouse-moved / flags-changed event.
+  static func update() {
+    let terminal = TerminalLinks.terminalUnderMouse()
+    if let terminal,
+      NSEvent.modifierFlags.contains(.command),
+      TerminalLinks.linkUnderMouse(in: terminal) != nil
+    {
+      NSCursor.pointingHand.set()
+      pointerActive = true
+    } else if pointerActive {
+      // Moving off a link *within* a terminal needs an explicit reset — no cursor-rect
+      // boundary is crossed, so AppKit won't restore the I-beam on its own. Once the
+      // pointer has left the terminal entirely, the destination view's cursor rect
+      // reasserts itself on the crossing, so we just drop our override rather than flash
+      // an I-beam over, say, the sidebar.
+      if terminal != nil { NSCursor.iBeam.set() }
+      pointerActive = false
     }
+  }
 }
