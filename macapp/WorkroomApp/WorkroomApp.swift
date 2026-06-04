@@ -71,6 +71,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
       return event
     }
   }
+
+  /// Always confirm before quitting: quitting tears down every terminal (and anything
+  /// running in them) at once, with no undo. `@MainActor` so the `NSAlert` (a main-actor
+  /// AppKit type) call is clean — AppKit always invokes this on the main thread. Closing a
+  /// window doesn't quit the app, so this gate fires only on a real quit.
+  @MainActor
+  func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+    let alert = NSAlert()
+    alert.messageText = "Quit Workroom?"
+    alert.informativeText = "Quitting closes all terminals and stops any running processes."
+    alert.addButton(withTitle: "Quit")
+    alert.addButton(withTitle: "Cancel")
+    return alert.runModal() == .alertFirstButtonReturn ? .terminateNow : .terminateCancel
+  }
 }
 
 /// Whether the focused window has a usable terminal target selected (a root or a workroom,
