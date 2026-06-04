@@ -29,6 +29,7 @@ struct WorkroomApp: App {
 /// menu, and the monitor sees the keys before the focused terminal does.
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var monitor: Any?
+    private var mouseUpMonitor: Any?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
@@ -39,6 +40,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             else { return event }
             Task { @MainActor in AppStore.shared.focusTerminalTab(at: digit - 1) }
             return nil // consume so it doesn't reach the terminal
+        }
+
+        // Copy-on-select: after each left-mouse-up, copy the focused terminal's selection
+        // (if any) to the pasteboard. A monitor — not a `mouseUp` override — because
+        // SwiftTerm's `mouseUp` is `public`, not `open`. See `CopyOnSelect`.
+        mouseUpMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseUp) { event in
+            Task { @MainActor in CopyOnSelect.copyActiveSelection() }
+            return event // don't consume — the terminal still needs the event
         }
     }
 }
@@ -74,8 +83,14 @@ extension FocusedValues {
 struct WorkroomCommands: Commands {
     @FocusedValue(\.workroomSelected) private var workroomSelected
     @FocusedValue(\.hasTerminal) private var hasTerminal
+    @AppStorage(CopyOnSelect.storageKey) private var copyOnSelect = true
 
     var body: some Commands {
+        // Sits in the Edit menu next to Cut/Copy/Paste; renders as a checkmarked item.
+        CommandGroup(after: .pasteboard) {
+            Toggle("Copy on Select", isOn: $copyOnSelect)
+        }
+
         CommandGroup(after: .newItem) {
             Button("New Terminal") {
                 AppStore.shared.newTerminalInSelectedTarget()

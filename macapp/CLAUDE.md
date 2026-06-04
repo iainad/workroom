@@ -16,12 +16,19 @@ Or by hand:
 xcodegen generate                                                   # regenerate .xcodeproj (gitignored)
 xcodebuild -project WorkroomApp.xcodeproj -scheme WorkroomApp \
   -configuration Debug -derivedDataPath DerivedData build
+
+xcodebuild test -project WorkroomApp.xcodeproj -scheme WorkroomApp \
+  -configuration Debug -derivedDataPath DerivedData -destination 'platform=macOS'  # WorkroomAppTests
 ```
 
 Reuse `DerivedData/` so SwiftTerm isn't re-resolved every build.
 
 ## Gotchas
 
+- **The Swift module is `Workroom`, not `WorkroomApp`** (the target is `WorkroomApp`, but
+  `PRODUCT_NAME`/module is `Workroom`). Tests use `@testable import Workroom`, and a test
+  target's `TEST_HOST` must point at `Workroom.app/Contents/MacOS/Workroom` — XcodeGen's
+  auto-derived (target-name-based) host is wrong and fails with "Could not find test host".
 - **New `.swift` file → run `xcodegen generate` first.** XcodeGen expands the source
   glob into explicit file refs in the (gitignored) `.xcodeproj`, so a new file is
   invisible to `xcodebuild`/Xcode until the project is regenerated.
@@ -35,6 +42,11 @@ Reuse `DerivedData/` so SwiftTerm isn't re-resolved every build.
   not menu items, so they fire before the terminal swallows the keys.
 
 ## Layout
+
+**VCS info that only the GUI needs** (e.g. the sidebar root row's current branch/bookmark)
+is resolved app-side in `Core/BranchResolver.swift` (per project, async, with a per-call
+timeout) — deliberately NOT added to the `workroom --json` contract, which the human CLI
+never shows.
 
 `WorkroomApp/Core/` — store, CLI wrapper, terminal sessions, models, theme.
 `WorkroomApp/Views/` — `NavigationSplitView` tree sidebar + terminal detail.
