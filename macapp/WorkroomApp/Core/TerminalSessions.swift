@@ -52,6 +52,17 @@ final class TerminalSessions: ObservableObject {
         activeByWorkroom[workroom.id] = tabID
     }
 
+    /// Reorder (drag-and-drop in the tab bar): move the dragged tab to `index` in the tab
+    /// order. `index` is interpreted against the array *after* the dragged tab is removed,
+    /// and is clamped to bounds. The active tab is unaffected.
+    func moveTab(_ draggedID: TerminalTab.ID, toIndex index: Int, for workroom: Workroom) {
+        guard var tabs = tabsByWorkroom[workroom.id],
+              let from = tabs.firstIndex(where: { $0.id == draggedID }) else { return }
+        let moved = tabs.remove(at: from)
+        tabs.insert(moved, at: max(0, min(index, tabs.count)))
+        tabsByWorkroom[workroom.id] = tabs
+    }
+
     /// Close a tab. Closing the last one leaves the workroom with no terminals — the tab
     /// bar (and its add button) stays, and the active tab becomes nil.
     func closeTab(_ tabID: TerminalTab.ID, for workroom: Workroom) {

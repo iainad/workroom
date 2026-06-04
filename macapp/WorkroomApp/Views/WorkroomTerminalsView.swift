@@ -9,6 +9,15 @@ struct WorkroomTerminalsView: View {
     @State private var hoveredTab: TerminalTab.ID?
     @State private var addHovering = false
 
+    // Drag-to-reorder. The tab order is *frozen* for the duration of a drag: the dragged
+    // chip simply follows the cursor (its slot never moves, so it can't jump), and the
+    // other chips slide aside to open a gap. The reorder is committed once, on drop.
+    @State private var draggingID: TerminalTab.ID?
+    @State private var dragTranslation: CGFloat = 0
+    @State private var widths: [TerminalTab.ID: CGFloat] = [:]
+
+    private let tabSpacing: CGFloat = 4
+
     var body: some View {
         let tabs = sessions.tabs(for: workroom)
         let active = sessions.activeTab(for: workroom)
@@ -35,14 +44,28 @@ struct WorkroomTerminalsView: View {
     }
 
     private func tabBar(_ tabs: [TerminalTab], activeID: TerminalTab.ID?) -> some View {
-        HStack(spacing: 0) {
+        // Resolve the drag once per layout: which tab is dragging, and where it would land.
+        let draggedIndex = draggingID.flatMap { id in tabs.firstIndex { $0.id == id } }
+        let target = draggedIndex.map { dropTargetIndex(tabs, draggedIndex: $0) }
+        let draggedWidth = draggingID.flatMap { widths[$0] } ?? 0
+
+        return HStack(spacing: 0) {
             ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 4) {
-                    ForEach(tabs) { tab in
-                        tabChip(tab, isActive: tab.id == activeID)
+                HStack(spacing: tabSpacing) {
+                    ForEach(Array(tabs.enumerated()), id: \.element.id) { index, tab in
+                        let isDragging = draggingID == tab.id
+                        // Dragged chip tracks the cursor; the rest shift to open the gap.
+                        let offsetX = isDragging
+                            ? dragTranslation
+                            : gapShift(for: index, draggedIndex: draggedIndex, target: target, amount: draggedWidth + tabSpacing)
+                        tabChip(tab, isActive: tab.id == activeID, isDragging: isDragging)
+                            .offset(x: offsetX)
+                            .zIndex(isDragging ? 1 : 0)
+                            .animation(isDragging ? nil : .easeInOut(duration: 0.18), value: offsetX)
                     }
                 }
                 .padding(.horizontal, 8)
+                .onPreferenceChange(TabWidthKey.self) { widths = $0 }
             }
             Button {
                 sessions.addTab(for: workroom)
@@ -64,19 +87,16 @@ struct WorkroomTerminalsView: View {
         .padding(.vertical, 4)
     }
 
-    private func tabChip(_ tab: TerminalTab, isActive: Bool) -> some View {
-        let showClose = hoveredTab == tab.id
+    private func tabChip(_ tab: TerminalTab, isActive: Bool, isDragging: Bool) -> some View {
+        let showClose = hoveredTab == tab.id && draggingID == nil
         return Text(tab.title)
             .font(.callout)
             .lineLimit(1)
             // On hover, fade the title's right edge so the close button — overlaid on top of
-            // the text and taking no layout space — reads cleanly. Off-hover there's no fade
-            // and no reserved space, so the tab is sized to just its text.
+            // the text and taking no layout space — reads cleanly.
             .mask(
                 HStack(spacing: 0) {
                     Rectangle()
-                    // Fade the title out, then a fully-clear zone the close button sits in
-                    // so there's breathing room around it.
                     LinearGradient(
                         stops: [
                             .init(color: .black, location: 0),
@@ -100,16 +120,102 @@ struct WorkroomTerminalsView: View {
                 .allowsHitTesting(showClose)
                 .padding(.trailing, 4)
             }
-            .background(
+            // Subtle highlight for active/hover; a solid lifted chip while dragging.
+            .background {
                 RoundedRectangle(cornerRadius: 6)
-                    .fill(Color.primary.opacity(isActive ? 0.1 : (hoveredTab == tab.id ? 0.05 : 0)))
-            )
+                    .fill(Color.primary.opacity(isActive ? 0.1 : (showClose ? 0.05 : 0)))
+            }
+            .background {
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(.thickMaterial)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 6)
+                            .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
+                    )
+                    .opacity(isDragging ? 1 : 0)
+            }
+            // Measure the chip's natural width for the drag gap math.
+            .background {
+                GeometryReader { geo in
+                    Color.clear.preference(key: TabWidthKey.self, value: [tab.id: geo.size.width])
+                }
+            }
             .contentShape(Rectangle())
+            .scaleEffect(isDragging ? 1.04 : 1)
+            .shadow(color: .black.opacity(isDragging ? 0.25 : 0), radius: isDragging ? 6 : 0, y: 2)
             .onHover { inside in
                 if inside { hoveredTab = tab.id } else if hoveredTab == tab.id { hoveredTab = nil }
             }
             .onTapGesture { sessions.select(tab.id, for: workroom) }
-            .animation(.easeInOut(duration: 0.12), value: showClose)
+            // Measure in .global space: a .local drag reads coordinates relative to the
+            // chip, which itself moves via .offset(dragTranslation) — that feedback loop
+            // dampens the translation so the chip lags the cursor. Global space is fixed.
+            .gesture(
+                DragGesture(minimumDistance: 6, coordinateSpace: .global)
+                    .onChanged { value in
+                        if draggingID == nil { draggingID = tab.id }
+                        guard draggingID == tab.id else { return }
+                        dragTranslation = value.translation.width
+                    }
+                    .onEnded { _ in commitDrag() }
+            )
+    }
+
+    /// Where the dragged tab would land given its current translation: walk outward from
+    /// its start index, crossing each neighbour once the drag passes that neighbour's
+    /// half-width. Reaches index 0 and the last slot.
+    private func dropTargetIndex(_ tabs: [TerminalTab], draggedIndex di: Int) -> Int {
+        var idx = di
+        if dragTranslation > 0 {
+            var accumulated: CGFloat = 0
+            var j = di + 1
+            while j < tabs.count {
+                let span = (widths[tabs[j].id] ?? 0) + tabSpacing
+                if dragTranslation > accumulated + span / 2 { idx = j; accumulated += span; j += 1 }
+                else { break }
+            }
+        } else if dragTranslation < 0 {
+            var accumulated: CGFloat = 0
+            var j = di - 1
+            while j >= 0 {
+                let span = (widths[tabs[j].id] ?? 0) + tabSpacing
+                if -dragTranslation > accumulated + span / 2 { idx = j; accumulated += span; j -= 1 }
+                else { break }
+            }
+        }
+        return idx
+    }
+
+    /// Horizontal shift for a non-dragged chip so the row opens a gap at the drop target.
+    private func gapShift(for index: Int, draggedIndex: Int?, target: Int?, amount: CGFloat) -> CGFloat {
+        guard let di = draggedIndex, let ti = target else { return 0 }
+        if di < ti, index > di, index <= ti { return -amount } // dragging right: slide left
+        if di > ti, index >= ti, index < di { return amount }  // dragging left: slide right
+        return 0
+    }
+
+    /// Commit the reorder on drop, then clear drag state (animated, so everything settles).
+    private func commitDrag() {
+        let tabs = sessions.tabs(for: workroom)
+        if let id = draggingID, let di = tabs.firstIndex(where: { $0.id == id }) {
+            let ti = dropTargetIndex(tabs, draggedIndex: di)
+            withAnimation(.easeInOut(duration: 0.2)) {
+                sessions.moveTab(id, toIndex: ti, for: workroom)
+                draggingID = nil
+                dragTranslation = 0
+            }
+        } else {
+            draggingID = nil
+            dragTranslation = 0
+        }
+    }
+}
+
+/// Collects each tab chip's natural width for the drag gap math.
+private struct TabWidthKey: PreferenceKey {
+    static var defaultValue: [TerminalTab.ID: CGFloat] = [:]
+    static func reduce(value: inout [TerminalTab.ID: CGFloat], nextValue: () -> [TerminalTab.ID: CGFloat]) {
+        value.merge(nextValue()) { _, new in new }
     }
 }
 
