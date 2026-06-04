@@ -11,7 +11,8 @@ enum ThemePreference: String, CaseIterable {
   /// the appearance through NSApp rather than SwiftUI's `preferredColorScheme` because
   /// the latter fails to revert to the system appearance on macOS once a scheme has
   /// been forced. Setting `NSApp.appearance = nil` reliably tracks the system (and
-  /// live-updates with it), and also themes the embedded AppKit terminal.
+  /// live-updates with it). The embedded terminals follow the appearance separately
+  /// (see `ThemedTerminalView` / `TerminalSessions.applyThemeToAll`).
   var nsAppearance: NSAppearance? {
     switch self {
     case .system: return nil

@@ -47,9 +47,12 @@ struct RootView: View {
   }
 
   /// Pushes the chosen appearance onto the running app. nil (System) tells AppKit to
-  /// follow the OS appearance and keep tracking it.
+  /// follow the OS appearance and keep tracking it. Terminals follow the appearance too, but
+  /// only those currently in a window get AppKit's change hook — so sweep them all explicitly
+  /// (see `TerminalSessions.applyThemeToAll`).
   private func applyAppearance() {
     NSApp.appearance = theme.nsAppearance
+    store.terminals.applyThemeToAll()
   }
 
   @ViewBuilder

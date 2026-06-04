@@ -95,8 +95,18 @@ final class TerminalSessions: ObservableObject {
     for id in Array(tabsByTarget.keys) { reap(id) }
   }
 
+  /// Re-theme every live terminal — mounted and cached-detached alike — to the current app
+  /// appearance. The per-view appearance hooks (see `ThemedTerminalView`) only fire for views in
+  /// a window, so a detached background tab is reached only here; called on each explicit theme
+  /// change from `RootView.applyAppearance()`.
+  func applyThemeToAll() {
+    for tabs in tabsByTarget.values {
+      for tab in tabs { (tab.view as? ThemedTerminalView)?.applyTheme() }
+    }
+  }
+
   private func makeTerminal(for target: TerminalTarget) -> LocalProcessTerminalView {
-    let term = LocalProcessTerminalView(frame: .zero)
+    let term = ThemedTerminalView(frame: .zero)
 
     let shell = ShellEnvironment.loginShell()
     let shellName = (shell as NSString).lastPathComponent
