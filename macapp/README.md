@@ -24,6 +24,18 @@ xcodegen generate          # writes WorkroomApp.xcodeproj (gitignored) from proj
 open WorkroomApp.xcodeproj  # then ⌘R in Xcode
 ```
 
+Or build and launch from the command line, no Xcode UI:
+
+```bash
+Scripts/run.sh             # xcodegen (if needed) → xcodebuild (Debug) → relaunch the app
+```
+
+> **Adding a source file?** Re-run `xcodegen generate` first. XcodeGen expands the
+> `WorkroomApp/` source glob into explicit file references in the (gitignored)
+> `.xcodeproj`, so a newly added `.swift` file stays invisible to Xcode and `xcodebuild`
+> until the project is regenerated. (`Scripts/run.sh` only regenerates when the
+> `.xcodeproj` is missing, so regenerate by hand after adding files.)
+
 Xcode resolves the SwiftTerm Swift Package, and the `Build & embed workroom helper`
 script phase (`Scripts/build-helper.sh`) compiles the Go CLI into
 `Workroom.app/Contents/Resources/workroom` and signs it. (Resources, not

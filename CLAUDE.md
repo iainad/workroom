@@ -6,6 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Workroom is a standalone CLI tool (Go binary) for creating and managing development workrooms using Git worktrees or JJ (Jujutsu) workspaces. It auto-detects VCS type, generates friendly workroom names, and manages configuration at `~/.config/workroom/config.json`.
 
+This repo has two components: the **Go CLI** (root, documented below) and a **macOS app** (`macapp/` — see `macapp/CLAUDE.md`) that bundles the CLI and drives it over the machine-readable `--json` API (`list`/`create`/`delete`/`add-project --json`).
+
 ## Build & Test
 
 ```bash
