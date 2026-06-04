@@ -30,6 +30,8 @@ struct WorkroomApp: App {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var monitor: Any?
     private var mouseUpMonitor: Any?
+    private var mouseMovedMonitor: Any?
+    private var flagsChangedMonitor: Any?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
@@ -48,6 +50,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         mouseUpMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseUp) { event in
             Task { @MainActor in CopyOnSelect.copyActiveSelection() }
             return event // don't consume — the terminal still needs the event
+        }
+
+        // Pointing-hand cursor over ⌘-clickable links/paths. The `.mouseMoved` monitor tracks
+        // movement while ⌘ is held (SwiftTerm only emits moved events then); the `.flagsChanged`
+        // monitor catches ⌘ press/release while the pointer is stationary. Monitors — not a
+        // `cursorUpdate` override — because SwiftTerm's cursor methods are `public`, not `open`.
+        // See `LinkCursor`. Both deliberately don't consume the event.
+        mouseMovedMonitor = NSEvent.addLocalMonitorForEvents(matching: .mouseMoved) { event in
+            Task { @MainActor in LinkCursor.update() }
+            return event
+        }
+        flagsChangedMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { event in
+            Task { @MainActor in LinkCursor.update() }
+            return event
         }
     }
 }
