@@ -148,6 +148,14 @@ struct WorkroomCommands: Commands {
   @AppStorage(NotificationsInspector.storageKey) private var showNotifications = false
 
   var body: some Commands {
+    CommandGroup(after: .appInfo) {
+      // App menu: symlink the bundled CLI into the user's PATH (like VS Code's "Install 'code'
+      // command"). Prompts for admin only if the target dir needs it. See CommandLineInstaller.
+      Button("Install ‘workroom’ Command in PATH…") {
+        Task { await CommandLineInstaller.runFromMenu() }
+      }
+    }
+
     CommandGroup(after: .sidebar) {
       // View menu: toggle the notifications inspector (checkmark reflects open/closed).
       Toggle("Show Notifications", isOn: $showNotifications)

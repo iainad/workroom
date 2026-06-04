@@ -158,13 +158,14 @@ final class WorkroomCLI {
 
   // MARK: Binary location
 
-  private func binaryURL() throws -> URL {
-    // Embedded in Contents/Resources (NOT Contents/MacOS — "workroom" would collide
-    // with the "Workroom" app executable on the case-insensitive filesystem).
+  /// The bundled `workroom` binary in Contents/Resources (NOT Contents/MacOS — "workroom"
+  /// would collide with the "Workroom" app executable on the case-insensitive filesystem),
+  /// or a dev fallback next to the running executable. Static so `CommandLineInstaller` can
+  /// resolve the same binary when symlinking it into the user's PATH.
+  static func bundledBinaryURL() throws -> URL {
     if let url = Bundle.main.url(forResource: "workroom", withExtension: nil) {
       return url
     }
-    // Dev fallback: a `workroom` next to the running executable.
     let exeDir = Bundle.main.bundleURL.deletingLastPathComponent()
     let candidate = exeDir.appendingPathComponent("workroom")
     if FileManager.default.isExecutableFile(atPath: candidate.path) {
@@ -205,7 +206,7 @@ final class WorkroomCLI {
   private func run(_ args: [String], timeout: TimeInterval, onEvent: ((StreamEvent) -> Void)? = nil)
     async throws -> CLIResult
   {
-    let url = try binaryURL()
+    let url = try Self.bundledBinaryURL()
     return try await withCheckedThrowingContinuation { continuation in
       let proc = Process()
       proc.executableURL = url
