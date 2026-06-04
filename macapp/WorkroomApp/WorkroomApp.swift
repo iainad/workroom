@@ -23,6 +23,10 @@ struct WorkroomApp: App {
         .task { await store.bootstrap() }
     }
     .commands { WorkroomCommands() }
+
+    Settings {
+      SettingsView()
+    }
   }
 }
 
@@ -140,39 +144,14 @@ extension FocusedValues {
 struct WorkroomCommands: Commands {
   @FocusedValue(\.workroomSelected) private var workroomSelected
   @FocusedValue(\.hasTerminal) private var hasTerminal
-  @AppStorage(CopyOnSelect.storageKey) private var copyOnSelect = true
-  // Bundle id of the editor for ⌘-clicked file paths; "" = the file's default app.
-  @AppStorage(TerminalLinkOpener.editorStorageKey) private var pathEditor = ""
   // Shared with RootView's inspector + toolbar toggle (same key) so all three stay in sync.
   @AppStorage(NotificationsInspector.storageKey) private var showNotifications = false
 
   var body: some Commands {
-    // Edit menu: a checkmarked Copy on Select toggle, set off from Cut/Copy/Paste by a divider.
-    CommandGroup(after: .pasteboard) {
-      Divider()
-      Toggle("Copy on Select", isOn: $copyOnSelect)
-    }
-
     CommandGroup(after: .sidebar) {
       // View menu: toggle the notifications inspector (checkmark reflects open/closed).
       Toggle("Show Notifications", isOn: $showNotifications)
         .keyboardShortcut("n", modifiers: [.command, .option])
-    }
-
-    // View menu: which app a ⌘-clicked terminal file path opens in. A submenu of radio items:
-    // "Default App" (the file's type association) plus each installed supported editor.
-    CommandGroup(after: .sidebar) {
-      Menu("Open File Paths in...") {
-        Picker("Open File Paths in...", selection: $pathEditor) {
-          Text("Default App").tag("")
-          ForEach(ExternalEditor.installed) { editor in
-            Text(editor.name).tag(editor.id)
-          }
-        }
-        .pickerStyle(.inline)
-        .labelsHidden()
-      }
-      Divider()
     }
 
     CommandGroup(after: .newItem) {

@@ -34,6 +34,7 @@ struct NotificationsPanel: View {
               Image(systemName: "checkmark.circle")
             }
             .help("Mark all read")
+            .accessibilityLabel("Mark all read")
             .disabled(!notifications.hasUnread)
           }
           ToolbarItem(placement: .primaryAction) {
@@ -43,6 +44,7 @@ struct NotificationsPanel: View {
               Image(systemName: "trash")
             }
             .help("Clear")
+            .accessibilityLabel("Clear notifications")
             .disabled(notifications.items.isEmpty)
           }
         }

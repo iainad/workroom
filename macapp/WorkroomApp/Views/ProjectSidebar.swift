@@ -341,6 +341,7 @@ private struct CreateRowButton: View {
     .buttonStyle(.plain)
     .onHover { hovering = $0 }
     .help(help)
+    .accessibilityLabel(help)
   }
 }
 
@@ -367,6 +368,7 @@ private struct DeleteRowButton: View {
     .buttonStyle(.plain)
     .onHover { hovering = $0 }
     .help("Delete \(name)")
+    .accessibilityLabel("Delete \(name)")
     .opacity(visible ? 1 : 0)
     .allowsHitTesting(visible)
   }

@@ -60,8 +60,13 @@ struct RootView: View {
       NotificationsPanel(isOpen: showNotifications)
         .inspectorColumnWidth(min: 260, ideal: 300, max: 420)
     }
-    .onAppear { applyAppearance() }
+    .onAppear {
+      applyAppearance()
+      updateDockBadge(notifications.totalUnread)
+    }
     .onChange(of: theme) { _ in applyAppearance() }
+    // Mirror the aggregate unread count onto the Dock icon badge.
+    .onChange(of: notifications.totalUnread) { updateDockBadge($0) }
     // Keep the root branch labels reasonably current: refresh when the app regains
     // focus (throttled, so rapid alt-tabbing doesn't fork a git/jj process per project).
     // Regaining focus also clears the now-visible terminal's unread (you're looking at it).
@@ -81,6 +86,11 @@ struct RootView: View {
   private func applyAppearance() {
     NSApp.appearance = theme.nsAppearance
     store.terminals.applyThemeToAll()
+  }
+
+  /// Show the unread count on the Dock icon, clearing the badge at zero (HIG 7.4).
+  private func updateDockBadge(_ count: Int) {
+    NSApp.dockTile.badgeLabel = count > 0 ? "\(count)" : nil
   }
 
   @ViewBuilder
@@ -170,6 +180,7 @@ struct RootView: View {
 struct ScriptLogContent: View {
   @ObservedObject var session: ScriptLogSession
   var onClose: () -> Void
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   var body: some View {
     VStack(spacing: 0) {
@@ -197,6 +208,7 @@ struct ScriptLogContent: View {
       .buttonStyle(.plain)
       .foregroundStyle(.secondary)
       .help("Close log")
+      .accessibilityLabel("Close log")
     }
     .padding(.horizontal, 12)
     .padding(.vertical, 6)
@@ -237,7 +249,9 @@ struct ScriptLogContent: View {
       }
       .onChange(of: session.lines.count) { _ in
         if let last = session.lines.last {
-          withAnimation(.easeOut(duration: 0.1)) { proxy.scrollTo(last.id, anchor: .bottom) }
+          withAnimation(reduceMotion ? nil : .easeOut(duration: 0.1)) {
+            proxy.scrollTo(last.id, anchor: .bottom)
+          }
         }
       }
     }

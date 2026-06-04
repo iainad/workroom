@@ -7,6 +7,7 @@ struct WorkroomTerminalsView: View {
   let target: TerminalTarget
   @ObservedObject var sessions: TerminalSessions
   @EnvironmentObject var notifications: NotificationCenterStore
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @State private var hoveredTab: TerminalTab.ID?
   @State private var addHovering = false
 
@@ -79,7 +80,8 @@ struct WorkroomTerminalsView: View {
             tabChip(tab, isActive: tab.id == activeID, isDragging: isDragging)
               .offset(x: offsetX)
               .zIndex(isDragging ? 1 : 0)
-              .animation(isDragging ? nil : .easeInOut(duration: 0.18), value: offsetX)
+              .animation(
+                isDragging || reduceMotion ? nil : .easeInOut(duration: 0.18), value: offsetX)
           }
         }
         .padding(.horizontal, 8)
@@ -104,6 +106,7 @@ struct WorkroomTerminalsView: View {
       .onHover { addHovering = $0 }
       .padding(.horizontal, 8)
       .help("New terminal")
+      .accessibilityLabel("New terminal")
     }
     .padding(.vertical, 4)
   }
@@ -141,6 +144,7 @@ struct WorkroomTerminalsView: View {
           sessions.closeTab(tab.id, for: target)
         }
         .help("Close \(tab.title)")
+        .accessibilityLabel("Close \(tab.title)")
         .opacity(showClose ? 1 : 0)
         .allowsHitTesting(showClose)
         .padding(.trailing, 4)
@@ -244,7 +248,7 @@ struct WorkroomTerminalsView: View {
     let tabs = sessions.tabs(for: target)
     if let id = draggingID, let di = tabs.firstIndex(where: { $0.id == id }) {
       let ti = dropTargetIndex(tabs, draggedIndex: di)
-      withAnimation(.easeInOut(duration: 0.2)) {
+      withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) {
         sessions.moveTab(id, toIndex: ti, for: target)
         draggingID = nil
         dragTranslation = 0
