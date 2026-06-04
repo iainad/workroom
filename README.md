@@ -47,7 +47,7 @@ go install github.com/joelmoss/workroom@latest
 ```bash
 git clone https://github.com/joelmoss/workroom.git
 cd workroom
-make build
+make cli-build
 ```
 
 ## Requirements

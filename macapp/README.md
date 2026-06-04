@@ -24,17 +24,24 @@ xcodegen generate          # writes WorkroomApp.xcodeproj (gitignored) from proj
 open WorkroomApp.xcodeproj  # then ⌘R in Xcode
 ```
 
-Or build and launch from the command line, no Xcode UI:
+Or use the repo-root Makefile — the single entry point for every dev task, with the app
+namespaced under `app-*` (run from the **repo root**):
 
 ```bash
-Scripts/run.sh             # xcodegen (if needed) → xcodebuild (Debug) → relaunch the app
+make app-run        # xcodegen (if needed) → xcodebuild (Debug) → relaunch the app
+make app-build      # build only
+make app-test       # run WorkroomAppTests
+make app-format     # swift-format, rewrite sources in place
+make app-lint       # swift-format --strict
+make app-generate   # force-regenerate the .xcodeproj
+make app-release    # notarized Release build (see below)
 ```
 
-> **Adding a source file?** Re-run `xcodegen generate` first. XcodeGen expands the
-> `WorkroomApp/` source glob into explicit file references in the (gitignored)
-> `.xcodeproj`, so a newly added `.swift` file stays invisible to Xcode and `xcodebuild`
-> until the project is regenerated. (`Scripts/run.sh` only regenerates when the
-> `.xcodeproj` is missing, so regenerate by hand after adding files.)
+> **Adding a source file?** Run `make app-generate` first. XcodeGen expands the `WorkroomApp/`
+> source glob into explicit file references in the (gitignored) `.xcodeproj`, so a newly added
+> `.swift` file stays invisible to Xcode and `xcodebuild` until the project is regenerated.
+> (`make app-run`/`make app-build` only regenerate when the `.xcodeproj` is missing, so
+> regenerate by hand after adding files.)
 
 Xcode resolves the SwiftTerm Swift Package, and the `Build & embed workroom helper`
 script phase (`Scripts/build-helper.sh`) compiles the Go CLI into
@@ -61,7 +68,7 @@ xcrun notarytool store-credentials "workroom-notary" \
 Then:
 
 ```bash
-macapp/Scripts/release.sh   # builds Release, verifies signing, notarizes, staples, spctl-checks
+make app-release   # builds Release, verifies signing, notarizes, staples, spctl-checks (Scripts/release.sh)
 ```
 
 Prefer not to use XcodeGen? Create a SwiftUI macOS App target manually, add the

@@ -14,13 +14,21 @@ This repo has two components: the **Go CLI** (root, documented below) and a **ma
 go build -o workroom .              # build binary
 go test ./...                       # run all tests
 go test ./internal/workroom/ -v     # run workroom tests verbose
-make lint                           # golangci-lint (config: .golangci.yml)
-make build                          # build with version injection
-make test                           # run tests
-make install                        # install to $GOBIN
 ```
 
-Requires `golangci-lint` (v1.x): `go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest`.
+Dev tasks run through the repo-root `Makefile`, namespaced `cli-*` (Go CLI) and `app-*` (macOS
+app under `macapp/`). `make` with no target lists them. The Go CLI:
+
+```bash
+make cli-build                      # build with version injection
+make cli-test                       # run tests
+make cli-lint                       # golangci-lint (config: .golangci.yml)
+make cli-install                    # install to $GOBIN
+```
+
+`cli-lint` requires `golangci-lint` (v1.x): `go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest`.
+The macOS app targets (`app-build`, `app-run`, `app-test`, `app-format`, `app-lint`, …) are
+documented in `macapp/CLAUDE.md`.
 
 ## Architecture
 

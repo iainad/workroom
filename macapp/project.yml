@@ -68,7 +68,7 @@ targets:
     preBuildScripts:
       - name: swift-format lint
         # Surfaces swift-format violations as build warnings (non-fatal — won't block local
-        # builds). `make lint` / Scripts/lint.sh run `--strict` for a hard CI gate.
+        # builds). `make app-lint` (repo root) runs `--strict` for a hard gate.
         basedOnDependencyAnalysis: false
         script: |
           if xcrun --find swift-format >/dev/null 2>&1; then

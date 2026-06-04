@@ -4,39 +4,34 @@ The Workroom macOS app: a SwiftUI (macOS 13+) front-end that bundles the `workro
 Go binary and drives it over the CLI's `--json` contract. See README.md for full
 architecture, signing, and notarization detail — this file is the quick reference.
 
-## Build & run
+## Dev tasks (Makefile)
+
+Every dev task runs through the **repo-root `Makefile`**, namespaced `app-*` (run from the repo
+root, not `macapp/`):
 
 ```bash
-Scripts/run.sh          # canonical local loop: xcodegen (if needed) → xcodebuild → relaunch
+make app-run        # canonical local loop: xcodegen (if needed) → xcodebuild (Debug) → relaunch
+make app-build      # xcodegen (if needed) → xcodebuild (Debug)
+make app-test       # xcodebuild test (WorkroomAppTests)
+make app-generate   # force-regenerate the (gitignored) .xcodeproj from project.yml
+make app-format     # swift-format, rewrite sources in place
+make app-lint       # swift-format --strict (non-zero on any violation — the hard gate)
+make app-release    # Release build → notarize → staple (Scripts/release.sh)
+make app-icon       # regenerate AppIcon PNGs (Scripts/make-icon.swift)
+make app-clean      # remove DerivedData + .xcodeproj
 ```
 
-Or by hand:
-
-```bash
-xcodegen generate                                                   # regenerate .xcodeproj (gitignored)
-xcodebuild -project WorkroomApp.xcodeproj -scheme WorkroomApp \
-  -configuration Debug -derivedDataPath DerivedData build
-
-xcodebuild test -project WorkroomApp.xcodeproj -scheme WorkroomApp \
-  -configuration Debug -derivedDataPath DerivedData -destination 'platform=macOS'  # WorkroomAppTests
-```
-
-Reuse `DerivedData/` so SwiftTerm isn't re-resolved every build.
+Builds reuse `macapp/DerivedData/` so SwiftTerm isn't re-resolved every build. (`cli-*` targets
+cover the Go CLI — see the root CLAUDE.md.)
 
 ## Formatting & linting
 
-Swift is formatted and linted with **swift-format** (bundled with the Xcode toolchain — run via
-`xcrun swift-format`, no install needed). Config is `macapp/.swift-format` (2-space indent, 100
-columns); it covers `WorkroomApp/` + `WorkroomAppTests/` only (not the `Scripts/*.swift` tools).
-
-```bash
-make format    # = Scripts/format.sh — rewrite sources in place
-make lint      # = Scripts/lint.sh   — --strict, non-zero on any violation (CI gate)
-```
-
-Every Xcode/`xcodebuild` build also runs a `swift-format lint` pre-build phase that surfaces
-violations as **warnings** (non-fatal, so it won't block local builds — `make lint` is the hard
-gate). Run `make format` before committing.
+Swift is formatted/linted with **swift-format** (bundled with the Xcode toolchain — run via
+`xcrun swift-format`, no install). Config `macapp/.swift-format` (2-space, 100 cols) covers
+`WorkroomApp/` + `WorkroomAppTests/` only (not the `Scripts/*.swift` tools). Use `make app-format`
+/ `make app-lint`. Every Xcode/`xcodebuild` build also runs a `swift-format lint` pre-build phase
+that surfaces violations as **warnings** (non-fatal — `make app-lint` is the hard gate). Run
+`make app-format` before committing.
 
 ## Gotchas
 
