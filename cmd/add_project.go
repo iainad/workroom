@@ -9,33 +9,30 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// addProjectCmd is an internal, app-only command: it registers an empty project
+// (one with no workrooms yet) so the macOS app's sidebar can show it. The human
+// CLI never needs it — `create` auto-registers a project on first use, and the
+// human `list` only shows projects that have workrooms — so it is hidden and
+// available solely in --json mode, which is how the app invokes it.
 var addProjectCmd = &cobra.Command{
-	Use:     "add-project [PATH]",
-	Aliases: []string{"add"},
-	Short:   "Register a project so its workrooms can be managed",
-	Long:    "Register a project directory (a Git repo or JJ workspace) so it appears as a managed project, even before it has any workrooms. Defaults to the current directory.",
-	Args:    cobra.MaximumNArgs(1),
+	Use:    "add-project [PATH]",
+	Short:  "Register a project (internal; used by the macOS app via --json)",
+	Hidden: true,
+	Args:   cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		currentCommand = "add-project"
+		if !jsonOutput {
+			return fmt.Errorf("add-project is only available in --json mode")
+		}
 		svc, err := newService()
 		if err != nil {
 			return err
 		}
-
-		var path string
-		if len(args) == 1 {
-			path = args[0]
-		} else {
-			if jsonOutput {
-				return fmt.Errorf("a path argument is required in --json mode")
-			}
-			path, err = getCwd()
-			if err != nil {
-				return err
-			}
+		if len(args) != 1 {
+			return fmt.Errorf("a path argument is required")
 		}
 
-		canon, err := config.CanonicalPath(path)
+		canon, err := config.CanonicalPath(args[0])
 		if err != nil {
 			return err
 		}
@@ -48,13 +45,9 @@ var addProjectCmd = &cobra.Command{
 			return err
 		}
 
-		if jsonOutput {
-			return writeJSONSuccess(os.Stdout, "add-project", map[string]any{
-				"path": canon, "vcs": vcsType,
-			})
-		}
-		fmt.Printf("Project '%s' added (%s).\n", canon, v.Label())
-		return nil
+		return writeJSONSuccess(os.Stdout, "add-project", map[string]any{
+			"path": canon, "vcs": vcsType,
+		})
 	},
 }
 
