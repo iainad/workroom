@@ -146,11 +146,38 @@ Workroom.
 
 ### Setup script
 
-Place an executable script at `scripts/workroom_setup` in your project. It will run inside the new workroom directory after creation.
+Place an executable script at `scripts/workroom_setup` in your project (remember `chmod +x`). It
+runs **inside the new workroom** right after creation — a good place to install dependencies and
+pull in gitignored local config that the worktree/workspace doesn't carry over:
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+# A fresh workroom is a clean checkout, so copy gitignored local config (e.g. .env)
+# from the root project this workroom belongs to.
+cp "$WORKROOM_ROOT_PATH/.env" .env 2>/dev/null || true
+
+# Install dependencies for this isolated copy.
+npm install
+
+# Give the workroom its own database, named after it, so it can't clobber others.
+createdb "myapp_${WORKROOM_NAME}"
+```
 
 ### Teardown script
 
-Place an executable script at `scripts/workroom_teardown` in your project. It will run inside the workroom directory before it is deleted.
+Place an executable script at `scripts/workroom_teardown` in your project (`chmod +x`). It runs
+**inside the workroom** just before it's deleted — undo anything setup created that lives outside
+the workroom (the directory itself is removed for you):
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Drop the per-workroom database that setup created.
+dropdb "myapp_${WORKROOM_NAME}" 2>/dev/null || true
+```
 
 ### Environment variables
 
