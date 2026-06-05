@@ -28,7 +28,9 @@ fi
 : "${TAG:?TAG required}"
 : "${REPO:?REPO required}"
 
-DMG_URL="https://github.com/${REPO}/releases/download/${TAG}/Workroom-${TAG}.dmg"
+# Must match the asset name the release workflow uploads (workroom-macos-app_<version>.dmg,
+# version without the tag's leading v).
+DMG_URL="https://github.com/${REPO}/releases/download/${TAG}/workroom-macos-app_${TAG#v}.dmg"
 NOTES_URL="https://github.com/${REPO}/releases/tag/${TAG}"
 PUBDATE="$(date -u '+%a, %d %b %Y %H:%M:%S +0000')"
 

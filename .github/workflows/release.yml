@@ -84,7 +84,9 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          ASSET="$RUNNER_TEMP/Workroom-${GITHUB_REF_NAME}.dmg"
+          # Name matches the CLI archives' scheme; ${GITHUB_REF_NAME#v} drops the tag's leading
+          # v so it lines up with goreleaser's {{ .Version }} (e.g. workroom-macos-app_1.4.0.dmg).
+          ASSET="$RUNNER_TEMP/workroom-macos-app_${GITHUB_REF_NAME#v}.dmg"
           cp macapp/build/release/Workroom.dmg "$ASSET"
           gh release upload "$GITHUB_REF_NAME" "$ASSET" --clobber
 
