@@ -78,10 +78,15 @@ in the main executable, so no new framework to sign.
 **Depends on:** nothing in-app — it's a dependency-source swap (`macapp/project.yml`,
 `macapp/Resources/ghostty/`). Best done while the API surface we use is stable.
 
-**Re-verify after the upgrade (known 1.2.3 gaps to recheck):**
-- **OSC 99 desktop notifications** — libghostty 1.2.3 dispatches no desktop-notification action for
-  `\e]99;;…` (Kitty protocol); OSC 9/777 work. Confirm OSC 99 fires post-upgrade (the pipeline is
-  proven via OSC 9, so it's purely an engine-parsing gap). See `macapp/QA-libghostty.md` §H.
+**Re-verify after the upgrade (known gaps to recheck):**
+- **OSC 99 desktop notifications** — ghostty has no OSC-99 (Kitty notification) parser in any release
+  *or* `main` yet (only OSC 9 / 777 notify); `\e]99;;…` parses as invalid and is dropped, so it never
+  reaches the app. There's an **open upstream PR — ghostty-org/ghostty#10467** ("parse the Kitty
+  desktop notification protocol (OSC 99)"). When building our xcframework, pick a ghostty ref that
+  includes #10467 (or cherry-pick it) and confirm OSC 99 fires — the app pipeline is already proven
+  via OSC 9. Alternative: ghostty's in-progress libghostty fallback-handler for unknown OSC could let
+  us parse OSC 99 app-side instead of patching the engine. OSC 9/777 cover the common cases meanwhile.
+  See `macapp/QA-libghostty.md` §H.
 - **Backspace keycode encoding** — 1.2.3 mis-encodes the backspace *keycode* (emits a space); we
   work around it by sending DEL as text (`GhosttySurfaceView.filterSpecialCharacters`). If the
   upgrade fixes the keycode path, the workaround can be simplified.

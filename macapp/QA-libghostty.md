@@ -66,10 +66,14 @@ the likeliest suspects.
 - [x] `printf '\e]9;Build finished\a'` in an **unfocused** tab → tab/sidebar **badge**;
       panel shows the entry with title. ✅ verified end-to-end.
 - [x] OSC 777: `printf '\e]777;notify;Title;Body text\a'` → entry with title **and** body. ✅ verified.
-- [ ] OSC 99: `printf '\e]99;;Hello from 99\a'` → entry recorded.
-      ⚠️ **Known gap on libghostty 1.2.3:** the engine dispatches no desktop-notification action for
-      OSC 99 (Kitty protocol), so nothing reaches the app — not fixable app-side (we don't parse OSC;
-      ghostty does). OSC 9/777 cover the common cases. Re-verify after the xcframework upgrade.
+- N/A OSC 99: `printf '\e]99;;Hello from 99\a'` → not supported by ghostty **yet — it's coming.**
+      Verified against ghostty `main`: no OSC-99 parser today (only OSC 9 / 777 notify; "99" → invalid
+      and dropped), so it doesn't reach the app. But there's an **open upstream PR,
+      ghostty-org/ghostty#10467** ("parse the Kitty desktop notification protocol (OSC 99)"), not yet
+      merged. So OSC 99 should work once we build the xcframework from a ghostty that includes #10467
+      (or cherry-pick it into our fork). ghostty is also adding a libghostty fallback-handler for
+      unknown OSC, which would be an alternate way to handle it app-side. OSC 9/777 cover the common
+      cases until then; SwiftTerm parsed OSC 99 itself, so this is a temporary minor regression.
 - [ ] Fire an OSC 9 in the **focused/active** tab → **no** notification (focus suppression).
 - [ ] **Background the app** (⌘-Tab away), fire an OSC 9 → **system banner** appears.
 - [ ] **Click the system banner** → app comes forward and jumps to the **exact tab/target**.
