@@ -88,7 +88,7 @@ make cli-build
 
 - [JJ (Jujutsu)](https://martinvonz.github.io/jj/) or [Git](https://git-scm.com/)
 
-### Usage
+### CLI Usage
 
 #### Create a workroom
 
