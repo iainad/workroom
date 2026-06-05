@@ -3,7 +3,8 @@ import Foundation
 /// A notification-worthy signal a terminal emitted. Detection is explicit-only: the program (or
 /// shell) asks for attention via an OSC notification escape sequence, which libghostty parses and
 /// surfaces as a desktop-notification action. Plain output — and the bare bell — are deliberately
-/// NOT recorded here (the bell is handled by libghostty's audible/visual bell; see plan C1).
+/// NOT recorded here: the bell rings the system beep via GhosttyRuntimeAdapter's RING_BELL handler
+/// but is intentionally not logged as a notification (plan C1 — it's a content-free signal).
 enum TerminalActivity: Equatable {
   case osc(title: String, body: String?)
 }

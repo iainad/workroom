@@ -35,6 +35,28 @@ final class TerminalSessions: ObservableObject {
     GhosttySurfaceView(workingDirectory: $0.path)
   }
 
+  /// Observes system light/dark changes so terminals re-theme even under the 'System' appearance,
+  /// where the user's theme binding (and thus `RootView`'s `onChange`) never fires.
+  private var appearanceObserver: NSObjectProtocol?
+
+  init() {
+    appearanceObserver = DistributedNotificationCenter.default().addObserver(
+      forName: Notification.Name("AppleInterfaceThemeChangedNotification"), object: nil,
+      queue: .main
+    ) { [weak self] _ in
+      // effectiveAppearance settles just after the notification; hop a runloop then re-theme.
+      // applyThemeToAll reads NSApp.effectiveAppearance, so a forced (non-System) appearance resolves
+      // unchanged and GhosttyApp.reloadConfig coalesces it to a no-op.
+      DispatchQueue.main.async { self?.applyThemeToAll() }
+    }
+  }
+
+  deinit {
+    if let appearanceObserver {
+      DistributedNotificationCenter.default().removeObserver(appearanceObserver)
+    }
+  }
+
   func tabs(for target: TerminalTarget) -> [TerminalTab] {
     tabsByTarget[target.id] ?? []
   }

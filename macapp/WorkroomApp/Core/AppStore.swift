@@ -403,7 +403,12 @@ final class AppStore: ObservableObject {
     case .project: break
     }
     selectedTargetID = sid
-    if let tabID, let target = selectedTarget {
+    // Only re-activate the tab if it still exists — it may have been closed/reaped between the
+    // notification being posted and the user clicking the banner; selecting a dangling id would
+    // leave activeByTarget pointing at a non-existent tab.
+    if let tabID, let target = selectedTarget,
+      terminals.tabs(for: target).contains(where: { $0.id == tabID })
+    {
       terminals.select(tabID, for: target)
     }
     if let notifID {

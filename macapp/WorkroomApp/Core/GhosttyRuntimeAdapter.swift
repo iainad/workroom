@@ -47,14 +47,17 @@ final class GhosttyRuntimeAdapter {
       view.hasOSC8LinkUnderCursor = link.len > 0 && link.url != nil
       return true
 
-    case GHOSTTY_ACTION_SHOW_CHILD_EXITED:
-      guard let view = surfaceView(from: target) else { return false }
-      handleProcessExit(view)
+    case GHOSTTY_ACTION_RING_BELL:
+      // libghostty delegates the bell to the host — it does NOT produce audio/flash itself, so
+      // without this the bell would be silent. Ring the system bell. We intentionally do not record
+      // it as a notification (plan C1: the bell is a content-free, high-frequency signal).
+      NSSound.beep()
       return true
 
     default:
-      // Tab/split/window intents and everything else are intentionally not handled — Workroom owns
-      // its own tab model (plan A5), and returning false lets libghostty fall back to its default.
+      // Tab/split/window intents, child-exit, and everything else are intentionally not handled.
+      // Workroom owns its own tab model (plan A5) and (as with SwiftTerm) leaves a tab in place when
+      // its shell exits; returning false lets libghostty fall back to its default.
       return false
     }
   }
@@ -68,12 +71,6 @@ final class GhosttyRuntimeAdapter {
     }
     guard let urlString, let url = URL(string: urlString) else { return false }
     return view.onOpenURL?(url) ?? false
-  }
-
-  private func handleProcessExit(_ view: GhosttySurfaceView) {
-    guard !view.processExitHandled else { return }
-    view.processExitHandled = true
-    view.onProcessExit?()
   }
 
   /// Resolve the `GhosttySurfaceView` that owns the firing surface, via its registered `userdata`.
@@ -98,10 +95,13 @@ final class GhosttyRuntimeAdapter {
     guard let content, count > 0 else { return }
     var text: String?
     for i in 0..<count {
-      if let data = content[i].data {
-        text = String(cString: data)
-        break
-      }
+      let entry = content[i]
+      // Only forward text payloads: a binary mime (image/*, etc.) would be garbled by
+      // String(cString:), and breaking on the first non-null entry would skip a later text/plain one.
+      let isText = entry.mime.map { String(cString: $0).hasPrefix("text/") } ?? true
+      guard isText, let data = entry.data else { continue }
+      text = String(cString: data)
+      break
     }
     guard let text, !text.isEmpty else { return }
     let pb = NSPasteboard.general
@@ -135,9 +135,8 @@ final class GhosttyRuntimeAdapter {
   // MARK: Close
 
   nonisolated func closeSurface(userdata: UnsafeMutableRawPointer?, needsConfirm: Bool) {
-    guard let userdata else { return }
-    let view = Unmanaged<GhosttySurfaceView>.fromOpaque(userdata).takeUnretainedValue()
-    handleProcessExit(view)
+    // Workroom owns its tab lifecycle (plan A5): a surface/shell exiting leaves the tab in place (as
+    // SwiftTerm did) until the user closes it, so libghostty's close request is intentionally ignored.
   }
 
   // MARK: Notification mapping (T2 — pure, unit-tested)

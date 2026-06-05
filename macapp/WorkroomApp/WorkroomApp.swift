@@ -87,6 +87,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     alert.addButton(withTitle: "Cancel")
     return alert.runModal() == .alertFirstButtonReturn ? .terminateNow : .terminateCancel
   }
+
+  /// Ordered libghostty teardown before exit: free every surface (which clears its callbacks first),
+  /// then the runtime app + config. Fires only after `applicationShouldTerminate` approves the quit.
+  @MainActor
+  func applicationWillTerminate(_ notification: Notification) {
+    AppStore.shared.terminals.reapAll()
+    GhosttyApp.shared.shutdown()
+  }
 }
 
 /// Whether the focused window has a usable terminal target selected (a root or a workroom,

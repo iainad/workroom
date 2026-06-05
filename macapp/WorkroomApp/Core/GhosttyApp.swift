@@ -33,6 +33,9 @@ final class GhosttyApp {
   private let logger = Logger(subsystem: "com.developwithstyle.workroom", category: "GhosttyApp")
   /// Coalescing flag for the tick pump — only ever touched on the main thread.
   private var tickPending = false
+  /// The dark/light the generated config was last built for, so `reloadConfig` can no-op when the
+  /// appearance hasn't actually changed (it's called per OS-appearance notification).
+  private var lastConfiguredDark: Bool?
 
   private init() {
     initialize()
@@ -109,7 +112,9 @@ final class GhosttyApp {
   }
 
   private func makeConfig() -> ghostty_config_t? {
-    writeThemeConfig(dark: Self.isCurrentAppearanceDark())
+    let dark = Self.isCurrentAppearanceDark()
+    lastConfiguredDark = dark
+    writeThemeConfig(dark: dark)
     return loadConfig()
   }
 
@@ -125,7 +130,10 @@ final class GhosttyApp {
   /// caller via `GhosttySurfaceView.updateConfig`.
   func reloadConfig() {
     guard let app else { return }
-    writeThemeConfig(dark: Self.isCurrentAppearanceDark())
+    let dark = Self.isCurrentAppearanceDark()
+    guard dark != lastConfiguredDark else { return }  // appearance unchanged → nothing to rebuild
+    lastConfiguredDark = dark
+    writeThemeConfig(dark: dark)
     guard let newConfig = loadConfig() else { return }
     ghostty_app_update_config(app, newConfig)
     let old = config

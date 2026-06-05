@@ -23,14 +23,12 @@ final class GhosttySurfaceView: NSView {
   var onOpenURL: ((URL) -> Bool)?
   var onCmdClickFile: ((String) -> Void)?
   var resolveCmdHoverFile: ((String) -> Bool)?
-  var onProcessExit: (() -> Void)?
 
   /// Set from `GHOSTTY_ACTION_MOUSE_OVER_LINK` (an OSC 8 / detected URL is under the pointer).
   var hasOSC8LinkUnderCursor = false
   /// Latest shell cwd from `GHOSTTY_ACTION_PWD` (the cwd source for ⌘-click path resolution — CMT-1,
   /// since libghostty exposes no PTY child PID for `proc_pidinfo`). Nil until shell integration reports.
   private(set) var lastKnownCwd: String?
-  var processExitHandled = false
 
   // Occlusion (plan A4): a surface renders only when its pane is active AND its window is visible.
   private var isPaneVisible = true
@@ -51,6 +49,9 @@ final class GhosttySurfaceView: NSView {
   private var surfaceCStrings: [UnsafeMutablePointer<CChar>] = []
   private var pendingSurfaceCreation = false
   private var isShowingHandCursor = false
+  /// Set in mouseDown when a ⌘-click opened a file (no terminal press was sent); makes the matching
+  /// mouseUp a no-op so it doesn't send an unbalanced RELEASE or run copy-on-select.
+  private var suppressNextMouseUp = false
   private var trackingAreaRef: NSTrackingArea?
 
   init(workingDirectory: String) {
@@ -123,7 +124,6 @@ final class GhosttySurfaceView: NSView {
     onOpenURL = nil
     onCmdClickFile = nil
     resolveCmdHoverFile = nil
-    onProcessExit = nil
     if let occlusionObserver {
       NotificationCenter.default.removeObserver(occlusionObserver)
       self.occlusionObserver = nil
@@ -174,7 +174,13 @@ final class GhosttySurfaceView: NSView {
       NotificationCenter.default.removeObserver(occlusionObserver)
       self.occlusionObserver = nil
     }
-    guard let window else { return }
+    guard let window else {
+      // Detached from any window → stop rendering. `updateWindowVisibility` defaults to "visible"
+      // when window is nil, so set it explicitly here rather than leaving the last (stale) value.
+      isWindowVisible = false
+      applyOcclusionState()
+      return
+    }
     if surface == nil { createSurface() }
     occlusionObserver = NotificationCenter.default.addObserver(
       forName: NSWindow.didChangeOcclusionStateNotification, object: window, queue: .main
@@ -192,6 +198,13 @@ final class GhosttySurfaceView: NSView {
   override func viewDidChangeBackingProperties() {
     super.viewDidChangeBackingProperties()
     updateMetalLayerSize()
+  }
+
+  override func layout() {
+    super.layout()
+    // Retry a surface creation that was deferred because bounds were zero at window-attach time
+    // (setFrameSize isn't guaranteed to fire for every path that establishes the final size).
+    if surface == nil, pendingSurfaceCreation { createSurface() }
   }
 
   // MARK: Occlusion (A4)
@@ -372,7 +385,13 @@ final class GhosttySurfaceView: NSView {
   }
 
   override func flagsChanged(with event: NSEvent) {
-    guard let surface, !hasMarkedText() else { return }
+    guard let surface else { return }
+    // During IME composition we don't forward bare modifier changes (they'd disrupt the input
+    // context), but still refresh the ⌘-hover cursor so releasing ⌘ mid-composition clears it.
+    guard !hasMarkedText() else {
+      updateCmdHoverCursor(modifierFlags: event.modifierFlags)
+      return
+    }
     let action: ghostty_input_action_e =
       isFlagPress(event) ? GHOSTTY_ACTION_PRESS : GHOSTTY_ACTION_RELEASE
     var keyEvent = buildKeyEvent(from: event, action: action)
@@ -411,7 +430,10 @@ final class GhosttySurfaceView: NSView {
     guard flags == .command else { return false }
     guard let chars = event.charactersIgnoringModifiers, let ch = chars.first else { return false }
     if ("1"..."9").contains(ch) { return true }  // focus tab N
-    return ["t", "w", "o", "n", "q", "h", "m", ","].contains(Character(ch.lowercased()))
+    // ⌘T/⌘W/⌘O are real menu commands; ⌘Q/⌘H/⌘M/⌘, are system standards. NOT ⌘N — Workroom's only
+    // N command is ⌥⌘N (which fails the `flags == .command` guard above), so plain ⌘N must pass
+    // through to the terminal rather than being swallowed.
+    return ["t", "w", "o", "q", "h", "m", ","].contains(Character(ch.lowercased()))
   }
 
   private func buildKeyEvent(from event: NSEvent, action: ghostty_input_action_e)
@@ -515,19 +537,29 @@ final class GhosttySurfaceView: NSView {
     guard let surface else { return }
     let pt = mousePoint(from: event)
     ghostty_surface_mouse_pos(surface, pt.x, pt.y, modsFromEvent(event))
-    // ⌘-click a (non-OSC8) file path → open in the configured editor; consume so it isn't a selection.
+    // ⌘-click a (non-OSC8) word that RESOLVES TO A REAL FILE → open in the configured editor and
+    // consume the gesture (suppress the matching mouseUp). Any other ⌘-click falls through to a
+    // normal terminal press, so plain-text ⌘-clicks aren't swallowed and the press/release balance.
     if event.modifierFlags.contains(.command), !hasOSC8LinkUnderCursor,
-      let word = readWordUnderMouse()
+      let word = readWordUnderMouse(), resolveCmdHoverFile?(word) == true
     {
       onCmdClickFile?(word)
+      suppressNextMouseUp = true
       return
     }
+    suppressNextMouseUp = false
     _ = ghostty_surface_mouse_button(
       surface, GHOSTTY_MOUSE_PRESS, GHOSTTY_MOUSE_LEFT, modsFromEvent(event))
   }
 
   override func mouseUp(with event: NSEvent) {
     guard let surface else { return }
+    if suppressNextMouseUp {
+      // The matching mouseDown opened a file: no PRESS was sent and the selection was left intact,
+      // so skip the RELEASE and copy-on-select (which would otherwise clobber the pasteboard).
+      suppressNextMouseUp = false
+      return
+    }
     let pt = mousePoint(from: event)
     ghostty_surface_mouse_pos(surface, pt.x, pt.y, modsFromEvent(event))
     _ = ghostty_surface_mouse_button(
@@ -556,7 +588,13 @@ final class GhosttySurfaceView: NSView {
     ghostty_surface_mouse_pos(surface, pt.x, pt.y, modsFromEvent(event))
     let consumed = ghostty_surface_mouse_button(
       surface, GHOSTTY_MOUSE_PRESS, GHOSTTY_MOUSE_RIGHT, modsFromEvent(event))
-    if !consumed { presentContextMenu(with: event) }
+    if !consumed {
+      presentContextMenu(with: event)
+      // popUpContextMenu runs a modal tracking loop that swallows the physical rightMouseUp, so
+      // libghostty would never receive the RELEASE for the press above — balance it explicitly.
+      _ = ghostty_surface_mouse_button(
+        surface, GHOSTTY_MOUSE_RELEASE, GHOSTTY_MOUSE_RIGHT, modsFromEvent(event))
+    }
   }
 
   override func rightMouseUp(with event: NSEvent) {

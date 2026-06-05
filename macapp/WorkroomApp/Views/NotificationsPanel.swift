@@ -57,7 +57,7 @@ struct NotificationsPanel: View {
       ContentUnavailableView {
         Label("No notifications", systemImage: "bell.slash")
       } description: {
-        Text("Activity in unfocused terminals (OSC 9/99/777 or the bell) shows up here.")
+        Text("Activity in unfocused terminals (OSC 9/99/777 notifications) shows up here.")
       }
     } else {
       List {
