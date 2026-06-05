@@ -47,6 +47,9 @@ final class GhosttySurfaceView: NSView {
 
   // Surface-config C strings must outlive `ghostty_surface_new`; freed on teardown.
   private var surfaceCStrings: [UnsafeMutablePointer<CChar>] = []
+  // Backing buffer for the surface config's `env_vars` array; held for the surface's lifetime
+  // alongside `surfaceCStrings` and freed on teardown.
+  private var envVarsBuffer: UnsafeMutablePointer<ghostty_env_var_s>?
   private var pendingSurfaceCreation = false
   private var isShowingHandCursor = false
   /// Set in mouseDown when a ⌘-click opened a file (no terminal press was sent); makes the matching
@@ -91,6 +94,22 @@ final class GhosttySurfaceView: NSView {
     guard let cwd = strdup(workingDirectory) else { return }
     surfaceCStrings.append(cwd)
     config.working_directory = UnsafePointer(cwd)
+
+    // Inject `TERMINFO` into the shell's environment so it can resolve the bundled `xterm-ghostty`
+    // entry (libghostty sets `TERM` but not `TERMINFO`, and macOS has no system entry — without this
+    // line editing such as Backspace breaks). Process-level `setenv` doesn't reach the child, so we
+    // go through the surface config's env-var array, which libghostty applies to the spawned shell.
+    if let terminfo = GhosttyApp.shared.terminfoDirectory,
+      let key = strdup("TERMINFO"), let value = strdup(terminfo)
+    {
+      surfaceCStrings.append(key)
+      surfaceCStrings.append(value)
+      let buffer = UnsafeMutablePointer<ghostty_env_var_s>.allocate(capacity: 1)
+      buffer[0] = ghostty_env_var_s(key: UnsafePointer(key), value: UnsafePointer(value))
+      envVarsBuffer = buffer
+      config.env_vars = buffer
+      config.env_var_count = 1
+    }
 
     surface = ghostty_surface_new(app, &config)
     guard let surface else {
@@ -141,6 +160,8 @@ final class GhosttySurfaceView: NSView {
   private func freeSurfaceCStrings() {
     for ptr in surfaceCStrings { free(ptr) }
     surfaceCStrings.removeAll()
+    envVarsBuffer?.deallocate()
+    envVarsBuffer = nil
   }
 
   // MARK: Geometry / render sizing
@@ -363,6 +384,12 @@ final class GhosttySurfaceView: NSView {
         commandWasCalled
         ? GHOSTTY_MODS_NONE : consumedModsFromFlags(flags, consumeOption: !optionAsAlt)
       keyEvent.composing = hasMarkedText() || hadMarkedText
+      // Derive text from `event.characters`, dropping AppKit sentinels (see `filterSpecialCharacters`):
+      // function keys / arrows resolve to "" here and fall through to the keycode-only branch, which
+      // libghostty encodes correctly. DEL (U+7F, the Backspace key) is intentionally KEPT and sent as
+      // text — libghostty 1.2.3's *keycode* encoding for backspace is broken (it emits a space for the
+      // backspace keycode), but forwarding the literal 0x7f byte as text delivers the correct erase.
+      // (Confirmed by raw-PTY byte probing; matches Muxy's filter. Revisit if we move off 1.2.3.)
       let text = filterSpecialCharacters(event.characters ?? "")
       if !text.isEmpty, !keyEvent.composing {
         text.withCString {
@@ -510,9 +537,18 @@ final class GhosttySurfaceView: NSView {
     }
   }
 
+  /// Decide whether a key's `event.characters` is real insertable text or an AppKit sentinel we must
+  /// NOT forward as text. macOS reports non-text keys via the function-key private-use range
+  /// (U+F700–U+F8FF: arrows, F-keys, Home/End, Page Up/Down, forward-delete) and C0 control chars
+  /// via codepoints < 0x20; for those we send the key by keycode only and let libghostty encode the
+  /// escape sequence (so arrows navigate instead of inserting a glyph). DEL (U+007F — the
+  /// Backspace/Delete key) IS kept and forwarded as text so the shell receives the erase byte.
+  /// Mirrors Ghostty's own macOS surface: first scalar decides; pass or drop the whole string.
   private func filterSpecialCharacters(_ s: String) -> String {
-    String(
-      String.UnicodeScalarView(s.unicodeScalars.filter { $0.value >= 0x20 && $0.value != 0x7f }))
+    guard let scalar = s.unicodeScalars.first else { return "" }
+    let value = scalar.value
+    if value < 0x20 || (0xF700...0xF8FF).contains(value) { return "" }
+    return s
   }
 
   private func syncPreedit(clearIfNeeded: Bool = true) {

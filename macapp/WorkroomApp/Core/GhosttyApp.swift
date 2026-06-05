@@ -26,6 +26,11 @@ final class GhosttyApp {
   /// The active config (owned; freed on `shutdown` / replaced on `reloadConfig`).
   private(set) var config: ghostty_config_t?
 
+  /// Absolute path to the bundled terminfo directory (set once resources resolve), or nil if the
+  /// bundled `xterm-ghostty` entry is missing. Each surface injects it as `TERMINFO` into the shell's
+  /// environment so the shell can resolve `xterm-ghostty` (see `GhosttySurfaceView.createSurface`).
+  private(set) var terminfoDirectory: String?
+
   /// True once libghostty initialized successfully. Views/sessions check this to decide between
   /// a live terminal and the "engine unavailable" placeholder.
   var isReady: Bool { app != nil }
@@ -108,6 +113,21 @@ final class GhosttyApp {
       return false
     }
     setenv("GHOSTTY_RESOURCES_DIR", resourcesURL.path, 1)
+
+    // Resolve the bundled terminfo dir; each surface injects it as `TERMINFO` into the shell's env
+    // (see `GhosttySurfaceView.createSurface`). libghostty sets `TERM=xterm-ghostty` but builds the
+    // child environment itself — a plain process `setenv("TERMINFO", …)` does NOT reach the shell —
+    // and macOS has no system `xterm-ghostty` entry, so without injecting it the shell can't resolve
+    // the terminal's capabilities (e.g. `kbs`), which breaks line editing (notably Backspace).
+    // Entries live under hex-named dirs (`terminfo/78/xterm-ghostty`, 0x78 = 'x').
+    let terminfoURL = resourcesURL.appendingPathComponent("terminfo")
+    if FileManager.default.fileExists(
+      atPath: terminfoURL.appendingPathComponent("78/xterm-ghostty").path)
+    {
+      terminfoDirectory = terminfoURL.path
+    } else {
+      logger.error("bundled xterm-ghostty terminfo missing — terminal line editing may misbehave")
+    }
     return true
   }
 

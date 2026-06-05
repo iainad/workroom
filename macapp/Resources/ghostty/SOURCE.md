@@ -2,7 +2,10 @@
 
 `GHOSTTY_RESOURCES_DIR` points here at launch (see Core/GhosttyApp.swift). libghostty needs:
 
-- `terminfo/` — the `xterm-ghostty` / `ghostty` terminfo entries (sets `$TERM`).
+- `terminfo/` — the `xterm-ghostty` / `ghostty` terminfo entries. libghostty sets
+  `TERM=xterm-ghostty` for the shell but NOT `TERMINFO`, and macOS has no system entry for it, so
+  `GhosttyApp` also exports `TERMINFO` → here (without it the shell can't resolve the terminal's
+  capabilities and line editing — e.g. Backspace — breaks).
 - `shell-integration/` — per-shell scripts Ghostty auto-injects; these report OSC 7 pwd
   (the cwd source for ⌘-click path resolution — see plan CMT-1) and more.
 
