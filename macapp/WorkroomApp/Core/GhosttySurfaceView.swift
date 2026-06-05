@@ -320,25 +320,45 @@ final class GhosttySurfaceView: NSView {
     layoutScrollbar()
     // Only surface the indicator while scrolled back through history — not on every line of live
     // output (which would flash it constantly during a build).
-    let atBottom = total <= len || offset >= total - len
-    if !atBottom { flashScrollbar() }
+    if Self.scrollbarShouldFlash(total: total, offset: offset, len: len) { flashScrollbar() }
   }
 
   private func layoutScrollbar() {
-    guard let m = scrollbarMetrics, m.total > m.len else {
+    guard let m = scrollbarMetrics,
+      let rect = Self.scrollbarThumbRect(
+        total: m.total, offset: m.offset, len: m.len, bounds: bounds,
+        width: scrollbarWidth, inset: Self.scrollbarInset, minThumb: Self.scrollbarMinThumb)
+    else {
       scrollbarThumb.isHidden = true
       return
     }
     scrollbarThumb.isHidden = false
-    let inset: CGFloat = 2
+    scrollbarThumb.frame = rect
+  }
+
+  static let scrollbarInset: CGFloat = 2
+  static let scrollbarMinThumb: CGFloat = 28
+
+  /// Pure geometry for the overlay thumb (extracted so it's unit-testable). Returns nil when there's
+  /// nothing to scroll (`total <= len`). Bottom-left origin: live (`offset == total - len`) sits at
+  /// the bottom; fully scrolled up (`offset == 0`) sits at the top. `position` 0 = top, 1 = live.
+  static func scrollbarThumbRect(
+    total: UInt64, offset: UInt64, len: UInt64, bounds: CGRect,
+    width: CGFloat, inset: CGFloat, minThumb: CGFloat
+  ) -> CGRect? {
+    guard total > len else { return nil }
     let trackHeight = max(0, bounds.height - inset * 2)
-    let thumbHeight = max(28, trackHeight * CGFloat(m.len) / CGFloat(m.total))
-    let maxOffset = m.total - m.len
-    let position = maxOffset > 0 ? CGFloat(m.offset) / CGFloat(maxOffset) : 1  // 0 = top, 1 = live
-    // Non-flipped view (origin bottom-left): live (position 1) sits at the bottom.
+    let thumbHeight = max(minThumb, trackHeight * CGFloat(len) / CGFloat(total))
+    let maxOffset = total - len
+    let position = maxOffset > 0 ? CGFloat(offset) / CGFloat(maxOffset) : 1
     let y = inset + (trackHeight - thumbHeight) * (1 - position)
-    scrollbarThumb.frame = CGRect(
-      x: bounds.width - scrollbarWidth - inset, y: y, width: scrollbarWidth, height: thumbHeight)
+    return CGRect(x: bounds.width - width - inset, y: y, width: width, height: thumbHeight)
+  }
+
+  /// Flash the indicator only while scrolled back, not at the live bottom (so live output doesn't
+  /// flash it constantly). Extracted as a pure predicate for tests.
+  static func scrollbarShouldFlash(total: UInt64, offset: UInt64, len: UInt64) -> Bool {
+    total > len && offset < total - len
   }
 
   private func flashScrollbar() {
@@ -404,7 +424,7 @@ final class GhosttySurfaceView: NSView {
       !hasMarkedText()
     {
       var keyEvent = buildKeyEvent(from: event, action: action)
-      let text = filterSpecialCharacters(event.characters ?? "")
+      let text = Self.filterSpecialCharacters(event.characters ?? "")
       if text.isEmpty {
         keyEvent.text = nil
         _ = ghostty_surface_key(surface, keyEvent)
@@ -461,7 +481,7 @@ final class GhosttySurfaceView: NSView {
       // text — libghostty 1.2.3's *keycode* encoding for backspace is broken (it emits a space for the
       // backspace keycode), but forwarding the literal 0x7f byte as text delivers the correct erase.
       // (Confirmed by raw-PTY byte probing; matches Muxy's filter. Revisit if we move off 1.2.3.)
-      let text = filterSpecialCharacters(event.characters ?? "")
+      let text = Self.filterSpecialCharacters(event.characters ?? "")
       if !text.isEmpty, !keyEvent.composing {
         text.withCString {
           keyEvent.text = $0
@@ -615,7 +635,8 @@ final class GhosttySurfaceView: NSView {
   /// escape sequence (so arrows navigate instead of inserting a glyph). DEL (U+007F — the
   /// Backspace/Delete key) IS kept and forwarded as text so the shell receives the erase byte.
   /// Mirrors Ghostty's own macOS surface: first scalar decides; pass or drop the whole string.
-  private func filterSpecialCharacters(_ s: String) -> String {
+  /// `static` so it's unit-testable as a pure function (it uses no instance state).
+  static func filterSpecialCharacters(_ s: String) -> String {
     guard let scalar = s.unicodeScalars.first else { return "" }
     let value = scalar.value
     if value < 0x20 || (0xF700...0xF8FF).contains(value) { return "" }
