@@ -57,11 +57,20 @@ final class GhosttySurfaceView: NSView {
   private var suppressNextMouseUp = false
   private var trackingAreaRef: NSTrackingArea?
 
+  // Overlay scrollbar (restores SwiftTerm's scrollbar). libghostty draws none and exposes no scroll
+  // position to poll — it only pushes geometry via `GHOSTTY_ACTION_SCROLLBAR` — so we keep the last
+  // metrics, render a thin pass-through thumb on the right edge, and fade it out when idle.
+  private let scrollbarWidth: CGFloat = 7
+  private let scrollbarThumb = ScrollbarThumbView()
+  private var scrollbarMetrics: (total: UInt64, offset: UInt64, len: UInt64)?
+  private var scrollbarFadeWork: DispatchWorkItem?
+
   init(workingDirectory: String) {
     self.workingDirectory = workingDirectory
     super.init(frame: .zero)
     wantsLayer = true
     setupTrackingArea()
+    setupScrollbar()
     setAccessibilityRole(.textArea)
     let dir = URL(fileURLWithPath: workingDirectory).lastPathComponent
     setAccessibilityLabel(dir.isEmpty ? "Terminal" : "Terminal — \(dir)")
@@ -127,6 +136,8 @@ final class GhosttySurfaceView: NSView {
       ghostty_surface_set_display_id(surface, displayID)
     }
     applyOcclusionState()
+    // Keep the overlay scrollbar above the surface's Metal content.
+    addSubview(scrollbarThumb, positioned: .above, relativeTo: nil)
   }
 
   private func destroySurface() {
@@ -214,6 +225,7 @@ final class GhosttySurfaceView: NSView {
     super.setFrameSize(newSize)
     if pendingSurfaceCreation { createSurface() }
     updateMetalLayerSize()
+    layoutScrollbar()
   }
 
   override func viewDidChangeBackingProperties() {
@@ -287,6 +299,65 @@ final class GhosttySurfaceView: NSView {
   override func viewDidChangeEffectiveAppearance() {
     super.viewDidChangeEffectiveAppearance()
     applyColorScheme(isDark: Self.isCurrentAppearanceDark())
+    updateScrollbarColor()
+  }
+
+  // MARK: Overlay scrollbar
+
+  private func setupScrollbar() {
+    scrollbarThumb.wantsLayer = true
+    scrollbarThumb.layer?.cornerRadius = scrollbarWidth / 2
+    scrollbarThumb.alphaValue = 0
+    scrollbarThumb.isHidden = true
+    updateScrollbarColor()
+    addSubview(scrollbarThumb)
+  }
+
+  /// Called by `GhosttyRuntimeAdapter` on `GHOSTTY_ACTION_SCROLLBAR`. All values are in rows;
+  /// `offset` is the viewport top's distance from the top of the scrollback (live == `total - len`).
+  func updateScrollbar(total: UInt64, offset: UInt64, len: UInt64) {
+    scrollbarMetrics = (total, offset, len)
+    layoutScrollbar()
+    // Only surface the indicator while scrolled back through history — not on every line of live
+    // output (which would flash it constantly during a build).
+    let atBottom = total <= len || offset >= total - len
+    if !atBottom { flashScrollbar() }
+  }
+
+  private func layoutScrollbar() {
+    guard let m = scrollbarMetrics, m.total > m.len else {
+      scrollbarThumb.isHidden = true
+      return
+    }
+    scrollbarThumb.isHidden = false
+    let inset: CGFloat = 2
+    let trackHeight = max(0, bounds.height - inset * 2)
+    let thumbHeight = max(28, trackHeight * CGFloat(m.len) / CGFloat(m.total))
+    let maxOffset = m.total - m.len
+    let position = maxOffset > 0 ? CGFloat(m.offset) / CGFloat(maxOffset) : 1  // 0 = top, 1 = live
+    // Non-flipped view (origin bottom-left): live (position 1) sits at the bottom.
+    let y = inset + (trackHeight - thumbHeight) * (1 - position)
+    scrollbarThumb.frame = CGRect(
+      x: bounds.width - scrollbarWidth - inset, y: y, width: scrollbarWidth, height: thumbHeight)
+  }
+
+  private func flashScrollbar() {
+    scrollbarFadeWork?.cancel()
+    scrollbarThumb.alphaValue = 1
+    let work = DispatchWorkItem { [weak self] in
+      NSAnimationContext.runAnimationGroup { context in
+        context.duration = 0.4
+        self?.scrollbarThumb.animator().alphaValue = 0
+      }
+    }
+    scrollbarFadeWork = work
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.9, execute: work)
+  }
+
+  private func updateScrollbarColor() {
+    let dark = Self.isCurrentAppearanceDark()
+    scrollbarThumb.layer?.backgroundColor =
+      (dark ? NSColor(white: 1, alpha: 0.35) : NSColor(white: 0, alpha: 0.35)).cgColor
   }
 
   private static func isCurrentAppearanceDark() -> Bool {
@@ -808,4 +879,10 @@ extension GhosttySurfaceView: NSTextInputClient {
     guard start <= end else { return nil }
     return NSRange(location: start, length: end - start)
   }
+}
+
+/// The overlay scrollbar thumb. Hit-testing returns nil so the indicator never intercepts mouse
+/// events — clicks, drags, and selection pass straight through to the terminal beneath it.
+private final class ScrollbarThumbView: NSView {
+  override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }

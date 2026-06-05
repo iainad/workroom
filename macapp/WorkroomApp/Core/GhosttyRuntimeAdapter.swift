@@ -47,6 +47,14 @@ final class GhosttyRuntimeAdapter {
       view.hasOSC8LinkUnderCursor = link.len > 0 && link.url != nil
       return true
 
+    case GHOSTTY_ACTION_SCROLLBAR:
+      // libghostty draws no scrollbar of its own — it reports the scroll geometry (rows) and lets the
+      // host render one. We show a fading overlay indicator (plan: restore SwiftTerm's scrollbar).
+      guard let view = surfaceView(from: target) else { return false }
+      let bar = action.action.scrollbar
+      view.updateScrollbar(total: bar.total, offset: bar.offset, len: bar.len)
+      return true
+
     case GHOSTTY_ACTION_RING_BELL:
       // libghostty delegates the bell to the host — it does NOT produce audio/flash itself, so
       // without this the bell would be silent. Ring the system bell. We intentionally do not record
