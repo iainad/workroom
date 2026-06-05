@@ -1,0 +1,737 @@
+import AppKit
+import GhosttyKit
+
+/// One terminal surface: an `NSView` that hosts a `ghostty_surface_t` (Metal-rendered by libghostty
+/// given our `nsview`), drives a local PTY, and bridges macOS keyboard/IME/mouse into libghostty.
+/// This is the libghostty replacement for SwiftTerm's `LocalProcessTerminalView`.
+///
+/// Ported from Muxy's `GhosttyTerminalNSView` (MIT) as inspiration, trimmed to Workroom's existing
+/// feature set: no splits UI, search, progress, drag-and-drop, dynamic titles, or remote streaming.
+///
+/// Lifecycle (plan A1): the surface is created when the view enters a window and freed in
+/// `tearDown()`/`deinit`; callbacks are nil'd and the C-string config pointers freed on teardown so
+/// no in-flight libghostty callback can touch a dead view.
+final class GhosttySurfaceView: NSView {
+  /// The live surface, or nil before creation / after teardown. `nonisolated(unsafe)` because the
+  /// runtime callbacks (via `ghostty_surface_userdata`) read it; all writes happen on the main thread.
+  nonisolated(unsafe) private(set) var surface: ghostty_surface_t?
+
+  private let workingDirectory: String
+
+  // Callbacks set by the host (TerminalSessions / TerminalContainerView). Value-type captures only.
+  var onActivity: ((TerminalActivity) -> Void)?
+  var onOpenURL: ((URL) -> Bool)?
+  var onCmdClickFile: ((String) -> Void)?
+  var resolveCmdHoverFile: ((String) -> Bool)?
+  var onProcessExit: (() -> Void)?
+
+  /// Set from `GHOSTTY_ACTION_MOUSE_OVER_LINK` (an OSC 8 / detected URL is under the pointer).
+  var hasOSC8LinkUnderCursor = false
+  /// Latest shell cwd from `GHOSTTY_ACTION_PWD` (the cwd source for ⌘-click path resolution — CMT-1,
+  /// since libghostty exposes no PTY child PID for `proc_pidinfo`). Nil until shell integration reports.
+  private(set) var lastKnownCwd: String?
+  var processExitHandled = false
+
+  // Occlusion (plan A4): a surface renders only when its pane is active AND its window is visible.
+  private var isPaneVisible = true
+  private var isWindowVisible = true
+  nonisolated(unsafe) private var occlusionObserver: NSObjectProtocol?
+
+  // IME / marked-text state.
+  private var markedText = ""
+  private var imeMarkedRange = NSRange(location: NSNotFound, length: 0)
+  private var imeSelectedRange = NSRange(location: 0, length: 0)
+
+  // keyDown ↔ NSTextInputClient handshake.
+  private var keyTextAccumulator: [String] = []
+  private var currentKeyEvent: NSEvent?
+  private var commandSelectorCalled = false
+
+  // Surface-config C strings must outlive `ghostty_surface_new`; freed on teardown.
+  private var surfaceCStrings: [UnsafeMutablePointer<CChar>] = []
+  private var pendingSurfaceCreation = false
+  private var isShowingHandCursor = false
+  private var trackingAreaRef: NSTrackingArea?
+
+  init(workingDirectory: String) {
+    self.workingDirectory = workingDirectory
+    super.init(frame: .zero)
+    wantsLayer = true
+    setupTrackingArea()
+    setAccessibilityRole(.textArea)
+    let dir = URL(fileURLWithPath: workingDirectory).lastPathComponent
+    setAccessibilityLabel(dir.isEmpty ? "Terminal" : "Terminal — \(dir)")
+  }
+
+  @available(*, unavailable)
+  required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+
+  // MARK: Surface lifecycle (A1)
+
+  private func createSurface() {
+    guard surface == nil, let app = GhosttyApp.shared.app else { return }
+    guard let backingSize = backingPixelSize() else {
+      pendingSurfaceCreation = true
+      return
+    }
+    pendingSurfaceCreation = false
+
+    var config = ghostty_surface_config_new()
+    config.platform_tag = GHOSTTY_PLATFORM_MACOS
+    config.platform = ghostty_platform_u(
+      macos: ghostty_platform_macos_s(nsview: Unmanaged.passUnretained(self).toOpaque()))
+    config.userdata = Unmanaged.passUnretained(self).toOpaque()
+    config.scale_factor = Double(window?.backingScaleFactor ?? 2.0)
+    config.context = GHOSTTY_SURFACE_CONTEXT_TAB  // Workroom: one surface per tab (no splits yet)
+
+    // Spawn a login shell in the target directory. No explicit `command` → libghostty launches the
+    // user's default shell as a login shell (matches Workroom's prior `startProcess(... -l)`).
+    freeSurfaceCStrings()
+    guard let cwd = strdup(workingDirectory) else { return }
+    surfaceCStrings.append(cwd)
+    config.working_directory = UnsafePointer(cwd)
+
+    surface = ghostty_surface_new(app, &config)
+    guard let surface else {
+      freeSurfaceCStrings()
+      return
+    }
+
+    let scale = Double(window?.backingScaleFactor ?? 2.0)
+    ghostty_surface_set_content_scale(surface, scale, scale)
+    ghostty_surface_set_size(surface, backingSize.width, backingSize.height)
+    applyColorScheme(isDark: Self.isCurrentAppearanceDark())
+    if let screen = window?.screen ?? NSScreen.main,
+      let displayID = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? UInt32
+    {
+      ghostty_surface_set_display_id(surface, displayID)
+    }
+    applyOcclusionState()
+  }
+
+  private func destroySurface() {
+    if let surface { ghostty_surface_free(surface) }
+    surface = nil
+    freeSurfaceCStrings()
+  }
+
+  /// Explicit teardown on close/delete (plan A1). Clears callbacks first so a late libghostty
+  /// callback resolving this view via `userdata` can't invoke a dangling closure, then frees.
+  func tearDown() {
+    setHandCursor(false)
+    onActivity = nil
+    onOpenURL = nil
+    onCmdClickFile = nil
+    resolveCmdHoverFile = nil
+    onProcessExit = nil
+    if let occlusionObserver {
+      NotificationCenter.default.removeObserver(occlusionObserver)
+      self.occlusionObserver = nil
+    }
+    destroySurface()
+    removeFromSuperview()
+  }
+
+  deinit {
+    if let occlusionObserver { NotificationCenter.default.removeObserver(occlusionObserver) }
+    if let surface { ghostty_surface_free(surface) }
+    freeSurfaceCStrings()
+  }
+
+  private func freeSurfaceCStrings() {
+    for ptr in surfaceCStrings { free(ptr) }
+    surfaceCStrings.removeAll()
+  }
+
+  // MARK: Geometry / render sizing
+
+  private func backingPixelSize() -> (width: UInt32, height: UInt32)? {
+    let size = convertToBacking(bounds).size
+    let w = Int(floor(size.width))
+    let h = Int(floor(size.height))
+    guard w > 0, h > 0 else { return nil }
+    return (UInt32(w), UInt32(h))
+  }
+
+  private func updateMetalLayerSize() {
+    guard let surface, let window else { return }
+    layer?.contentsScale = window.backingScaleFactor
+    let scale = Double(window.backingScaleFactor)
+    ghostty_surface_set_content_scale(surface, scale, scale)
+    if let screen = window.screen,
+      let displayID = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? UInt32
+    {
+      ghostty_surface_set_display_id(surface, displayID)
+    }
+    if let backingSize = backingPixelSize() {
+      ghostty_surface_set_size(surface, backingSize.width, backingSize.height)
+    }
+  }
+
+  override func viewDidMoveToWindow() {
+    super.viewDidMoveToWindow()
+    if let occlusionObserver {
+      NotificationCenter.default.removeObserver(occlusionObserver)
+      self.occlusionObserver = nil
+    }
+    guard let window else { return }
+    if surface == nil { createSurface() }
+    occlusionObserver = NotificationCenter.default.addObserver(
+      forName: NSWindow.didChangeOcclusionStateNotification, object: window, queue: .main
+    ) { [weak self] _ in self?.updateWindowVisibility() }
+    updateWindowVisibility()
+    updateMetalLayerSize()
+  }
+
+  override func setFrameSize(_ newSize: NSSize) {
+    super.setFrameSize(newSize)
+    if pendingSurfaceCreation { createSurface() }
+    updateMetalLayerSize()
+  }
+
+  override func viewDidChangeBackingProperties() {
+    super.viewDidChangeBackingProperties()
+    updateMetalLayerSize()
+  }
+
+  // MARK: Occlusion (A4)
+
+  /// Called by the host when this pane becomes the active tab (true) or is hidden (false).
+  func setVisible(_ visible: Bool) {
+    guard isPaneVisible != visible else { return }
+    isPaneVisible = visible
+    applyOcclusionState()
+  }
+
+  private func updateWindowVisibility() {
+    let visible = window?.occlusionState.contains(.visible) ?? true
+    guard isWindowVisible != visible else { return }
+    isWindowVisible = visible
+    applyOcclusionState()
+  }
+
+  private func applyOcclusionState() {
+    guard let surface else { return }
+    ghostty_surface_set_occlusion(surface, isPaneVisible && isWindowVisible)
+  }
+
+  // MARK: Focus
+
+  override var acceptsFirstResponder: Bool { true }
+
+  override func becomeFirstResponder() -> Bool {
+    let ok = super.becomeFirstResponder()
+    if ok { setSurfaceFocused(true) }
+    return ok
+  }
+
+  override func resignFirstResponder() -> Bool {
+    let ok = super.resignFirstResponder()
+    if ok { setSurfaceFocused(false) }
+    return ok
+  }
+
+  private func setSurfaceFocused(_ focused: Bool) {
+    guard let surface else { return }
+    ghostty_surface_set_focus(surface, focused)
+  }
+
+  // MARK: Theming
+
+  func applyColorScheme(isDark: Bool) {
+    guard let surface else { return }
+    ghostty_surface_set_color_scheme(
+      surface, isDark ? GHOSTTY_COLOR_SCHEME_DARK : GHOSTTY_COLOR_SCHEME_LIGHT)
+  }
+
+  /// Apply a rebuilt app config (e.g. after a light/dark system-colors change — IT7).
+  func updateConfig(_ config: ghostty_config_t) {
+    guard let surface else { return }
+    ghostty_surface_update_config(surface, config)
+  }
+
+  override func viewDidChangeEffectiveAppearance() {
+    super.viewDidChangeEffectiveAppearance()
+    applyColorScheme(isDark: Self.isCurrentAppearanceDark())
+  }
+
+  private static func isCurrentAppearanceDark() -> Bool {
+    NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+  }
+
+  // MARK: PWD (CMT-1)
+
+  /// Called by `GhosttyRuntimeAdapter` on `GHOSTTY_ACTION_PWD`.
+  func handlePwd(_ pwd: String) { lastKnownCwd = pwd }
+
+  // MARK: Selection
+
+  func readSelectionText() -> String? {
+    guard let surface, ghostty_surface_has_selection(surface) else { return nil }
+    var text = ghostty_text_s()
+    guard ghostty_surface_read_selection(surface, &text) else { return nil }
+    defer { ghostty_surface_free_text(surface, &text) }
+    return Self.extractString(from: text)
+  }
+
+  private static func extractString(from text: ghostty_text_s) -> String? {
+    guard let ptr = text.text, text.text_len > 0 else { return nil }
+    let len = Int(text.text_len)
+    return ptr.withMemoryRebound(to: UInt8.self, capacity: len) { raw in
+      String(bytes: UnsafeBufferPointer(start: raw, count: len), encoding: .utf8)
+    }
+  }
+
+  // MARK: Keyboard
+
+  override func keyDown(with event: NSEvent) {
+    guard let surface else {
+      super.keyDown(with: event)
+      return
+    }
+    let action: ghostty_input_action_e =
+      event.isARepeat ? GHOSTTY_ACTION_REPEAT : GHOSTTY_ACTION_PRESS
+    let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+    let optionAsAlt = translatedOptionAsAlt(for: event)
+
+    // control-only (no ⌘/⌥), not composing: send the control keystroke directly.
+    if flags.contains(.control), !flags.contains(.command), !flags.contains(.option),
+      !hasMarkedText()
+    {
+      var keyEvent = buildKeyEvent(from: event, action: action)
+      let text = filterSpecialCharacters(event.characters ?? "")
+      if text.isEmpty {
+        keyEvent.text = nil
+        _ = ghostty_surface_key(surface, keyEvent)
+      } else {
+        text.withCString {
+          keyEvent.text = $0
+          _ = ghostty_surface_key(surface, keyEvent)
+        }
+      }
+      return
+    }
+
+    // ⌘-modified: app shortcuts are handled by the menu / ⌘1-9 monitor (A3); everything else goes
+    // to the terminal with no text payload.
+    if flags.contains(.command) {
+      if isAppShortcut(event) { return }
+      var keyEvent = buildKeyEvent(from: event, action: action)
+      keyEvent.text = nil
+      _ = ghostty_surface_key(surface, keyEvent)
+      return
+    }
+
+    // Normal path: drive the input context (IME) and capture any produced text.
+    let hadMarkedText = hasMarkedText()
+    currentKeyEvent = event
+    keyTextAccumulator = []
+    commandSelectorCalled = false
+    let interpretEvent = optionAsAlt ? eventStrippingOption(event) : event
+    interpretKeyEvents([interpretEvent])
+    currentKeyEvent = nil
+    syncPreedit(clearIfNeeded: hadMarkedText)
+    let commandWasCalled = commandSelectorCalled
+
+    if !keyTextAccumulator.isEmpty {
+      for text in keyTextAccumulator {
+        var keyEvent = buildKeyEvent(from: event, action: action)
+        keyEvent.consumed_mods =
+          commandWasCalled
+          ? GHOSTTY_MODS_NONE : consumedModsFromFlags(flags, consumeOption: !optionAsAlt)
+        text.withCString {
+          keyEvent.text = $0
+          _ = ghostty_surface_key(surface, keyEvent)
+        }
+      }
+    } else {
+      var keyEvent = buildKeyEvent(from: event, action: action)
+      keyEvent.consumed_mods =
+        commandWasCalled
+        ? GHOSTTY_MODS_NONE : consumedModsFromFlags(flags, consumeOption: !optionAsAlt)
+      keyEvent.composing = hasMarkedText() || hadMarkedText
+      let text = filterSpecialCharacters(event.characters ?? "")
+      if !text.isEmpty, !keyEvent.composing {
+        text.withCString {
+          keyEvent.text = $0
+          _ = ghostty_surface_key(surface, keyEvent)
+        }
+      } else {
+        keyEvent.consumed_mods = GHOSTTY_MODS_NONE
+        keyEvent.text = nil
+        _ = ghostty_surface_key(surface, keyEvent)
+      }
+    }
+  }
+
+  override func keyUp(with event: NSEvent) {
+    guard let surface else { return }
+    var keyEvent = buildKeyEvent(from: event, action: GHOSTTY_ACTION_RELEASE)
+    keyEvent.text = nil
+    _ = ghostty_surface_key(surface, keyEvent)
+  }
+
+  override func flagsChanged(with event: NSEvent) {
+    guard let surface, !hasMarkedText() else { return }
+    let action: ghostty_input_action_e =
+      isFlagPress(event) ? GHOSTTY_ACTION_PRESS : GHOSTTY_ACTION_RELEASE
+    var keyEvent = buildKeyEvent(from: event, action: action)
+    keyEvent.text = nil
+    _ = ghostty_surface_key(surface, keyEvent)
+    updateCmdHoverCursor(modifierFlags: event.modifierFlags)
+  }
+
+  override func performKeyEquivalent(with event: NSEvent) -> Bool {
+    guard event.type == .keyDown, let surface else { return false }
+    guard window?.firstResponder === self || window?.firstResponder === inputContext else {
+      return false
+    }
+    if isAppShortcut(event) { return false }
+    let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+    guard flags.contains(.command) || flags.contains(.control) || flags.contains(.option) else {
+      return false
+    }
+    var keyEvent = buildKeyEvent(
+      from: event, action: event.isARepeat ? GHOSTTY_ACTION_REPEAT : GHOSTTY_ACTION_PRESS)
+    keyEvent.text = nil
+    return ghostty_surface_key(surface, keyEvent)
+  }
+
+  override func doCommand(by selector: Selector) { commandSelectorCalled = true }
+
+  override func insertText(_ insertString: Any) {
+    insertText(insertString, replacementRange: NSRange(location: NSNotFound, length: 0))
+  }
+
+  /// Workroom's app-owned shortcuts that must NOT reach the terminal (plan A3 — minimal allowlist:
+  /// only where Ghostty's behavior would diverge from Workroom's). ⌘1-9 are also caught by the
+  /// AppDelegate monitor; included here defensively. ⌘C/⌘V/etc. fall through to libghostty.
+  private func isAppShortcut(_ event: NSEvent) -> Bool {
+    let flags = event.modifierFlags.intersection([.command, .shift, .option, .control])
+    guard flags == .command else { return false }
+    guard let chars = event.charactersIgnoringModifiers, let ch = chars.first else { return false }
+    if ("1"..."9").contains(ch) { return true }  // focus tab N
+    return ["t", "w", "o", "n", "q", "h", "m", ","].contains(Character(ch.lowercased()))
+  }
+
+  private func buildKeyEvent(from event: NSEvent, action: ghostty_input_action_e)
+    -> ghostty_input_key_s
+  {
+    var keyEvent = ghostty_input_key_s()
+    keyEvent.action = action
+    keyEvent.keycode = UInt32(event.keyCode)  // native macOS virtual keycode; libghostty maps it
+    keyEvent.mods = modsFromEvent(event)
+    keyEvent.consumed_mods = GHOSTTY_MODS_NONE
+    keyEvent.composing = false
+    keyEvent.text = nil
+    keyEvent.unshifted_codepoint =
+      event.charactersIgnoringModifiers?.unicodeScalars.first?.value ?? 0
+    return keyEvent
+  }
+
+  private func consumedModsFromFlags(
+    _ flags: NSEvent.ModifierFlags, consumeOption: Bool = true
+  ) -> ghostty_input_mods_e {
+    var mods = GHOSTTY_MODS_NONE.rawValue
+    if flags.contains(.shift) { mods |= GHOSTTY_MODS_SHIFT.rawValue }
+    if consumeOption, flags.contains(.option) { mods |= GHOSTTY_MODS_ALT.rawValue }
+    return ghostty_input_mods_e(rawValue: mods)
+  }
+
+  private enum RightModifierMask {
+    static let shift: UInt = 0x04, control: UInt = 0x2000, option: UInt = 0x40, command: UInt = 0x10
+  }
+
+  private func modsFromEvent(_ event: NSEvent) -> ghostty_input_mods_e {
+    var mods = GHOSTTY_MODS_NONE.rawValue
+    let flags = event.modifierFlags
+    let raw = flags.rawValue
+    if flags.contains(.shift) { mods |= GHOSTTY_MODS_SHIFT.rawValue }
+    if flags.contains(.control) { mods |= GHOSTTY_MODS_CTRL.rawValue }
+    if flags.contains(.option) { mods |= GHOSTTY_MODS_ALT.rawValue }
+    if flags.contains(.command) { mods |= GHOSTTY_MODS_SUPER.rawValue }
+    if flags.contains(.capsLock) { mods |= GHOSTTY_MODS_CAPS.rawValue }
+    if raw & RightModifierMask.shift != 0 { mods |= GHOSTTY_MODS_SHIFT_RIGHT.rawValue }
+    if raw & RightModifierMask.control != 0 { mods |= GHOSTTY_MODS_CTRL_RIGHT.rawValue }
+    if raw & RightModifierMask.option != 0 { mods |= GHOSTTY_MODS_ALT_RIGHT.rawValue }
+    if raw & RightModifierMask.command != 0 { mods |= GHOSTTY_MODS_SUPER_RIGHT.rawValue }
+    return ghostty_input_mods_e(rawValue: mods)
+  }
+
+  /// True when the option key should be treated as a text-composition modifier (macOS-style) rather
+  /// than Alt — libghostty tells us via its key-translation mods.
+  private func translatedOptionAsAlt(for event: NSEvent) -> Bool {
+    guard let surface, event.modifierFlags.contains(.option) else { return false }
+    let translated = ghostty_surface_key_translation_mods(surface, modsFromEvent(event))
+    return translated.rawValue & GHOSTTY_MODS_ALT.rawValue == 0
+  }
+
+  private func eventStrippingOption(_ event: NSEvent) -> NSEvent {
+    let stripped = event.modifierFlags.subtracting(.option)
+    return NSEvent.keyEvent(
+      with: event.type, location: event.locationInWindow, modifierFlags: stripped,
+      timestamp: event.timestamp, windowNumber: event.windowNumber, context: nil,
+      characters: event.charactersIgnoringModifiers ?? "",
+      charactersIgnoringModifiers: event.charactersIgnoringModifiers ?? "",
+      isARepeat: event.isARepeat, keyCode: event.keyCode) ?? event
+  }
+
+  private func isFlagPress(_ event: NSEvent) -> Bool {
+    let flags = event.modifierFlags
+    switch event.keyCode {
+    case 56, 60: return flags.contains(.shift)
+    case 58, 61: return flags.contains(.option)
+    case 59, 62: return flags.contains(.control)
+    case 55, 54: return flags.contains(.command)
+    case 57: return flags.contains(.capsLock)
+    default: return false
+    }
+  }
+
+  private func filterSpecialCharacters(_ s: String) -> String {
+    String(
+      String.UnicodeScalarView(s.unicodeScalars.filter { $0.value >= 0x20 && $0.value != 0x7f }))
+  }
+
+  private func syncPreedit(clearIfNeeded: Bool = true) {
+    guard let surface else { return }
+    if hasMarkedText(), !markedText.isEmpty {
+      let text = markedText
+      text.withCString { ghostty_surface_preedit(surface, $0, UInt(text.utf8.count)) }
+    } else if clearIfNeeded {
+      ghostty_surface_preedit(surface, nil, 0)
+    }
+  }
+
+  // MARK: Mouse
+
+  private func mousePoint(from event: NSEvent) -> CGPoint {
+    let local = convert(event.locationInWindow, from: nil)
+    return CGPoint(x: local.x, y: bounds.height - local.y)  // libghostty uses a top-left origin
+  }
+
+  override func mouseDown(with event: NSEvent) {
+    window?.makeFirstResponder(self)
+    guard let surface else { return }
+    let pt = mousePoint(from: event)
+    ghostty_surface_mouse_pos(surface, pt.x, pt.y, modsFromEvent(event))
+    // ⌘-click a (non-OSC8) file path → open in the configured editor; consume so it isn't a selection.
+    if event.modifierFlags.contains(.command), !hasOSC8LinkUnderCursor,
+      let word = readWordUnderMouse()
+    {
+      onCmdClickFile?(word)
+      return
+    }
+    _ = ghostty_surface_mouse_button(
+      surface, GHOSTTY_MOUSE_PRESS, GHOSTTY_MOUSE_LEFT, modsFromEvent(event))
+  }
+
+  override func mouseUp(with event: NSEvent) {
+    guard let surface else { return }
+    let pt = mousePoint(from: event)
+    ghostty_surface_mouse_pos(surface, pt.x, pt.y, modsFromEvent(event))
+    _ = ghostty_surface_mouse_button(
+      surface, GHOSTTY_MOUSE_RELEASE, GHOSTTY_MOUSE_LEFT, modsFromEvent(event))
+    autoCopySelectionIfEnabled()
+  }
+
+  override func mouseDragged(with event: NSEvent) { mouseMoved(with: event) }
+  override func rightMouseDragged(with event: NSEvent) { mouseMoved(with: event) }
+
+  override func mouseMoved(with event: NSEvent) {
+    guard let surface else { return }
+    let pt = mousePoint(from: event)
+    ghostty_surface_mouse_pos(surface, pt.x, pt.y, modsFromEvent(event))
+    updateCmdHoverCursor(modifierFlags: event.modifierFlags)
+  }
+
+  override func mouseExited(with event: NSEvent) {
+    super.mouseExited(with: event)
+    setHandCursor(false)
+  }
+
+  override func rightMouseDown(with event: NSEvent) {
+    guard let surface else { return }
+    let pt = mousePoint(from: event)
+    ghostty_surface_mouse_pos(surface, pt.x, pt.y, modsFromEvent(event))
+    let consumed = ghostty_surface_mouse_button(
+      surface, GHOSTTY_MOUSE_PRESS, GHOSTTY_MOUSE_RIGHT, modsFromEvent(event))
+    if !consumed { presentContextMenu(with: event) }
+  }
+
+  override func rightMouseUp(with event: NSEvent) {
+    guard let surface else {
+      super.rightMouseUp(with: event)
+      return
+    }
+    let pt = mousePoint(from: event)
+    ghostty_surface_mouse_pos(surface, pt.x, pt.y, modsFromEvent(event))
+    _ = ghostty_surface_mouse_button(
+      surface, GHOSTTY_MOUSE_RELEASE, GHOSTTY_MOUSE_RIGHT, modsFromEvent(event))
+  }
+
+  override func scrollWheel(with event: NSEvent) {
+    guard let surface else { return }
+    var mods: ghostty_input_scroll_mods_t = 0
+    if event.hasPreciseScrollingDeltas { mods |= 1 }
+    ghostty_surface_mouse_scroll(surface, event.scrollingDeltaX, event.scrollingDeltaY, mods)
+  }
+
+  /// The word under the pointer (for ⌘-click path resolution), via libghostty's quicklook word.
+  private func readWordUnderMouse() -> String? {
+    guard let surface else { return nil }
+    var text = ghostty_text_s()
+    guard ghostty_surface_quicklook_word(surface, &text) else { return nil }
+    defer { ghostty_surface_free_text(surface, &text) }
+    let trimmed = Self.extractString(from: text)?.trimmingCharacters(in: .whitespacesAndNewlines)
+    return (trimmed?.isEmpty ?? true) ? nil : trimmed
+  }
+
+  /// Copy-on-select: on mouse-up, copy the current selection to the pasteboard if enabled (the
+  /// xterm/iTerm2 convention). Gated by the existing `CopyOnSelect` toggle.
+  private func autoCopySelectionIfEnabled() {
+    guard CopyOnSelect.isEnabled, let selection = readSelectionText(), !selection.isEmpty else {
+      return
+    }
+    let pb = NSPasteboard.general
+    pb.clearContents()
+    pb.setString(selection, forType: .string)
+  }
+
+  // MARK: ⌘-hover cursor
+
+  private func updateCmdHoverCursor(modifierFlags: NSEvent.ModifierFlags) {
+    guard modifierFlags.contains(.command) else {
+      setHandCursor(false)
+      return
+    }
+    if hasOSC8LinkUnderCursor {
+      setHandCursor(true)
+      return
+    }
+    if let word = readWordUnderMouse(), resolveCmdHoverFile?(word) == true {
+      setHandCursor(true)
+    } else {
+      setHandCursor(false)
+    }
+  }
+
+  private func setHandCursor(_ on: Bool) {
+    guard on != isShowingHandCursor else { return }
+    isShowingHandCursor = on
+    if on { NSCursor.pointingHand.push() } else { NSCursor.pop() }
+  }
+
+  // MARK: Context menu
+
+  private func presentContextMenu(with event: NSEvent) {
+    let menu = NSMenu(title: "Terminal")
+    let paste = NSMenuItem(title: "Paste", action: #selector(paste(_:)), keyEquivalent: "")
+    paste.target = self
+    paste.isEnabled = NSPasteboard.general.string(forType: .string).map { !$0.isEmpty } ?? false
+    menu.addItem(paste)
+    NSMenu.popUpContextMenu(menu, with: event, for: self)
+  }
+
+  @objc func paste(_ sender: Any?) {
+    window?.makeFirstResponder(self)
+    guard let text = NSPasteboard.general.string(forType: .string), !text.isEmpty else { return }
+    insertText(text, replacementRange: NSRange(location: NSNotFound, length: 0))
+  }
+
+  // MARK: Tracking area
+
+  private func setupTrackingArea() {
+    if let existing = trackingAreaRef { removeTrackingArea(existing) }
+    let area = NSTrackingArea(
+      rect: bounds,
+      options: [.mouseEnteredAndExited, .mouseMoved, .activeInKeyWindow, .inVisibleRect],
+      owner: self)
+    addTrackingArea(area)
+    trackingAreaRef = area
+  }
+
+  override func updateTrackingAreas() {
+    super.updateTrackingAreas()
+    setupTrackingArea()
+  }
+}
+
+// MARK: - NSTextInputClient (IME / marked text)
+
+extension GhosttySurfaceView: NSTextInputClient {
+  func insertText(_ string: Any, replacementRange: NSRange) {
+    let text = (string as? String) ?? (string as? NSAttributedString)?.string ?? ""
+    unmarkText()
+    guard !text.isEmpty else { return }
+    if currentKeyEvent != nil {
+      keyTextAccumulator.append(text)
+    } else if let surface {
+      text.withCString { ghostty_surface_text(surface, $0, UInt(text.utf8.count)) }
+    }
+  }
+
+  func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {
+    let text = (string as? String) ?? (string as? NSAttributedString)?.string ?? ""
+    markedText = text
+    imeMarkedRange =
+      text.isEmpty
+      ? NSRange(location: NSNotFound, length: 0) : NSRange(location: 0, length: text.utf16.count)
+    imeSelectedRange = clampedMarkedRange(selectedRange)
+    if currentKeyEvent == nil { syncPreedit() }
+  }
+
+  func unmarkText() {
+    guard hasMarkedText() else { return }
+    markedText = ""
+    imeMarkedRange = NSRange(location: NSNotFound, length: 0)
+    imeSelectedRange = NSRange(location: 0, length: 0)
+    syncPreedit()
+  }
+
+  func selectedRange() -> NSRange { imeSelectedRange }
+  func markedRange() -> NSRange { imeMarkedRange }
+  func hasMarkedText() -> Bool { imeMarkedRange.location != NSNotFound }
+
+  func attributedSubstring(forProposedRange range: NSRange, actualRange: NSRangePointer?)
+    -> NSAttributedString?
+  {
+    guard hasMarkedText() else {
+      actualRange?.pointee = NSRange(location: 0, length: 0)
+      return range.location == 0 && range.length == 0 ? NSAttributedString(string: "") : nil
+    }
+    guard let safe = intersection(range, with: imeMarkedRange) else { return nil }
+    actualRange?.pointee = safe
+    return NSAttributedString(string: (markedText as NSString).substring(with: safe))
+  }
+
+  func validAttributesForMarkedText() -> [NSAttributedString.Key] { [] }
+  func characterIndex(for point: NSPoint) -> Int { NSNotFound }
+
+  func firstRect(forCharacterRange range: NSRange, actualRange: NSRangePointer?) -> NSRect {
+    guard let surface else { return .zero }
+    var x = 0.0
+    var y = 0.0
+    var w = 0.0
+    var h = 0.0
+    ghostty_surface_ime_point(surface, &x, &y, &w, &h)
+    let viewPt = NSPoint(x: x, y: bounds.height - y)
+    let screenPt = window?.convertPoint(toScreen: convert(viewPt, to: nil)) ?? viewPt
+    return NSRect(x: screenPt.x, y: screenPt.y - h, width: w, height: h)
+  }
+
+  private func clampedMarkedRange(_ range: NSRange) -> NSRange {
+    guard range.location != NSNotFound else { return NSRange(location: 0, length: 0) }
+    let length = markedText.utf16.count
+    let location = min(range.location, length)
+    return NSRange(location: location, length: min(range.length, length - location))
+  }
+
+  private func intersection(_ a: NSRange, with b: NSRange) -> NSRange? {
+    guard a.location != NSNotFound, b.location != NSNotFound else { return nil }
+    let start = max(a.location, b.location)
+    let end = min(a.location + a.length, b.location + b.length)
+    guard start <= end else { return nil }
+    return NSRange(location: start, length: end - start)
+  }
+}

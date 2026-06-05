@@ -1,0 +1,153 @@
+import AppKit
+import Foundation
+import GhosttyKit
+import os
+
+/// Receives libghostty's runtime callbacks (`action_cb`, clipboard, `close_surface_cb`) and routes
+/// them into Workroom. Each surface registers its `GhosttySurfaceView` as the surface `userdata`, so
+/// callbacks resolve back to the originating view via `ghostty_surface_userdata`.
+///
+/// Threading: `action_cb`, the clipboard callbacks, and `close_surface_cb` all fire synchronously
+/// while libghostty is being driven by `ghostty_app_tick`, which `GhosttyApp` only ever runs on the
+/// main thread — so it's safe to touch AppKit/`GhosttySurfaceView` directly here. (`wakeup_cb`, which
+/// can fire off-thread, only schedules a tick and lives on `GhosttyApp`.)
+final class GhosttyRuntimeAdapter {
+  static let shared = GhosttyRuntimeAdapter()
+
+  private let logger = Logger(
+    subsystem: "com.developwithstyle.workroom", category: "GhosttyRuntime")
+
+  // MARK: Action dispatch
+
+  nonisolated func handleAction(
+    app: ghostty_app_t?, target: ghostty_target_s, action: ghostty_action_s
+  ) -> Bool {
+    switch action.tag {
+    case GHOSTTY_ACTION_PWD:
+      guard let view = surfaceView(from: target), let pwd = action.action.pwd.pwd else {
+        return false
+      }
+      view.handlePwd(String(cString: pwd))
+      return true
+
+    case GHOSTTY_ACTION_DESKTOP_NOTIFICATION:
+      guard let view = surfaceView(from: target) else { return false }
+      let note = action.action.desktop_notification
+      let title = note.title.map { String(cString: $0) } ?? ""
+      let body = note.body.map { String(cString: $0) }
+      view.onActivity?(Self.terminalActivity(title: title, body: body))
+      return true
+
+    case GHOSTTY_ACTION_OPEN_URL:
+      return handleOpenURL(target: target, openURL: action.action.open_url)
+
+    case GHOSTTY_ACTION_MOUSE_OVER_LINK:
+      guard let view = surfaceView(from: target) else { return false }
+      let link = action.action.mouse_over_link
+      view.hasOSC8LinkUnderCursor = link.len > 0 && link.url != nil
+      return true
+
+    case GHOSTTY_ACTION_SHOW_CHILD_EXITED:
+      guard let view = surfaceView(from: target) else { return false }
+      handleProcessExit(view)
+      return true
+
+    default:
+      // Tab/split/window intents and everything else are intentionally not handled — Workroom owns
+      // its own tab model (plan A5), and returning false lets libghostty fall back to its default.
+      return false
+    }
+  }
+
+  private func handleOpenURL(target: ghostty_target_s, openURL: ghostty_action_open_url_s) -> Bool {
+    guard let view = surfaceView(from: target), let urlPtr = openURL.url, openURL.len > 0 else {
+      return false
+    }
+    let urlString = urlPtr.withMemoryRebound(to: UInt8.self, capacity: Int(openURL.len)) { raw in
+      String(bytes: UnsafeBufferPointer(start: raw, count: Int(openURL.len)), encoding: .utf8)
+    }
+    guard let urlString, let url = URL(string: urlString) else { return false }
+    return view.onOpenURL?(url) ?? false
+  }
+
+  private func handleProcessExit(_ view: GhosttySurfaceView) {
+    guard !view.processExitHandled else { return }
+    view.processExitHandled = true
+    view.onProcessExit?()
+  }
+
+  /// Resolve the `GhosttySurfaceView` that owns the firing surface, via its registered `userdata`.
+  private func surfaceView(from target: ghostty_target_s) -> GhosttySurfaceView? {
+    guard target.tag == GHOSTTY_TARGET_SURFACE, let surface = target.target.surface else {
+      return nil
+    }
+    guard let userdata = ghostty_surface_userdata(surface) else { return nil }
+    return Unmanaged<GhosttySurfaceView>.fromOpaque(userdata).takeUnretainedValue()
+  }
+
+  // MARK: Clipboard
+
+  /// Copy (write) — ⌘C and OSC 52 writes. Writes the first text payload to the general pasteboard.
+  nonisolated func writeClipboard(
+    userdata: UnsafeMutableRawPointer?,
+    location: ghostty_clipboard_e,
+    content: UnsafePointer<ghostty_clipboard_content_s>?,
+    count: Int,
+    confirm: Bool
+  ) {
+    guard let content, count > 0 else { return }
+    var text: String?
+    for i in 0..<count {
+      if let data = content[i].data {
+        text = String(cString: data)
+        break
+      }
+    }
+    guard let text, !text.isEmpty else { return }
+    let pb = NSPasteboard.general
+    pb.clearContents()
+    pb.setString(text, forType: .string)
+  }
+
+  /// Paste (read) — ⌘V and OSC 52 reads. Completes the request with the pasteboard's text.
+  nonisolated func readClipboard(
+    userdata: UnsafeMutableRawPointer?,
+    location: ghostty_clipboard_e,
+    state: UnsafeMutableRawPointer?
+  ) -> Bool {
+    guard let userdata else { return false }
+    let view = Unmanaged<GhosttySurfaceView>.fromOpaque(userdata).takeUnretainedValue()
+    guard let surface = view.surface else { return false }
+    let text = NSPasteboard.general.string(forType: .string) ?? ""
+    text.withCString { ghostty_surface_complete_clipboard_request(surface, $0, state, false) }
+    return true
+  }
+
+  nonisolated func confirmReadClipboard(
+    userdata: UnsafeMutableRawPointer?,
+    content: UnsafePointer<CChar>?,
+    state: UnsafeMutableRawPointer?,
+    request: ghostty_clipboard_request_e
+  ) {
+    // OSC 52 read confirmation flow is not surfaced to the user in Workroom; nothing to confirm.
+  }
+
+  // MARK: Close
+
+  nonisolated func closeSurface(userdata: UnsafeMutableRawPointer?, needsConfirm: Bool) {
+    guard let userdata else { return }
+    let view = Unmanaged<GhosttySurfaceView>.fromOpaque(userdata).takeUnretainedValue()
+    handleProcessExit(view)
+  }
+
+  // MARK: Notification mapping (T2 — pure, unit-tested)
+
+  /// Map a libghostty desktop-notification (title, optional body) to Workroom's `TerminalActivity`.
+  /// Pure + side-effect-free so it's testable without a live terminal (replaces the deleted
+  /// `OSCParserTests` coverage). Empty title falls back to "Notification"; empty body → nil.
+  static func terminalActivity(title: String, body: String?) -> TerminalActivity {
+    let resolvedTitle = title.isEmpty ? "Notification" : title
+    let resolvedBody = (body?.isEmpty ?? true) ? nil : body
+    return .osc(title: resolvedTitle, body: resolvedBody)
+  }
+}

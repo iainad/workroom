@@ -5,7 +5,7 @@
 #     cd macapp && xcodegen generate && open WorkroomApp.xcodeproj
 #
 # If you'd rather not use XcodeGen, create a SwiftUI macOS App target in Xcode,
-# add the SwiftTerm Swift Package, drop in the WorkroomApp/ sources, and add the
+# add the libghostty-spm Swift Package, drop in the WorkroomApp/ sources, and add the
 # Scripts/build-helper.sh as a post-build Run Script phase (see README.md).
 
 name: WorkroomApp
@@ -16,17 +16,19 @@ options:
   createIntermediateGroups: true
 
 packages:
-  SwiftTerm:
-    url: https://github.com/migueldeicaza/SwiftTerm
-    # Pinned to a release that exposes startProcess(... currentDirectory:) AND compiles
-    # cleanly. (Tip-of-main currently references an undefined `SyncDebug` and fails to
-    # build — hence an exact tag, not a moving branch.)
-    exactVersion: 1.13.0
   Sparkle:
     # Auto-update framework: polls the appcast feed and installs EdDSA-signed DMGs.
     # See WorkroomApp/Core/Updater.swift and the SU* Info.plist keys below.
     url: https://github.com/sparkle-project/Sparkle
     from: "2.6.0"
+  libghostty:
+    # Prebuilt GhosttyKit.xcframework (the libghostty C API as a static archive) distributed
+    # as a Swift package. We link the `GhosttyKit` product (raw C API) and roll our own
+    # terminal surface view — NOT the higher-level `GhosttyTerminal` wrapper. The embedding
+    # API is not yet stable, so pin EXACT. Pre-GA we move
+    # to a self-built xcframework from a Ghostty fork for full pin/patch control (see plan CMT-2).
+    url: https://github.com/Lakr233/libghostty-spm
+    exactVersion: 1.2.3
 
 targets:
   WorkroomApp:
@@ -34,9 +36,24 @@ targets:
     platform: macOS
     sources:
       - path: WorkroomApp
+      # libghostty runtime resources (terminfo + shell-integration). Folder reference so the
+      # tree (e.g. terminfo/78/xterm-ghostty) is copied verbatim into Contents/Resources/ghostty;
+      # GhosttyApp points GHOSTTY_RESOURCES_DIR at it. See Resources/ghostty/SOURCE.md.
+      - path: Resources/ghostty
+        type: folder
+        buildPhase: resources
     dependencies:
-      - package: SwiftTerm
       - package: Sparkle
+      # libghostty: link the raw C API product (GhosttyKit). Its package links c++ + Carbon;
+      # the static Ghostty archive additionally needs these system frameworks at final link
+      # (GPU renderer + CoreText font backend + HID).
+      - package: libghostty
+        product: GhosttyKit
+      - sdk: Metal.framework
+      - sdk: MetalKit.framework
+      - sdk: CoreText.framework
+      - sdk: IOKit.framework
+      - sdk: QuartzCore.framework
     info:
       path: WorkroomApp/Info.plist
       properties:

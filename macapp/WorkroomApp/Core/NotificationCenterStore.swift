@@ -1,10 +1,10 @@
 import Foundation
 
-/// A notification-worthy signal a terminal emitted. Detection is explicit-only: the program
-/// (or shell) asks for attention via an OSC escape sequence, or the terminal rings the bell.
-/// Plain output is deliberately NOT a signal (see issue #10 review, decision 1.1b).
+/// A notification-worthy signal a terminal emitted. Detection is explicit-only: the program (or
+/// shell) asks for attention via an OSC notification escape sequence, which libghostty parses and
+/// surfaces as a desktop-notification action. Plain output — and the bare bell — are deliberately
+/// NOT recorded here (the bell is handled by libghostty's audible/visual bell; see plan C1).
 enum TerminalActivity: Equatable {
-  case bell
   case osc(title: String, body: String?)
 }
 
@@ -13,7 +13,7 @@ enum TerminalActivity: Equatable {
 /// click back to a live terminal is `(targetID, tabID)`; both are session-scoped (tab ids are
 /// per-launch UUIDs), so history is intentionally session-only — see `NotificationCenterStore`.
 struct WorkroomNotification: Identifiable, Equatable {
-  enum Kind: Equatable { case bell, osc }
+  enum Kind: Equatable { case osc }
 
   let id: UUID
   let targetID: TerminalTarget.ID
@@ -72,30 +72,13 @@ final class NotificationCenterStore: ObservableObject {
     activity: TerminalActivity, focused: Bool
   ) -> WorkroomNotification? {
     guard !focused else { return nil }
-
-    switch activity {
-    case .bell:
-      // Coalesce into this tab's existing unread bell entry so a script ringing the bell in a
-      // loop doesn't spawn hundreds of items (the badge just counts up).
-      if let idx = items.firstIndex(where: { $0.tabID == tabID && $0.kind == .bell && !$0.isRead })
-      {
-        items[idx].count += 1
-        items[idx].date = now()
-        return items[idx]
-      }
-      return append(
-        WorkroomNotification(
-          id: UUID(), targetID: targetID, tabID: tabID, kind: .bell, source: source,
-          title: "Terminal activity", body: "Bell", date: now(), isRead: false, count: 1))
-
-    case .osc(let title, let body):
-      // OSC notifications carry a real message — keep each one distinct in the history.
-      return append(
-        WorkroomNotification(
-          id: UUID(), targetID: targetID, tabID: tabID, kind: .osc, source: source,
-          title: title.isEmpty ? "Notification" : title, body: body, date: now(), isRead: false,
-          count: 1))
-    }
+    guard case .osc(let title, let body) = activity else { return nil }
+    // OSC notifications carry a real message — keep each one distinct in the history.
+    return append(
+      WorkroomNotification(
+        id: UUID(), targetID: targetID, tabID: tabID, kind: .osc, source: source,
+        title: title.isEmpty ? "Notification" : title, body: body, date: now(), isRead: false,
+        count: 1))
   }
 
   @discardableResult
@@ -146,53 +129,6 @@ final class NotificationCenterStore: ObservableObject {
   }
 
   func clear() { items.removeAll() }
-}
-
-/// Pure decode of an OSC notification payload into a `TerminalActivity`. Extracted (and pure)
-/// so the grammar is unit-testable without a live terminal — the handler receives the raw,
-/// un-decoded bytes after the code (SwiftTerm strips the `ESC ] <code> ;` prefix and the
-/// BEL/ST terminator for us).
-enum OSCNotification {
-  static func parse(code: Int, _ data: ArraySlice<UInt8>) -> TerminalActivity? {
-    guard let text = String(bytes: data, encoding: .utf8) else { return nil }
-    switch code {
-    case 777: return parse777(text)
-    case 9: return parse9(text)
-    case 99: return parse99(text)
-    default: return nil
-    }
-  }
-
-  /// urxvt/tmux: `notify;<title>;<body…>` (body may itself contain `;`).
-  static func parse777(_ text: String) -> TerminalActivity? {
-    let parts = text.components(separatedBy: ";")
-    guard parts.count >= 3, parts[0] == "notify" else { return nil }
-    let title = parts[1]
-    let body = parts[2...].joined(separator: ";")
-    return .osc(title: title, body: body.isEmpty ? nil : body)
-  }
-
-  /// iTerm2-style growl: `9;<message>`. SwiftTerm otherwise claims OSC 9 for ConEmu progress
-  /// (`9;4;state;pct`); a leading `4;` is that progress grammar and is ignored (we don't
-  /// surface progress). Everything else is treated as the notification message.
-  static func parse9(_ text: String) -> TerminalActivity? {
-    if text.hasPrefix("4;") { return nil }
-    let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
-    return t.isEmpty ? nil : .osc(title: t, body: nil)
-  }
-
-  /// kitty: `<metadata>;<payload>`. v1 handles the common single-message case only; a
-  /// `d=0` continuation marker (more chunks coming) is unsupported and ignored.
-  static func parse99(_ text: String) -> TerminalActivity? {
-    guard let semi = text.firstIndex(of: ";") else {
-      let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
-      return t.isEmpty ? nil : .osc(title: t, body: nil)
-    }
-    let metadata = text[..<semi]
-    if metadata.contains("d=0") { return nil }
-    let payload = text[text.index(after: semi)...].trimmingCharacters(in: .whitespacesAndNewlines)
-    return payload.isEmpty ? nil : .osc(title: payload, body: nil)
-  }
 }
 
 /// Pure gate for whether an event that was recorded should also raise a native banner: only

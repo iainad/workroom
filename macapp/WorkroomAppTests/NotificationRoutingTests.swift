@@ -51,13 +51,4 @@ final class NotificationRoutingTests: XCTestCase {
     XCTAssertEqual(p.userInfo["tabID"], tab.uuidString)
     XCTAssertEqual(p.userInfo["notifID"], notifID.uuidString)
   }
-
-  func testPayloadShowsCoalescedCount() {
-    let n = WorkroomNotification(
-      id: UUID(), targetID: "t", tabID: UUID(), kind: .bell, source: "", title: "Terminal activity",
-      body: "Bell", date: Date(timeIntervalSince1970: 0), isRead: false, count: 4)
-    let p = SystemNotifier.payload(for: n)
-    XCTAssertEqual(p.body, "Bell (4)")
-    XCTAssertNil(p.subtitle)  // empty source → no subtitle
-  }
 }

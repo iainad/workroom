@@ -37,9 +37,6 @@ struct WorkroomApp: App {
 /// menu, and the monitor sees the keys before the focused terminal does.
 final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
   private var monitor: Any?
-  private var mouseUpMonitor: Any?
-  private var mouseMovedMonitor: Any?
-  private var flagsChangedMonitor: Any?
 
   func applicationDidFinishLaunching(_ notification: Notification) {
     // Receive notification clicks (authorization is requested lazily on first post).
@@ -55,32 +52,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
       return nil  // consume so it doesn't reach the terminal
     }
 
-    // On left-mouse-up: first, a ⌘-click on a file path opens it in the chosen editor (consuming
-    // the event so SwiftTerm doesn't also hand it to NSWorkspace — see `TerminalLinkOpener`).
-    // Otherwise, copy-on-select copies the focused terminal's selection (if any) to the
-    // pasteboard. Monitors — not a `mouseUp` override — because SwiftTerm's `mouseUp` is
-    // `public`, not `open`. See `CopyOnSelect`.
-    mouseUpMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseUp) { event in
-      if TerminalLinkOpener.handleCommandClick(event) {
-        return nil  // opened in the editor; consume so SwiftTerm doesn't double-handle it
-      }
-      Task { @MainActor in CopyOnSelect.copyActiveSelection() }
-      return event  // don't consume — the terminal still needs the event
-    }
-
-    // Pointing-hand cursor over ⌘-clickable links/paths. The `.mouseMoved` monitor tracks
-    // movement while ⌘ is held (SwiftTerm only emits moved events then); the `.flagsChanged`
-    // monitor catches ⌘ press/release while the pointer is stationary. Monitors — not a
-    // `cursorUpdate` override — because SwiftTerm's cursor methods are `public`, not `open`.
-    // See `LinkCursor`. Both deliberately don't consume the event.
-    mouseMovedMonitor = NSEvent.addLocalMonitorForEvents(matching: .mouseMoved) { event in
-      Task { @MainActor in LinkCursor.update() }
-      return event
-    }
-    flagsChangedMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { event in
-      Task { @MainActor in LinkCursor.update() }
-      return event
-    }
+    // ⌘-click-to-open-in-editor and copy-on-select now live inside GhosttySurfaceView (we own the
+    // NSView), so the SwiftTerm-era NSEvent monitors that worked around its public-not-open methods
+    // are gone.
   }
 
   /// A notification was clicked: route to its terminal (the ids ride in `userInfo`). Reuses the

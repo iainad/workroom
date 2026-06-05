@@ -1,30 +1,39 @@
 import AppKit
-import SwiftTerm
 
-/// One terminal tab: a live shell view plus a stable id and title for the tab strip.
+/// One terminal tab: a split-ready pane tree (today a single leaf) plus a stable id and title for
+/// the tab strip. `view` is the focused/primary leaf's surface — a convenience for the
+/// (currently single-pane) host; with splits it becomes the focused pane.
 struct TerminalTab: Identifiable {
   let id = UUID()
-  let view: LocalProcessTerminalView
+  let root: PaneNode
   let title: String
+
+  var view: GhosttySurfaceView { root.firstLeaf.view }
 }
 
-/// Owns the live terminals for each target (a workroom or a project root) — one or more
-/// tabs each — for the lifetime of the app session, so switching targets or tabs hides/shows
-/// terminals instead of tearing them down (a running dev server in one tab survives while
-/// you look at another). Keyed on `TerminalTarget.ID`, which is project-scoped, so two
-/// same-named workrooms in different projects (and roots) never share a terminal.
-/// Cross-relaunch disk persistence is intentionally out of scope.
+/// Owns the live terminals for each target (a workroom or a project root) — one or more tabs each —
+/// for the lifetime of the app session, so switching targets or tabs hides/shows terminals instead
+/// of tearing them down (a running dev server in one tab survives while you look at another). Keyed
+/// on `TerminalTarget.ID`, which is project-scoped, so two same-named workrooms in different projects
+/// never share a terminal. Cross-relaunch disk persistence is intentionally out of scope.
 @MainActor
 final class TerminalSessions: ObservableObject {
   @Published private var tabsByTarget: [TerminalTarget.ID: [TerminalTab]] = [:]
   @Published private var activeByTarget: [TerminalTarget.ID: TerminalTab.ID] = [:]
-  /// Per-target running counter so tab titles ("Terminal 1", "2", …) stay stable across
-  /// closes rather than renumbering.
+  /// Per-target running counter so tab titles ("Terminal 1", "2", …) stay stable across closes
+  /// rather than renumbering.
   private var counts: [TerminalTarget.ID: Int] = [:]
-  /// Set once by `AppStore`: forwards each terminal's notification-worthy activity (OSC/bell)
-  /// up to the notification spine. A closure (not a store reference) so sessions stay ignorant
-  /// of `AppStore`.
+  /// Set once by `AppStore`: forwards each terminal's notification-worthy activity (OSC) up to the
+  /// notification spine. A closure (not a store reference) so sessions stay ignorant of `AppStore`.
   var activityHandler: ((TerminalTarget.ID, TerminalTab.ID, TerminalActivity) -> Void)?
+
+  /// Factory seam (plan T1): how a surface view is created for a target. Overridable in tests so the
+  /// lifecycle (add/close/select/move/reap) can be exercised without a real window/shell. Note a
+  /// `GhosttySurfaceView` does not spawn its PTY until it enters a window, so the default is already
+  /// test-safe; the seam exists so tests can stub it entirely.
+  var makeView: (TerminalTarget) -> GhosttySurfaceView = {
+    GhosttySurfaceView(workingDirectory: $0.path)
+  }
 
   func tabs(for target: TerminalTarget) -> [TerminalTab] {
     tabsByTarget[target.id] ?? []
@@ -38,8 +47,8 @@ final class TerminalSessions: ObservableObject {
     return tabs.first
   }
 
-  /// Create the target's first terminal the first time its pane appears. Once it has been
-  /// opened, an emptied tab set is left as-is (the user closed them on purpose).
+  /// Create the target's first terminal the first time its pane appears. Once it has been opened, an
+  /// emptied tab set is left as-is (the user closed them on purpose).
   func ensureTab(for target: TerminalTarget) {
     if tabsByTarget[target.id] == nil {
       addTab(for: target)
@@ -49,15 +58,7 @@ final class TerminalSessions: ObservableObject {
   func addTab(for target: TerminalTarget) {
     let count = (counts[target.id] ?? 0) + 1
     counts[target.id] = count
-    let term = makeTerminal(for: target)
-    let tab = TerminalTab(view: term, title: "Terminal \(count)")
-    // Forward this terminal's activity, tagged with its target + tab id, to the handler.
-    // [weak self] + value-type-only captures: the view must not retain sessions or itself.
-    let targetID = target.id
-    let tabID = tab.id
-    term.onActivity = { [weak self] activity in
-      Task { @MainActor in self?.activityHandler?(targetID, tabID, activity) }
-    }
+    let tab = makeTab(for: target, count: count)
     tabsByTarget[target.id, default: []].append(tab)
     activeByTarget[target.id] = tab.id
   }
@@ -66,9 +67,9 @@ final class TerminalSessions: ObservableObject {
     activeByTarget[target.id] = tabID
   }
 
-  /// Reorder (drag-and-drop in the tab bar): move the dragged tab to `index` in the tab
-  /// order. `index` is interpreted against the array *after* the dragged tab is removed,
-  /// and is clamped to bounds. The active tab is unaffected.
+  /// Reorder (drag-and-drop in the tab bar): move the dragged tab to `index` in the tab order.
+  /// `index` is interpreted against the array *after* the dragged tab is removed, and is clamped to
+  /// bounds. The active tab is unaffected.
   func moveTab(_ draggedID: TerminalTab.ID, toIndex index: Int, for target: TerminalTarget) {
     guard var tabs = tabsByTarget[target.id],
       let from = tabs.firstIndex(where: { $0.id == draggedID })
@@ -78,26 +79,25 @@ final class TerminalSessions: ObservableObject {
     tabsByTarget[target.id] = tabs
   }
 
-  /// Close a tab. Closing the last one leaves the target with no terminals — the tab bar
-  /// (and its add button) stays, and the active tab becomes nil.
+  /// Close a tab. Closing the last one leaves the target with no terminals — the tab bar (and its
+  /// add button) stays, and the active tab becomes nil.
   func closeTab(_ tabID: TerminalTab.ID, for target: TerminalTarget) {
     guard var tabs = tabsByTarget[target.id],
       let idx = tabs.firstIndex(where: { $0.id == tabID })
     else { return }
     let removed = tabs.remove(at: idx)
-    terminate(removed.view)
+    teardown(removed)
     tabsByTarget[target.id] = tabs
     if activeByTarget[target.id] == tabID {
-      // Activate the neighbour that slid into this slot, else the new last tab
-      // (nil when none remain).
+      // Activate the neighbour that slid into this slot, else the new last tab (nil when none remain).
       activeByTarget[target.id] = (idx < tabs.count ? tabs[idx] : tabs.last)?.id
     }
   }
 
-  /// Terminate and forget every terminal for a target (on delete / when its directory
-  /// disappears) so we don't leak login shells.
+  /// Terminate and forget every terminal for a target (on delete / when its directory disappears) so
+  /// we don't leak login shells.
   func reap(_ id: TerminalTarget.ID) {
-    for tab in tabsByTarget[id] ?? [] { terminate(tab.view) }
+    for tab in tabsByTarget[id] ?? [] { teardown(tab) }
     tabsByTarget[id] = nil
     activeByTarget[id] = nil
     counts[id] = nil
@@ -107,44 +107,57 @@ final class TerminalSessions: ObservableObject {
     for id in Array(tabsByTarget.keys) { reap(id) }
   }
 
-  /// Re-theme every live terminal — mounted and cached-detached alike — to the current app
-  /// appearance. The per-view appearance hooks (see `ThemedTerminalView`) only fire for views in
-  /// a window, so a detached background tab is reached only here; called on each explicit theme
-  /// change from `RootView.applyAppearance()`.
+  /// Re-theme every live terminal — visible and hidden alike — to the current app appearance. Driven
+  /// from `RootView.applyAppearance()` on each explicit theme change. (System-colors theming detail
+  /// is refined in a later step; this propagates the light/dark color scheme to every surface.)
   func applyThemeToAll() {
+    let isDark = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+    GhosttyApp.shared.reloadConfig()  // rebuild system-colors config for the new appearance (IT7)
+    GhosttyApp.shared.setColorScheme(dark: isDark)
+    let config = GhosttyApp.shared.config
     for tabs in tabsByTarget.values {
-      for tab in tabs { (tab.view as? ThemedTerminalView)?.applyTheme() }
+      for tab in tabs {
+        for pane in tab.root.leaves {
+          if let config { pane.view.updateConfig(config) }
+          pane.view.applyColorScheme(isDark: isDark)
+        }
+      }
     }
   }
 
-  private func makeTerminal(for target: TerminalTarget) -> ActivityTerminalView {
-    let term = ActivityTerminalView(frame: .zero)
+  // MARK: Creation
 
-    let shell = ShellEnvironment.loginShell()
-    let shellName = (shell as NSString).lastPathComponent
-    var env = Terminal.getEnvironmentVariables(termName: "xterm-256color", trueColor: true)
-    env.append("PATH=\(ShellEnvironment.path())")
+  private func makeTab(for target: TerminalTarget, count: Int) -> TerminalTab {
+    let view = makeView(target)
+    let tab = TerminalTab(root: .leaf(TerminalPane(view: view)), title: "Terminal \(count)")
 
-    // `currentDirectory:` is present in the pinned SwiftTerm (v1.13.0).
-    term.startProcess(
-      executable: shell,
-      args: ["-l"],
-      environment: env,
-      execName: "-\(shellName)",
-      currentDirectory: target.path
-    )
-    return term
+    // Forward this terminal's activity, tagged with its target + tab id, to the handler.
+    // [weak self] + value-type-only captures: the view must not retain sessions.
+    let targetID = target.id
+    let tabID = tab.id
+    view.onActivity = { [weak self] activity in
+      self?.activityHandler?(targetID, tabID, activity)
+    }
+
+    // ⌘-click link handling (replaces the old AppDelegate NSEvent monitors). cwd comes from the
+    // surface's `GHOSTTY_ACTION_PWD`-tracked value (CMT-1); [weak view] avoids a view→closure→view
+    // retain cycle.
+    let projectPath = target.path
+    view.onCmdClickFile = { [weak view] word in
+      TerminalLinkOpener.handleCmdClickFile(word, cwd: view?.lastKnownCwd ?? projectPath)
+    }
+    view.resolveCmdHoverFile = { [weak view] word in
+      TerminalLinkOpener.resolvesToFile(word, cwd: view?.lastKnownCwd ?? projectPath)
+    }
+    view.onOpenURL = { [weak view] url in
+      TerminalLinkOpener.handleOpenURL(url, cwd: view?.lastKnownCwd ?? projectPath)
+    }
+    return tab
   }
 
-  private func terminate(_ term: LocalProcessTerminalView) {
-    // Drop the activity callback so the closed terminal can't emit (and to break any retain
-    // path) before it goes away.
-    (term as? ActivityTerminalView)?.onActivity = nil
-    // SwiftTerm v1.13.0 exposes the child via `process`; terminate() sends SIGTERM to
-    // the shell so we don't leak login shells on switch / close / delete / quit.
-    if term.process?.running == true {
-      term.process?.terminate()
-    }
-    term.removeFromSuperview()
+  /// Tear down every surface in a tab (plan A1: `GhosttySurfaceView.tearDown` clears callbacks before
+  /// freeing the surface, so no in-flight libghostty callback touches a dead view).
+  private func teardown(_ tab: TerminalTab) {
+    for pane in tab.root.leaves { pane.view.tearDown() }
   }
 }

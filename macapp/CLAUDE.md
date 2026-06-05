@@ -21,8 +21,9 @@ make app-icon       # regenerate AppIcon PNGs (Scripts/make-icon.swift)
 make app-clean      # remove DerivedData + .xcodeproj
 ```
 
-Builds reuse `macapp/DerivedData/` so SwiftTerm isn't re-resolved every build. (`cli-*` targets
-cover the Go CLI — see the root CLAUDE.md.)
+Builds reuse `macapp/DerivedData/` so the Swift packages (incl. the GhosttyKit xcframework)
+aren't re-resolved/re-downloaded every build. (`cli-*` targets cover the Go CLI — see the root
+CLAUDE.md.)
 
 ## Formatting & linting
 
@@ -44,8 +45,12 @@ that surfaces violations as **warnings** (non-fatal — `make app-lint` is the h
   invisible to `xcodebuild`/Xcode until the project is regenerated.
 - **SourceKit "Cannot find type X in scope" is usually noise.** The single-file indexer
   doesn't see sibling files; a clean `xcodebuild` is authoritative.
-- **SwiftTerm is pinned to `exactVersion: 1.13.0`** (project.yml) — tip-of-`main`
-  references an undefined `SyncDebug` and won't compile. Don't float it to a branch.
+- **The terminal is libghostty** (`libghostty-spm`'s `GhosttyKit` xcframework, pinned
+  `exactVersion: 1.2.3` in project.yml). The embedding C API is not yet stable, so pin EXACT —
+  don't float it. The terminal surface (`Core/GhosttySurfaceView.swift`) + runtime
+  (`GhosttyApp`/`GhosttyRuntimeAdapter`) are ours; the bundled `Resources/ghostty` (terminfo +
+  shell-integration) must ship for the engine to start. Pre-GA, the plan is to move to a
+  self-built xcframework from a pinned Ghostty fork.
 - **Menu enable/disable must flow through `focusedSceneValue` + `@FocusedValue`**
   (see `WorkroomApp.swift`); a `Commands` body does not re-evaluate when the shared
   `AppStore` mutates. ⌘1–9 are handled by an `NSEvent` local monitor in `AppDelegate`,

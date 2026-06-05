@@ -28,7 +28,7 @@ struct WorkroomTerminalsView: View {
     // vertical slack when there's no terminal below it and balloons.
     Group {
       if let active {
-        TerminalContainerView(terminal: active.view)
+        TerminalContainerView(view: active.view)
           .id(active.id)  // re-mount when the active tab changes
           .padding(8)
       } else {

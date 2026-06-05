@@ -6,7 +6,7 @@ import XCTest
 /// (`open`) and the kernel cwd lookup are side-effecting and out of scope here.
 final class TerminalLinkOpenerTests: XCTestCase {
 
-  // filePath(from:) — web URLs are left to SwiftTerm (nil); everything else is a path.
+  // filePath(from:) — web URLs return nil (the caller opens them via NSWorkspace); else a path.
 
   func testWebURLsAreNotFilePaths() {
     for url in [

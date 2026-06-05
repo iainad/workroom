@@ -1,11 +1,11 @@
 # Workroom — macOS app
 
 A native SwiftUI app that manages projects and their workrooms and opens a built-in
-terminal (SwiftTerm) in each. It integrates the `workroom` Go CLI by **bundling the
+terminal (libghostty) in each. It integrates the `workroom` Go CLI by **bundling the
 binary** and shelling out over its `--json` contract — no cgo, no duplicated logic.
 
-> Status: **builds clean.** `xcodegen generate` + `xcodebuild` compiles the app and
-> SwiftTerm with zero warnings in our sources, embeds + (ad-hoc) signs the Go helper,
+> Status: **builds clean.** `xcodegen generate` + `xcodebuild` compiles the app and links
+> the libghostty xcframework with zero warnings in our sources, embeds + (ad-hoc) signs the Go helper,
 > and the helper speaks the `--json` contract. Runtime behaviour (terminals, mutations,
 > shell reaping) still wants hands-on QA in Xcode. The CLI contract is unit-tested in
 > the parent Go module.
@@ -43,7 +43,7 @@ make app-release    # notarized Release build + DMG installer (see below)
 > (`make app-run`/`make app-build` only regenerate when the `.xcodeproj` is missing, so
 > regenerate by hand after adding files.)
 
-Xcode resolves the SwiftTerm Swift Package, and the `Build & embed workroom helper`
+Xcode resolves the libghostty-spm Swift Package, and the `Build & embed workroom helper`
 script phase (`Scripts/build-helper.sh`) compiles the Go CLI into
 `Workroom.app/Contents/Resources/workroom` and signs it. (Resources, not
 `Contents/MacOS`: a helper named `workroom` there would collide with the `Workroom`
@@ -78,7 +78,7 @@ profile — set `NOTARY_KEY_PATH` (a `.p8`), `NOTARY_KEY_ID`, and `NOTARY_ISSUER
 script uses those automatically.
 
 Prefer not to use XcodeGen? Create a SwiftUI macOS App target manually, add the
-SwiftTerm package, add the `WorkroomApp/` sources, and add `Scripts/build-helper.sh`
+libghostty-spm package, add the `WorkroomApp/` sources, and add `Scripts/build-helper.sh`
 as a Run Script phase **after Compile Sources**.
 
 ## Auto-update (Sparkle)
@@ -127,12 +127,11 @@ release is a baseline; auto-update kicks in for the release after it. **Never de
 
 ## Things to verify on first build (marked `TODO` in code)
 
-1. **SwiftTerm pin** (`project.yml`): pinned to `exactVersion: 1.13.0` — it exposes
-   `startProcess(… currentDirectory:)` and compiles cleanly. (Tip-of-`main` currently
-   references an undefined `SyncDebug` and fails to build, so do not float the pin to a
-   branch.) ✓ verified: the app builds against it.
-2. **Terminal termination** (`TerminalSessions.terminate`): ✓ implemented via
-   `LocalProcessTerminalView.process.terminate()` (SIGTERM). Still worth a runtime check:
+1. **libghostty pin** (`project.yml`): `libghostty-spm`'s `GhosttyKit` xcframework pinned to
+   `exactVersion: 1.2.3`. The embedding C API is not yet stable, so pin EXACT — don't float it.
+   Pre-GA: move to a self-built xcframework from a pinned Ghostty fork. ✓ the app builds + links.
+2. **Terminal teardown** (`TerminalSessions` → `GhosttySurfaceView.tearDown`): ✓ frees the
+   surface via `ghostty_surface_free` (callbacks cleared first). Still worth a runtime check:
    switch/delete workrooms repeatedly and confirm no orphaned shells in `ps`.
 3. **Signing/notarization**: ✓ configured (Developer ID for Release, team B898J443L9;
    helper signed by `Scripts/build-helper.sh`). Run `Scripts/release.sh` to build + notarize

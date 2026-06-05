@@ -12,7 +12,7 @@ enum ThemePreference: String, CaseIterable {
   /// the latter fails to revert to the system appearance on macOS once a scheme has
   /// been forced. Setting `NSApp.appearance = nil` reliably tracks the system (and
   /// live-updates with it). The embedded terminals follow the appearance separately
-  /// (see `ThemedTerminalView` / `TerminalSessions.applyThemeToAll`).
+  /// (see `TerminalSessions.applyThemeToAll`, which rebuilds the libghostty system-colors config).
   var nsAppearance: NSAppearance? {
     switch self {
     case .system: return nil
