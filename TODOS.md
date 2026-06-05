@@ -55,3 +55,101 @@ automatic via `UNUserNotificationCenter`; per-workroom mute is app logic.
 (`macapp/WorkroomApp/Core/NotificationCenterStore.swift`, `Core/SystemNotifier.swift`).
 
 **Priority:** P3 (the feature is usable without it; add when a real terminal proves too chatty).
+
+## Own the GhosttyKit xcframework before GA (macapp) — CMT-2
+
+**What:** Stop consuming the third-party `libghostty-spm` (Lakr233) package. Fork Ghostty, build
+the universal `GhosttyKit.xcframework` (`macos-arm64_x86_64`) + resources tarball in a *separate*
+repo's CI, publish them as release artifacts, and switch `project.yml` to that source.
+
+**Why:** libghostty's embedding C API is explicitly unstable/internal ("breaking changes are
+expected"). We pin `exactVersion: 1.2.3` today, but the pin is on someone else's repackaging —
+if it lags upstream or stalls we have no recourse. Muxy (the blueprint) forked rather than trust a
+packager for exactly this reason. Owning the pin is the locked pre-GA checkpoint (CMT-2). No Zig
+toolchain is needed to *consume* the xcframework — only to *build* the fork, which lives in the
+separate repo's CI, not Workroom's build.
+
+**How to start:** Fork `ghostty-org/ghostty`; add CI that builds the xcframework + bundles
+`terminfo`/`shell-integration`; publish both as release assets. In `macapp/project.yml`, point the
+`libghostty` package at the fork's release (or vendor the xcframework + a 2-file C shim, as Muxy
+does, linking the static archive via `.unsafeFlags`). Re-verify signing — still a static archive
+in the main executable, so no new framework to sign.
+
+**Depends on:** nothing in-app — it's a dependency-source swap (`macapp/project.yml`,
+`macapp/Resources/ghostty/`). Best done while the API surface we use is stable.
+
+**Priority:** P1 before GA (the migration ships on the third-party pin for the beta).
+
+## Splits feature (macapp) — A5
+
+**What:** The actual split UI: keybindings to split a pane horizontally/vertically, focus
+navigation between panes, drag-to-resize the divider, and close-pane.
+
+**Why:** The migration built the model split-ready (A5) — `TerminalTab` already holds a `PaneNode`
+tree (leaf = one `GhosttySurfaceView`; node = split + orientation), and the host renders it (today
+always a single leaf, so behaviour == pre-splits). Only the interaction layer is missing.
+
+**How to start:** Extend `PaneNode` construction in `TerminalSessions` (split the focused leaf into
+a node); render the node recursively with a divider in `Views/TerminalContainerView.swift`; per-leaf
+occlusion is already wired (A4). Add commands/keybindings in `WorkroomApp.swift`. Crib Muxy's
+`SplitNode` interaction as inspiration only (D1 — no Muxy extras).
+
+**Depends on:** the pane-tree model already in place
+(`macapp/WorkroomApp/Models/TerminalPane.swift`, `Core/TerminalSessions.swift`,
+`Views/TerminalContainerView.swift`).
+
+**Priority:** P2 (the user wants splits "in the very near future"; the groundwork is done).
+
+## Terminal accessibility (macapp) — CMT-3
+
+**What:** VoiceOver support on `GhosttySurfaceView` — `accessibilitySelectedText`, accessible
+value/role, and focus reporting, so the terminal is navigable with assistive tech.
+
+**Why:** SwiftTerm provided some a11y for free; the hand-rolled libghostty surface currently
+provides none (accepted regression for the beta, CMT-3). `ghostty_surface_read_selection` already
+gives us the selected text to expose.
+
+**How to start:** Override the `NSAccessibility` protocol methods on `GhosttySurfaceView`; back
+`accessibilitySelectedText()` with `ghostty_surface_read_selection` (same read that powers
+copy-on-select); set an appropriate role. Reference Muxy's `accessibilitySelectedText()`.
+
+**Depends on:** the selection read already implemented
+(`macapp/WorkroomApp/Core/GhosttySurfaceView.swift`).
+
+**Priority:** P2 (accessibility regression — address before GA, not blocking the beta).
+
+## Memory / live-surface diagnostics (macapp)
+
+**What:** Lightweight instrumentation of live `ghostty_surface_t` count and process memory, to
+catch leaks/growth at high tab counts.
+
+**Why:** Each surface is a GPU-backed Metal layer; the plan flags the 50–100-tab surface budget as
+"measure, don't assume." Occlusion is wired (A4) so off-screen surfaces idle, but magnitude at
+Workroom's tab counts is unverified. Muxy ships a 458-line `MemoryDiagnostics` for this reason.
+
+**How to start:** A periodic sampler logging `tabsByTarget` leaf count + `mach_task_basic_info`
+resident size via `os.Logger`; optionally a debug overlay. Keep it far lighter than Muxy's — a
+counter + a memory read, not crash-crumb recovery (D1).
+
+**Depends on:** `TerminalSessions` (surface inventory), `GhosttyApp` (`os.Logger` already set up).
+
+**Priority:** P3 (diagnostic aid; pair with the manual surface-budget QA pass).
+
+## OSC 52 clipboard-confirmation policy (macapp)
+
+**What:** A real policy/UI for terminal-app clipboard access (OSC 52) — the runtime's
+`read_clipboard_cb` / `write_clipboard_cb`. Today writes are gated to `text/*` mime and reads use
+Ghostty's permissive default (auto-allow); a deliberate prompt/allowlist is deferred.
+
+**Why:** Code-review finding #7. OSC 52 lets a remote program read/write the system pasteboard;
+the permissive default is fine for a beta (it matches Ghostty's own default) but a security-minded
+user should be able to require confirmation.
+
+**How to start:** Implement `confirm_read_clipboard_cb` to surface a prompt (or consult an
+`@AppStorage` policy: allow / prompt / deny); gate `write_clipboard_cb` similarly. Decide the
+default (Ghostty = allow).
+
+**Depends on:** the clipboard callbacks already wired
+(`macapp/WorkroomApp/Core/GhosttyRuntimeAdapter.swift`, `Core/GhosttyApp.swift`).
+
+**Priority:** P3 (permissive default is acceptable for the beta).
