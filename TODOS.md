@@ -136,19 +136,40 @@ occlusion is already wired (A4). Add commands/keybindings in `WorkroomApp.swift`
 
 ## Terminal accessibility (macapp) — CMT-3
 
-**What:** VoiceOver support on `GhosttySurfaceView` — `accessibilitySelectedText`, accessible
-value/role, and focus reporting, so the terminal is navigable with assistive tech.
+**What:** VoiceOver support on `GhosttySurfaceView` — accessible value (screen text), selected
+text, and focus reporting, so the terminal is navigable with assistive tech.
 
-**Why:** SwiftTerm provided some a11y for free; the hand-rolled libghostty surface currently
-provides none (accepted regression for the beta, CMT-3). `ghostty_surface_read_selection` already
-gives us the selected text to expose.
+**Why:** SwiftTerm (an NSView text control) provided some a11y for free; the libghostty surface is
+Metal-rendered, so its content is pixels — invisible to the accessibility system. Today the view
+only sets `role=.textArea` + a label ("Terminal — <dir>"); it exposes **no value and no selection**,
+so VoiceOver reads nothing. Accepted regression for the beta (CMT-3). Doubles as the **enabler for
+content-level UI tests**: once terminal text is in the a11y tree, XCUITest can assert on rendered
+output (backspace deleted, TUI drew, scrollback) — see `macapp/QA-libghostty.md` (Bucket 2).
 
-**How to start:** Override the `NSAccessibility` protocol methods on `GhosttySurfaceView`; back
-`accessibilitySelectedText()` with `ghostty_surface_read_selection` (same read that powers
-copy-on-select); set an appropriate role. Reference Muxy's `accessibilitySelectedText()`.
+**When:** **sequence with the xcframework upgrade** (CMT-2), not now. Feasible on 1.2.3 today (read
+APIs exist), but ghostty upstream has merged a11y plumbing we'd want to ride — e.g.
+**ghostty #12902** ("core: send selection_changed notification"), which on macOS posts
+`.ghosttySelectionDidChange` → debounced → `NSAccessibility.selectedTextChanged`. On 1.2.3 we'd have
+to post that notification ourselves on our own selection events; post-upgrade it comes from the
+engine. A before-GA item.
 
-**Depends on:** the selection read already implemented
-(`macapp/WorkroomApp/Core/GhosttySurfaceView.swift`).
+**How to start (minimal-viable, keep light per D1 — crib Muxy's `accessibilitySelectedText()`):**
+- `accessibilityValue()` → visible screen text via `ghostty_surface_read_text(surface, <viewport
+  ghostty_selection_s>, …)` (reuse the `extractString(from:)` helper).
+- `accessibilitySelectedText()` → `ghostty_surface_read_selection` (the same read that powers
+  copy-on-select).
+- Post `NSAccessibility.post(element:notification:)` `.selectedTextChanged` on selection change
+  (we already detect mouseUp / copy-on-select) and a throttled `.valueChanged` on output so
+  VoiceOver follows along; keep the role/label and report focus.
+- Skip the full `NSAccessibility` text protocol (line/char-range/bounds geometry) — overkill for a
+  terminal, and Muxy keeps it minimal too.
+
+**Caveat:** terminal a11y is inherently partial (dynamic output, scrollback, full-screen TUIs);
+target "announce output + selection, navigable text", not a perfect document model.
+
+**Depends on:** the read APIs already present in 1.2.3 (`ghostty_surface_read_selection`,
+`ghostty_surface_read_text`, `extractString`) in `macapp/WorkroomApp/Core/GhosttySurfaceView.swift`;
+best done after CMT-2 to use ghostty's `selection_changed` hook.
 
 **Priority:** P2 (accessibility regression — address before GA, not blocking the beta).
 
