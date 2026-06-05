@@ -62,14 +62,17 @@ app-build: ## Build the app (Debug)
 app-test: ## Run the app's unit tests
 	cd macapp && { [ -d $(APP_PROJECT) ] || xcodegen generate; } && $(APP_XCODEBUILD) -destination 'platform=macOS' test $(APP_SIGN_FLAGS)
 
+app-uitest: ## Run the app's UI tests (XCUITest — needs a real GUI login session, not headless)
+	cd macapp && { [ -d $(APP_PROJECT) ] || xcodegen generate; } && xcodebuild -project $(APP_PROJECT) -scheme WorkroomAppUITests -configuration Debug -derivedDataPath DerivedData -clonedSourcePackagesDirPath DerivedData/SourcePackages -destination 'platform=macOS' test $(APP_SIGN_FLAGS)
+
 app-generate: ## Force-regenerate the (gitignored) .xcodeproj from project.yml
 	cd macapp && xcodegen generate
 
 app-format: ## Format Swift sources in place (swift-format)
-	cd macapp && xcrun swift-format format --in-place --parallel --recursive WorkroomApp WorkroomAppTests
+	cd macapp && xcrun swift-format format --in-place --parallel --recursive WorkroomApp WorkroomAppTests WorkroomAppUITests
 
 app-lint: ## Lint Swift with swift-format (--strict)
-	cd macapp && xcrun swift-format lint --strict --parallel --recursive WorkroomApp WorkroomAppTests
+	cd macapp && xcrun swift-format lint --strict --parallel --recursive WorkroomApp WorkroomAppTests WorkroomAppUITests
 
 app-release: ## Build, notarize, staple + package a DMG installer (macapp/Scripts/release.sh)
 	cd macapp && Scripts/release.sh

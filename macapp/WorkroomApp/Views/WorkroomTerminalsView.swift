@@ -39,6 +39,7 @@ struct WorkroomTerminalsView: View {
         } actions: {
           Button("New Terminal") { sessions.addTab(for: target) }
             .buttonStyle(.borderedProminent)
+            .accessibilityIdentifier("NewTerminal")
         }
       }
     }
@@ -107,6 +108,7 @@ struct WorkroomTerminalsView: View {
       .padding(.horizontal, 8)
       .help("New terminal")
       .accessibilityLabel("New terminal")
+      .accessibilityIdentifier("NewTerminal")
     }
     .padding(.vertical, 4)
   }
@@ -175,6 +177,7 @@ struct WorkroomTerminalsView: View {
         }
       }
       .contentShape(Rectangle())
+      .accessibilityIdentifier("terminal.tab.\(tab.title)")
       .scaleEffect(isDragging ? 1.04 : 1)
       .shadow(color: .black.opacity(isDragging ? 0.25 : 0), radius: isDragging ? 6 : 0, y: 2)
       .onHover { inside in

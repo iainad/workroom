@@ -208,3 +208,27 @@ default (Ghostty = allow).
 (`macapp/WorkroomApp/Core/GhosttyRuntimeAdapter.swift`, `Core/GhosttyApp.swift`).
 
 **Priority:** P3 (permissive default is acceptable for the beta).
+
+## UI-testing fixture seam (macapp)
+
+**What:** A launch-argument-driven fixture mode so XCUITest gets deterministic app state — e.g.
+`-uitesting` (or `WORKROOM_UITEST_FIXTURE=…`) makes `AppStore.bootstrap` load fake projects /
+workrooms instead of the developer's real `~/.config/workroom`.
+
+**Why:** The starter UI suite (`macapp/WorkroomAppUITests`, run via `make app-uitest`) currently has
+a deterministic smoke test plus **opportunistic** workflow tests that `XCTSkip` when no project /
+workroom is configured — because the app loads real config, so tab/notification/delete flows can't
+assert deterministically (and aren't CI-able). A fixture seam makes those flows reliable and lets us
+add the deferred tests (notification badge + click-to-navigate, delete-clears-badges).
+
+**How to start:** Read a launch arg in `WorkroomApp`/`AppStore` (only when present) and inject a
+fixture list through the existing CLI-`--json` boundary (or a test-only store seam) so no real `git`/
+`jj` runs. Then flesh out the skipped tests in `WorkroomWorkflowUITests` and drop the skips. Pairs
+with **CMT-3** (terminal accessibility) which unlocks terminal-*content* assertions on top of this.
+
+**Depends on:** the UI test target + accessibility identifiers already in place
+(`macapp/project.yml`, `WorkroomAppUITests/`, identifiers in `Views/ProjectSidebar.swift` +
+`Views/WorkroomTerminalsView.swift`).
+
+**Priority:** P3 (the smoke test + opportunistic suite are useful now; deterministic/CI runs want
+this).

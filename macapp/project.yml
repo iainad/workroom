@@ -149,3 +149,49 @@ targets:
         # product so the unit tests load into the app via @testable import.
         TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Workroom.app/Contents/MacOS/Workroom"
         BUNDLE_LOADER: "$(TEST_HOST)"
+
+  # macOS UI tests (XCUITest). Deliberately kept OUT of the WorkroomApp scheme's test action (see
+  # `schemes:` below) so `make app-test` stays unit-only and headless — UI tests need a GUI session
+  # and run via `make app-uitest`. XCUITest drives through the accessibility tree; the terminal
+  # surface is Metal-rendered (its content isn't in the a11y tree until CMT-3), so these cover
+  # app-shell workflows (sidebar, tabs, menus, badges), not terminal content.
+  WorkroomAppUITests:
+    type: bundle.ui-testing
+    platform: macOS
+    sources:
+      - path: WorkroomAppUITests
+    dependencies:
+      - target: WorkroomApp
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: com.developwithstyle.workroom.uitests
+        SWIFT_VERSION: "5.0"
+        DEVELOPMENT_TEAM: B898J443L9
+        CODE_SIGN_STYLE: Automatic
+        TEST_TARGET_NAME: WorkroomApp
+
+# Explicit schemes so the unit-test gate (`make app-test` → WorkroomApp scheme) runs ONLY the unit
+# tests, while the UI tests run from their own scheme (`make app-uitest`). Without this, XcodeGen
+# would fold the UI test target into the app scheme's test action and `make app-test` would try to
+# launch a GUI session.
+schemes:
+  WorkroomApp:
+    build:
+      targets:
+        WorkroomApp: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - WorkroomAppTests
+  WorkroomAppUITests:
+    build:
+      targets:
+        WorkroomApp: all
+        WorkroomAppUITests: [test]
+    test:
+      config: Debug
+      targets:
+        - WorkroomAppUITests

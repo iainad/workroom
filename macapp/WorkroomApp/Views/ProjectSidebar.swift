@@ -150,6 +150,7 @@ struct ProjectSidebar: View {
       }
     }
     .contentShape(Rectangle())
+    .accessibilityIdentifier("sidebar.project.\(project.displayName)")
     .onHover { inside in
       if inside { hovered = id } else if hovered == id { hovered = nil }
     }
@@ -228,6 +229,7 @@ struct ProjectSidebar: View {
     }
     .padding(.leading, childLeading)
     .contentShape(Rectangle())
+    .accessibilityIdentifier("sidebar.workroom.\(workroom.name)")
     .onHover { inside in
       if inside { hovered = id } else if hovered == id { hovered = nil }
     }
@@ -314,6 +316,7 @@ struct ProjectSidebar: View {
       .onHover { addProjectHovering = $0 }
       .help("Add a project folder (⌘O)")
       .accessibilityLabel("Add Project")
+      .accessibilityIdentifier("AddProject")
     }
     .padding(.horizontal, 8)
     .padding(.vertical, 6)
