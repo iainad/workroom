@@ -152,7 +152,12 @@ if [ -z "$SIGN_UPDATE" ]; then
   echo "note: Sparkle's sign_update not found under SourcePackages; skipping appcast signing." >&2
 elif [ -n "${SPARKLE_PRIVATE_KEY:-}" ]; then
   echo "==> EdDSA-signing the DMG for Sparkle (provided key)"
-  SIG_ATTRS="$("$SIGN_UPDATE" "$DMG" -s "$SPARKLE_PRIVATE_KEY")"
+  # Use --ed-key-file: the -s key-string flag is deprecated and now errors. The secret holds the
+  # same base64 the keychain export (generate_keys -x) produces, which --ed-key-file reads.
+  SPARKLE_KEYFILE="$(mktemp)"
+  printf '%s' "$SPARKLE_PRIVATE_KEY" >"$SPARKLE_KEYFILE"
+  SIG_ATTRS="$("$SIGN_UPDATE" "$DMG" --ed-key-file "$SPARKLE_KEYFILE")"
+  rm -f "$SPARKLE_KEYFILE"
 elif SIG_ATTRS="$("$SIGN_UPDATE" "$DMG" 2>/dev/null)"; then
   echo "==> EdDSA-signed the DMG for Sparkle (keychain key)"
 else
