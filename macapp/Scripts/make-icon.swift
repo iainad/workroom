@@ -2,9 +2,10 @@
 //
 // make-icon.swift — generates the Workroom app icon.
 //
-// Draws a white "worktree" branch graph (a trunk node forking into two parallel
-// branches of commit nodes) on an indigo→violet rounded-square tile, and exports
-// every PNG the macOS AppIcon set needs. Pure CoreGraphics/AppKit, no assets.
+// Draws three cascading rounded "room" cards (a workroom = an isolated copy) on a
+// teal→blue rounded-square tile, with a terminal prompt — a blue chevron and a pink
+// block cursor — on the front card. Exports every PNG the macOS AppIcon set needs.
+// Pure CoreGraphics/AppKit, no assets.
 //
 // Usage:
 //   swift Scripts/make-icon.swift [output-dir]
@@ -21,22 +22,18 @@ func rgb(_ r: Int, _ g: Int, _ b: Int, _ a: CGFloat = 1) -> CGColor {
     CGColor(srgbRed: CGFloat(r) / 255, green: CGFloat(g) / 255, blue: CGFloat(b) / 255, alpha: a)
 }
 
-let bgTop = rgb(0x7C, 0x66, 0xFF)     // indigo, top-left
-let bgBottom = rgb(0x3C, 0x1E, 0x91)  // deep violet, bottom-right
-let glyph = rgb(0xFF, 0xFF, 0xFF)     // white branch graph
+let bgTop = rgb(0x18, 0xE0, 0xC8)     // teal, top-left
+let bgBottom = rgb(0x2E, 0x7D, 0xFF)  // blue, bottom-right
+let cardBack = rgb(0xFF, 0xD2, 0x3F)  // yellow (deepest card)
+let cardMid = rgb(0xFF, 0x6F, 0xB5)   // pink (middle card)
+let cardFront = rgb(0xFF, 0xFF, 0xFF) // white (front card)
+let chevron = rgb(0x2E, 0x7D, 0xFF)   // blue prompt chevron
+let cursor = rgb(0xFF, 0x6F, 0xB5)    // pink block cursor
 
-// MARK: - Geometry (fractions of the rounded tile, top-left origin, y down)
+// MARK: - Geometry (fractions of the rounded tile)
 
-struct P { let x: CGFloat; let y: CGFloat }
-
-let T  = P(x: 0.500, y: 0.150)   // trunk / HEAD
-let L1 = P(x: 0.305, y: 0.400)   // left branch
-let L2 = P(x: 0.305, y: 0.625)
-let R1 = P(x: 0.695, y: 0.400)   // right branch (one node deeper)
-let R2 = P(x: 0.695, y: 0.625)
-let R3 = P(x: 0.695, y: 0.850)
-
-let nodes = [T, L1, L2, R1, R2, R3]
+let cardW: CGFloat = 0.66    // card edge as a fraction of the tile width
+let offset: CGFloat = 0.055  // each card's diagonal step from the tile centre
 
 // MARK: - Render
 
@@ -52,7 +49,7 @@ func render(_ pixels: Int, to url: URL) {
     ctx.setShouldAntialias(true)
     ctx.interpolationQuality = .high
 
-    // Flip to a top-left origin so the fractions above read naturally.
+    // Flip to a top-left origin so the fractions above read naturally (y grows downward).
     ctx.translateBy(x: 0, y: S)
     ctx.scaleBy(x: 1, y: -1)
 
@@ -86,55 +83,54 @@ func render(_ pixels: Int, to url: URL) {
                            locations: [0, 1])!
     ctx.drawLinearGradient(sheen, start: CGPoint(x: tile.minX, y: tile.minY),
                            end: CGPoint(x: tile.minX, y: tile.minY + tile.height * 0.55), options: [])
-    ctx.restoreGState()
 
-    // --- Branch graph glyph ---------------------------------------------------------
-    func pt(_ p: P) -> CGPoint {
-        CGPoint(x: tile.minX + p.x * tile.width, y: tile.minY + p.y * tile.height)
+    // --- Cascading "room" cards -----------------------------------------------------
+    func pt(_ fx: CGFloat, _ fy: CGFloat) -> CGPoint {
+        CGPoint(x: tile.minX + fx * tile.width, y: tile.minY + fy * tile.height)
     }
-    let edgeW = tile.width * 0.052
-    let nodeR = tile.width * 0.063
-    let forkMidY: CGFloat = 0.285
+    let w = tile.width * cardW
+    let cardRadius = w * 0.235
+    let cardShadow = rgb(0x07, 0x2A, 0x55, 0.45)
 
+    func card(center: CGPoint, fill: CGColor) {
+        let r = CGRect(x: center.x - w / 2, y: center.y - w / 2, width: w, height: w)
+        let path = CGPath(roundedRect: r, cornerWidth: cardRadius, cornerHeight: cardRadius, transform: nil)
+        ctx.saveGState()
+        ctx.setShadow(offset: CGSize(width: 0, height: -w * 0.05), blur: w * 0.11, color: cardShadow)
+        ctx.addPath(path)
+        ctx.setFillColor(fill)
+        ctx.fillPath()
+        ctx.restoreGState()
+    }
+    card(center: pt(0.5 + offset, 0.5 - offset), fill: cardBack)
+    card(center: pt(0.5, 0.5), fill: cardMid)
+    let front = pt(0.5 - offset, 0.5 + offset)
+    card(center: front, fill: cardFront)
+
+    // --- Terminal prompt on the front card ------------------------------------------
+    func fp(_ dx: CGFloat, _ dy: CGFloat) -> CGPoint {
+        CGPoint(x: front.x + dx * w, y: front.y + dy * w)
+    }
     ctx.saveGState()
-    ctx.setStrokeColor(glyph)
-    ctx.setFillColor(glyph)
-    ctx.setLineWidth(edgeW)
     ctx.setLineCap(.round)
     ctx.setLineJoin(.round)
-
-    // Soft glyph shadow for a touch of depth (skipped at tiny sizes where it muddies).
-    if pixels >= 128 {
-        ctx.setShadow(offset: CGSize(width: 0, height: -S * 0.006), blur: S * 0.012,
-                      color: rgb(0x18, 0x0A, 0x40, 0.35))
-    }
-
-    // Fork edges: smooth S-curves leaving T vertically and arriving vertically.
-    func fork(to child: P) {
-        let p0 = pt(T), p3 = pt(child)
-        let c1 = CGPoint(x: p0.x, y: tile.minY + forkMidY * tile.height)
-        let c2 = CGPoint(x: p3.x, y: tile.minY + forkMidY * tile.height)
-        ctx.move(to: p0)
-        ctx.addCurve(to: p3, control1: c1, control2: c2)
-        ctx.strokePath()
-    }
-    fork(to: L1)
-    fork(to: R1)
-
-    // Straight branch segments.
-    func line(_ a: P, _ b: P) {
-        ctx.move(to: pt(a)); ctx.addLine(to: pt(b)); ctx.strokePath()
-    }
-    line(L1, L2)
-    line(R1, R2)
-    line(R2, R3)
-
-    // Nodes on top of the edges.
-    for n in nodes {
-        let c = pt(n)
-        ctx.addEllipse(in: CGRect(x: c.x - nodeR, y: c.y - nodeR, width: nodeR * 2, height: nodeR * 2))
-    }
+    // Blue chevron ">".
+    ctx.setStrokeColor(chevron)
+    ctx.setLineWidth(0.085 * w)
+    ctx.move(to: fp(-0.26, -0.17))
+    ctx.addLine(to: fp(-0.05, 0.0))
+    ctx.addLine(to: fp(-0.26, 0.17))
+    ctx.strokePath()
+    // Pink block cursor.
+    let cc = fp(0.16, 0.02)
+    let cw = 0.17 * w
+    let ch = 0.30 * w
+    let cursorRect = CGRect(x: cc.x - cw / 2, y: cc.y - ch / 2, width: cw, height: ch)
+    ctx.addPath(CGPath(roundedRect: cursorRect, cornerWidth: 0.035 * w, cornerHeight: 0.035 * w, transform: nil))
+    ctx.setFillColor(cursor)
     ctx.fillPath()
+    ctx.restoreGState()
+
     ctx.restoreGState()
 
     // --- Write PNG ------------------------------------------------------------------
