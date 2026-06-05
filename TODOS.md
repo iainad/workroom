@@ -56,27 +56,46 @@ automatic via `UNUserNotificationCenter`; per-workroom mute is app logic.
 
 **Priority:** P3 (the feature is usable without it; add when a real terminal proves too chatty).
 
-## Own the GhosttyKit xcframework before GA (macapp) — CMT-2
+## Own the GhosttyKit xcframework (macapp) — CMT-2
 
-**What:** Stop consuming the third-party `libghostty-spm` (Lakr233) package. Fork Ghostty, build
-the universal `GhosttyKit.xcframework` (`macos-arm64_x86_64`) + resources tarball in a *separate*
-repo's CI, publish them as release artifacts, and switch `project.yml` to that source.
+**What:** Stop depending on the third-party `libghostty-spm` (Lakr233) package as the source of
+truth. Build our own universal `GhosttyKit.xcframework` (`macos-arm64_x86_64`) + version-matched
+resources from a ghostty ref *we* pin, and point `project.yml` at it.
 
-**Why:** libghostty's embedding C API is explicitly unstable/internal ("breaking changes are
-expected"). We pin `exactVersion: 1.2.3` today, but the pin is on someone else's repackaging —
-if it lags upstream or stalls we have no recourse. Muxy (the blueprint) forked rather than trust a
-packager for exactly this reason. Owning the pin is the locked pre-GA checkpoint (CMT-2). No Zig
-toolchain is needed to *consume* the xcframework — only to *build* the fork, which lives in the
-separate repo's CI, not Workroom's build.
+**When (trigger-based, lean sooner than "vague pre-GA"):** Not needed for the beta — `1.2.3` works
+with our fixes (see the keyboard-input + terminal-input commits). Do it when the **first concrete
+trigger** hits, and treat it as the **next infra task after the beta stabilizes**:
+- We want an **unreleased ghostty change** — concretely **OSC 99** (PR #10467), the backspace-keycode
+  fix, or the libghostty OSC fallback-handler — none of which exist in any ghostty *release*, so no
+  libghostty-spm release can ever deliver them.
+- We want to be on **ghostty 1.3.x** (see lag below).
+- libghostty-spm stalls or makes a pin choice we don't want.
+- **GA** — do it regardless of features: shipping GA on a single-maintainer repackaging of an
+  explicitly-unstable API is a supply-chain risk; owning the pin is the control.
 
-**How to start:** Fork `ghostty-org/ghostty`; add CI that builds the xcframework + bundles
-`terminfo`/`shell-integration`; publish both as release assets. In `macapp/project.yml`, point the
-`libghostty` package at the fork's release (or vendor the xcframework + a 2-file C shim, as Muxy
-does, linking the static archive via `.unsafeFlags`). Re-verify signing — still a static archive
-in the main executable, so no new framework to sign.
+**Why (reinforced by observed facts, 2026-06-05):**
+- The embedding C API is explicitly unstable/internal ("breaking changes are expected").
+- **The packager already lags upstream.** ghostty has released **v1.3.0 and v1.3.1**, but
+  libghostty-spm is still on **`1.2.3`** (published 2026-06-01; tags 1.2.1→1.2.3 only). So "just use
+  new libghostty-spm releases as they arrive" means trailing ghostty by ~2 versions on a single
+  maintainer's cadence — the exact "packager lags" risk, now real, not hypothetical.
+- Everything we'll want next (OSC 99 etc.) lives **upstream of any release** — only the owner-of-the-pin
+  path can reach it. Muxy forked for exactly this reason.
+
+**How to start (cheaper than a full fork — reuse the packager's tooling):**
+- libghostty-spm ships a **`build.sh`** that builds the xcframework from a ghostty source dir
+  (`./build.sh --source /path/to/ghostty …`). So: clone `ghostty-org/ghostty` at the chosen ref (a
+  release tag, or a branch with PR #10467 cherry-picked), run `build.sh`, and **regenerate
+  `terminfo`/`shell-integration` from that same ref** (fixes the SOURCE.md version-skew TODO).
+- Vendor the resulting xcframework + a 2-file C shim (`GhosttyKit.c` + `module.modulemap` exposing
+  `ghostty.h`), linking the static archive via `.unsafeFlags`, **or** host it as a release artifact in
+  a separate repo's CI and point the SPM package there. Zig is needed only to *build*, not to
+  *consume*.
+- Re-verify signing — still a static archive in the main executable, so no new framework to sign
+  (plan §4).
 
 **Depends on:** nothing in-app — it's a dependency-source swap (`macapp/project.yml`,
-`macapp/Resources/ghostty/`). Best done while the API surface we use is stable.
+`macapp/Resources/ghostty/`). Best done when we've picked the target ghostty ref.
 
 **Re-verify after the upgrade (known gaps to recheck):**
 - **OSC 99 desktop notifications** — ghostty has no OSC-99 (Kitty notification) parser in any release
@@ -91,7 +110,9 @@ in the main executable, so no new framework to sign.
   work around it by sending DEL as text (`GhosttySurfaceView.filterSpecialCharacters`). If the
   upgrade fixes the keycode path, the workaround can be simplified.
 
-**Priority:** P1 before GA (the migration ships on the third-party pin for the beta).
+**Priority:** P2 now / **P1 before GA**. Trigger-based: not blocking the beta (ships on the
+third-party pin), but it's the next infra task once the beta is stable — and the observed packager
+lag (1.2.3 vs ghostty 1.3.1) means leaning sooner beats waiting on the packager.
 
 ## Splits feature (macapp) — A5
 
