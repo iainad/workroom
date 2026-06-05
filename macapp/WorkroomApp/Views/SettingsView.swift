@@ -9,6 +9,7 @@ struct SettingsView: View {
   @AppStorage(CopyOnSelect.storageKey) private var copyOnSelect = true
   // Bundle id of the editor for ⌘-clicked file paths; "" = the file's default app.
   @AppStorage(TerminalLinkOpener.editorStorageKey) private var pathEditor = ""
+  @EnvironmentObject private var updater: Updater
 
   var body: some View {
     Form {
@@ -26,6 +27,13 @@ struct SettingsView: View {
           Text(editor.name).tag(editor.id)
         }
       }
+
+      // Drives Sparkle's scheduled background checks (persisted as SUEnableAutomaticChecks).
+      Toggle(
+        "Automatically check for updates",
+        isOn: Binding(
+          get: { updater.automaticallyChecksForUpdates },
+          set: { updater.automaticallyChecksForUpdates = $0 }))
     }
     .formStyle(.grouped)
     .frame(width: 440)

@@ -22,6 +22,11 @@ packages:
     # cleanly. (Tip-of-main currently references an undefined `SyncDebug` and fails to
     # build — hence an exact tag, not a moving branch.)
     exactVersion: 1.13.0
+  Sparkle:
+    # Auto-update framework: polls the appcast feed and installs EdDSA-signed DMGs.
+    # See WorkroomApp/Core/Updater.swift and the SU* Info.plist keys below.
+    url: https://github.com/sparkle-project/Sparkle
+    from: "2.6.0"
 
 targets:
   WorkroomApp:
@@ -31,6 +36,7 @@ targets:
       - path: WorkroomApp
     dependencies:
       - package: SwiftTerm
+      - package: Sparkle
     info:
       path: WorkroomApp/Info.plist
       properties:
@@ -40,6 +46,18 @@ targets:
         LSMinimumSystemVersion: "14.0"
         NSHighResolutionCapable: true
         LSApplicationCategoryType: public.app-category.developer-tools
+        # Resolve from the build settings below so Scripts/release.sh can inject them from the
+        # git tag. CFBundleVersion MUST increase every release — Sparkle compares it to decide
+        # whether a newer build is available.
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        # Sparkle auto-updater. SUPublicEDKey is the Ed25519 PUBLIC key from Sparkle's
+        # `generate_keys` (run once); its private half signs the appcast in CI. The feed is an
+        # asset on the fixed `appcast` GitHub release. See macapp/README.md ("Auto-update").
+        SUFeedURL: "https://github.com/joelmoss/workroom/releases/download/appcast/appcast.xml"
+        SUPublicEDKey: "JUdX5urBRS1a/heb5qKRuxdxQtHXS3WLGYd0+qI9P6k="
+        SUEnableAutomaticChecks: true
+        SUScheduledCheckInterval: 86400
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.developwithstyle.workroom

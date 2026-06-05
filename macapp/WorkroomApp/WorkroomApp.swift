@@ -6,6 +6,7 @@ import UserNotifications
 struct WorkroomApp: App {
   @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
   @StateObject private var store = AppStore.shared
+  @StateObject private var updater = Updater()
 
   init() {
     // Ensure the in-process environment (inherited by the bundled `workroom`
@@ -22,10 +23,11 @@ struct WorkroomApp: App {
         .frame(minWidth: 900, minHeight: 560)
         .task { await store.bootstrap() }
     }
-    .commands { WorkroomCommands() }
+    .commands { WorkroomCommands(updater: updater) }
 
     Settings {
       SettingsView()
+        .environmentObject(updater)
     }
   }
 }
@@ -142,6 +144,7 @@ extension FocusedValues {
 /// Menu-bar commands + keyboard shortcuts. They act on the shared store so they work
 /// regardless of which pane has focus.
 struct WorkroomCommands: Commands {
+  @ObservedObject var updater: Updater
   @FocusedValue(\.workroomSelected) private var workroomSelected
   @FocusedValue(\.hasTerminal) private var hasTerminal
   // Shared with RootView's inspector + toolbar toggle (same key) so all three stay in sync.
@@ -149,6 +152,11 @@ struct WorkroomCommands: Commands {
 
   var body: some Commands {
     CommandGroup(after: .appInfo) {
+      // Sparkle update check (App menu, just below "About Workroom"). Disabled while a check
+      // is already running. See Core/Updater.swift.
+      Button("Check for Updates…") { updater.checkForUpdates() }
+        .disabled(!updater.canCheckForUpdates)
+
       // App menu: symlink the bundled CLI into the user's PATH (like VS Code's "Install 'code'
       // command"). Prompts for admin only if the target dir needs it. See CommandLineInstaller.
       Button("Install ‘workroom’ Command in PATH…") {

@@ -72,6 +72,10 @@ jobs:
           NOTARY_KEY: ${{ secrets.NOTARY_KEY }}
           NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
           NOTARY_ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
+          # Sparkle: injects the tag as the app version and EdDSA-signs the DMG for the appcast.
+          # Empty until the secret is added — release.sh then skips signing (DMG still ships).
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+          VERSION: ${{ github.ref_name }}
         run: |
           echo "$NOTARY_KEY" | openssl base64 -d -A > "$RUNNER_TEMP/notary.p8"
           NOTARY_KEY_PATH="$RUNNER_TEMP/notary.p8" make app-release
@@ -83,3 +87,10 @@ jobs:
           ASSET="$RUNNER_TEMP/Workroom-${GITHUB_REF_NAME}.dmg"
           cp macapp/build/release/Workroom.dmg "$ASSET"
           gh release upload "$GITHUB_REF_NAME" "$ASSET" --clobber
+
+      - name: Publish Sparkle appcast
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+        run: macapp/Scripts/appcast.sh

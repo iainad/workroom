@@ -63,10 +63,18 @@ if [ ! -d "$PROJ" ]; then
   ( cd "$MACAPP_DIR" && xcodegen generate )
 fi
 
-echo "==> Building Release (Developer ID, hardened runtime, timestamp)"
+# Version for this build. CI passes the exact tag via $VERSION; locally we fall back to the
+# latest tag. CFBundleVersion is the commit count — monotonic, so Sparkle always treats a newer
+# release as an upgrade. Both values feed the appcast item (see Scripts/appcast.sh).
+RAW_VERSION="${VERSION:-$(git -C "$MACAPP_DIR/.." describe --tags --always 2>/dev/null || echo 0.0.0)}"
+SHORT_VERSION="${RAW_VERSION#v}"
+BUILD_NUMBER="$(git -C "$MACAPP_DIR/.." rev-list --count HEAD 2>/dev/null || echo 1)"
+
+echo "==> Building Release $SHORT_VERSION ($BUILD_NUMBER) (Developer ID, hardened runtime, timestamp)"
 xcodebuild -project "$PROJ" -scheme WorkroomApp -configuration Release \
   -derivedDataPath "$BUILD" \
   -clonedSourcePackagesDirPath "$BUILD/SourcePackages" \
+  MARKETING_VERSION="$SHORT_VERSION" CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
   build
 
 echo "==> Verifying signatures"
@@ -108,5 +116,32 @@ notarize "$DMG"
 xcrun stapler staple "$DMG"
 xcrun stapler validate "$DMG"
 spctl --assess --type open --context context:primary-signature --verbose=2 "$DMG" || true
+
+# EdDSA-sign the DMG for Sparkle and record the fields the appcast needs (Scripts/appcast.sh
+# turns these into a feed item). CI passes the private key via $SPARKLE_PRIVATE_KEY; locally
+# sign_update falls back to the key `generate_keys` stored in your login keychain. The EdDSA
+# `sign_update` ships in the Sparkle SPM package's artifacts (not the deprecated old_dsa_scripts).
+SIGN_UPDATE="$(find "$BUILD/SourcePackages" -type f -name sign_update -not -path '*/old_dsa_scripts/*' 2>/dev/null | head -1 || true)"
+SIG_ATTRS=""
+if [ -z "$SIGN_UPDATE" ]; then
+  echo "note: Sparkle's sign_update not found under SourcePackages; skipping appcast signing." >&2
+elif [ -n "${SPARKLE_PRIVATE_KEY:-}" ]; then
+  echo "==> EdDSA-signing the DMG for Sparkle (provided key)"
+  SIG_ATTRS="$("$SIGN_UPDATE" "$DMG" -s "$SPARKLE_PRIVATE_KEY")"
+elif SIG_ATTRS="$("$SIGN_UPDATE" "$DMG" 2>/dev/null)"; then
+  echo "==> EdDSA-signed the DMG for Sparkle (keychain key)"
+else
+  echo "note: no Sparkle EdDSA key (set SPARKLE_PRIVATE_KEY or run generate_keys); skipping appcast." >&2
+  SIG_ATTRS=""
+fi
+if [ -n "$SIG_ATTRS" ]; then
+  {
+    echo "SHORT_VERSION=$SHORT_VERSION"
+    echo "BUILD_NUMBER=$BUILD_NUMBER"
+    # Single-quoted: the value holds spaces and double quotes (sparkle:edSignature="…" length="…").
+    echo "ENCLOSURE_ATTRS='$SIG_ATTRS'"
+  } >"$BUILD/appcast-fields.env"
+  echo "    appcast fields → $BUILD/appcast-fields.env ($SIG_ATTRS)"
+fi
 
 echo "✅ Notarized + stapled installer: $DMG"

@@ -60,5 +60,18 @@ never shows.
 
 `WorkroomApp/Core/` — store, CLI wrapper, terminal sessions, models, theme.
 `WorkroomApp/Views/` — `NavigationSplitView` tree sidebar + terminal detail.
-`Scripts/` — `run.sh` (local), `build-helper.sh` (embeds+signs the Go binary), `release.sh`,
-`make-icon.swift` (regenerates the `AppIcon` PNGs in `Assets.xcassets` — run `swift Scripts/make-icon.swift`).
+`Scripts/` — `run.sh` (local), `build-helper.sh` (embeds+signs the Go binary), `release.sh`
+(build → notarize → staple → DMG → EdDSA-sign for Sparkle), `appcast.sh` (publishes the Sparkle
+appcast to the fixed `appcast` release), `make-icon.swift` (regenerates the `AppIcon` PNGs in
+`Assets.xcassets` — run `swift Scripts/make-icon.swift`).
+
+## Auto-update (Sparkle)
+
+`Core/Updater.swift` wraps Sparkle's `SPUStandardUpdaterController` (the "Check for Updates…"
+menu item + the Settings toggle bind to it). The `SU*` keys in `project.yml` (`SUFeedURL`,
+`SUPublicEDKey`, `SUEnableAutomaticChecks`) configure it. **Versioning is tag-driven** —
+`CFBundleShortVersionString`/`CFBundleVersion` resolve from `$(MARKETING_VERSION)`/
+`$(CURRENT_PROJECT_VERSION)`, which `release.sh` injects from the git tag (build number =
+commit count, so it only ever increases — Sparkle compares it). The appcast feed is an asset
+on the fixed `appcast` GitHub release. See `README.md` ("Auto-update") for the one-time keypair
+setup and the `SPARKLE_PRIVATE_KEY` secret.

@@ -81,6 +81,36 @@ Prefer not to use XcodeGen? Create a SwiftUI macOS App target manually, add the
 SwiftTerm package, add the `WorkroomApp/` sources, and add `Scripts/build-helper.sh`
 as a Run Script phase **after Compile Sources**.
 
+## Auto-update (Sparkle)
+
+The app self-updates via [Sparkle](https://sparkle-project.org): it polls an *appcast* feed and
+installs newer, EdDSA-signed DMGs. Wiring lives in `Core/Updater.swift` (the "Check for
+Updates…" menu item and the Settings toggle); the `SU*` keys in `project.yml` set the feed URL,
+the public key, and automatic checks (on by default). The update artifact is the same notarized
+DMG we ship, signed with an Ed25519 key whose **public** half is embedded as `SUPublicEDKey`.
+
+The appcast is hosted as `appcast.xml` on a fixed **`appcast`** GitHub release
+(`…/releases/download/appcast/appcast.xml`); each `v*` release appends an item to it via
+`Scripts/appcast.sh`. Versioning is tag-driven: `release.sh` sets `CFBundleShortVersionString`
+from the tag and `CFBundleVersion` to the commit count (monotonic, so Sparkle always sees a newer
+release as an upgrade).
+
+**One-time setup:**
+
+```bash
+# Generate the EdDSA keypair (stores the private key in your login Keychain, prints the public).
+DerivedData/SourcePackages/artifacts/sparkle/Sparkle/bin/generate_keys      # after a build resolves Sparkle
+# → paste the printed public key into project.yml's SUPublicEDKey, then regenerate: make app-generate
+
+# Export the private key and add it as the GitHub Actions secret SPARKLE_PRIVATE_KEY:
+…/bin/generate_keys -x sparkle_private_key.txt   # add file contents as the secret, then delete it
+```
+
+Until `SUPublicEDKey` is filled in and `SPARKLE_PRIVATE_KEY` is set, the app still builds and
+ships — `release.sh` just skips appcast signing (no auto-update yet). The first Sparkle-enabled
+release is a baseline; auto-update kicks in for the release after it. **Never delete the
+`appcast` release** — old installs poll its URL forever.
+
 ## Architecture
 
 - `WorkroomApp.swift` — `@main`; sets `PATH` at launch so the helper/terminals find git/jj.
