@@ -1,12 +1,46 @@
 # Workroom
 
-A CLI to manage local development workrooms using [Git](https://git-scm.com/) worktrees or [Jujutsu](https://martinvonz.github.io/jj/) workspaces.
+Work on several branches or features of a project at once — each in its own isolated copy —
+without stashing, switching, or tripping over uncommitted changes. Workroom manages those copies
+("workrooms") for you using [Git](https://git-scm.com/) worktrees or
+[Jujutsu](https://martinvonz.github.io/jj/) workspaces, auto-detecting which your project uses.
 
-A workroom is an isolated copy of your project, allowing you to work on multiple branches or features simultaneously without stashing or switching contexts. Workrooms are created under a centralized directory (`~/workrooms` by default, configurable via `workrooms_dir` in `~/.config/workroom/config.json`).
+A workroom is a full, isolated copy of your project. Spin one up per feature or bugfix, jump
+between them freely, and keep using whatever editor or IDE you like — Workroom handles the
+worktree/workspace bookkeeping. Workrooms live under a central directory (`~/workrooms` by
+default, configurable via `workrooms_dir` in `~/.config/workroom/config.json`).
 
-Use Workroom to create a workroom for each feature or bugfix you're working on, and easily switch between them without worrying about uncommitted changes or context switching. Continue using whatever IDE or editor you like, and let Workroom handle the workroom management.
+Workroom comes in two forms that share the same engine:
 
-## Installation
+- **The Workroom macOS app** — a native app with a sidebar of your projects and their workrooms,
+  embedded terminals, and one-click create/delete. **This is the recommended way to use Workroom.**
+- **The `workroom` CLI** — a single binary that does everything from the terminal. Use it
+  standalone if you prefer the command line or are on Linux/Windows. **You don't need it if you
+  use the macOS app — the app bundles the CLI and drives it for you.**
+
+## The macOS app
+
+The native app (macOS 14 Sonoma or later, Apple Silicon) gives you a sidebar of projects and
+their workrooms, an embedded terminal per workroom, theming, desktop notifications, and ⌘-click to
+open file paths in your editor.
+
+**Install:** download the latest `workroom-macos-app_<version>.dmg` from the
+[Releases page](https://github.com/joelmoss/workroom/releases/latest), open it, and drag
+**Workroom** into Applications. The app is Developer ID-signed and notarized, so it launches with
+no Gatekeeper warning — and it **updates itself** in the background (or on demand via
+*Workroom ▸ Check for Updates…*).
+
+Want the `workroom` command available in your terminal too? The app installs it on request:
+*Workroom ▸ Install ‘workroom’ Command in PATH…* (no separate download needed).
+
+Build and run it from source with `make app-run` (see [`macapp/README.md`](macapp/README.md)).
+
+## The CLI (standalone)
+
+Prefer the terminal, or running on Linux/Windows? The `workroom` CLI does everything on its own.
+(Skip this entirely if you use the macOS app — it already includes the CLI.)
+
+### Installation
 
 **macOS / Linux:**
 
@@ -34,7 +68,7 @@ By default, the binary is installed to `~/.local/bin`. Set `WORKROOM_INSTALL_PAT
 WORKROOM_INSTALL_PATH=/usr/local/bin curl -fsSL https://raw.githubusercontent.com/joelmoss/workroom/master/install.sh | sh
 ```
 
-### Alternative methods
+#### Alternative methods
 
 **Via Go:**
 
@@ -50,13 +84,13 @@ cd workroom
 make cli-build
 ```
 
-## Requirements
+### Requirements
 
 - [JJ (Jujutsu)](https://martinvonz.github.io/jj/) or [Git](https://git-scm.com/)
 
-## Usage
+### Usage
 
-### Create a workroom
+#### Create a workroom
 
 ```bash
 workroom create
@@ -66,7 +100,7 @@ A random friendly name (e.g. `swift-meadow`) is auto-generated. Workroom automat
 
 Alias: `workroom c`
 
-### List workrooms
+#### List workrooms
 
 ```bash
 workroom list
@@ -76,7 +110,7 @@ Lists all workrooms for the current project. When run from outside a known proje
 
 Aliases: `workroom ls`, `workroom l`
 
-### Delete a workroom
+#### Delete a workroom
 
 ```bash
 workroom delete my-feature
@@ -98,7 +132,7 @@ workroom delete my-feature --confirm my-feature
 
 Alias: `workroom d`
 
-### Options
+#### Options
 
 - `-v`, `--verbose` - Print detailed output
 - `-p`, `--pretend` - Run through the command without making changes (dry run)
@@ -106,7 +140,8 @@ Alias: `workroom d`
 
 ## Setup and teardown scripts
 
-Workroom supports user-defined scripts that run automatically during create and delete operations.
+Workroom runs user-defined scripts automatically during create and delete operations — whether
+you drive it from the app or the CLI.
 
 ### Setup script
 
@@ -125,25 +160,26 @@ The following environment variables are available to setup and teardown scripts:
 
 ## Releasing
 
-Pushing a version tag triggers GitHub Actions to build binaries for all platforms and attach them to a GitHub release.
+Pushing a version tag triggers GitHub Actions to publish a release with **both** components:
+
+- the CLI binaries for every platform — `workroom-cli_<version>_<os>_<arch>.{tar.gz,zip}`
+- the signed, notarized macOS app installer — `workroom-macos-app_<version>.dmg` — plus an updated
+  Sparkle appcast so existing app installs can auto-update
 
 ```bash
-git tag v1.3.0
-git push origin v1.3.0
+git tag v1.4.0
+git push origin v1.4.0
 ```
 
-You can test the build locally with [GoReleaser](https://goreleaser.com/) before tagging:
+You can test the CLI build locally with [GoReleaser](https://goreleaser.com/) before tagging
+(produces binaries in `dist/` without publishing):
 
 ```bash
 goreleaser build --snapshot --clean
 ```
 
-This produces binaries in `dist/` without publishing anything.
-
-## Ideas
-
-- list git/jj workspaces
-- open in... (vscode, iterm, etc.)
+The macOS app release flow (sign → notarize → staple → DMG → appcast) is documented in
+[`macapp/README.md`](macapp/README.md).
 
 ## License
 
