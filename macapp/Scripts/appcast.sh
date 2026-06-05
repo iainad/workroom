@@ -84,7 +84,7 @@ PY
 
 # Publish: ensure the feed release exists (not "Latest"), then re-upload the asset.
 gh release view "$FEED_TAG" --repo "$REPO" >/dev/null 2>&1 ||
-  gh release create "$FEED_TAG" --repo "$REPO" --title "Appcast" --latest=false \
-    --notes "Sparkle update feed for the Workroom macOS app. Do not delete."
+  gh release create "$FEED_TAG" --repo "$REPO" --title "Appcast" --prerelease \
+    --notes "Sparkle update feed for the Workroom macOS app — not a download. Do not delete."
 gh release upload "$FEED_TAG" "$FEED" --repo "$REPO" --clobber
 echo "✅ Published appcast.xml to the '${FEED_TAG}' release"
