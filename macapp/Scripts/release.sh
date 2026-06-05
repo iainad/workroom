@@ -21,7 +21,9 @@ PROFILE="${NOTARY_PROFILE:-workroom-notary}"
 MACAPP_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 PROJ="${MACAPP_DIR}/WorkroomApp.xcodeproj"
 BUILD="${MACAPP_DIR}/build/release"
-APP="${BUILD}/Build/Products/Release/Workroom.app"
+ARCHIVE="${BUILD}/Workroom.xcarchive"
+EXPORT_DIR="${BUILD}/export"
+APP="${EXPORT_DIR}/Workroom.app"
 ZIP="${BUILD}/Workroom.zip"
 DMG="${BUILD}/Workroom.dmg"
 
@@ -70,12 +72,35 @@ RAW_VERSION="${VERSION:-$(git -C "$MACAPP_DIR/.." describe --tags --always 2>/de
 SHORT_VERSION="${RAW_VERSION#v}"
 BUILD_NUMBER="$(git -C "$MACAPP_DIR/.." rev-list --count HEAD 2>/dev/null || echo 1)"
 
-echo "==> Building Release $SHORT_VERSION ($BUILD_NUMBER) (Developer ID, hardened runtime, timestamp)"
+# Archive + export with the Developer ID method (NOT a plain `build`): exportArchive re-signs
+# the app AND all nested code — Sparkle's XPC services + Autoupdate/Updater helpers, the embedded
+# Go helper — with our Developer ID, hardened runtime, and a secure timestamp. A plain `build`
+# leaves nested helpers without a timestamp (and injects get-task-allow), which notarization
+# rejects. Archiving also produces a distribution build with get-task-allow omitted.
+echo "==> Archiving Release $SHORT_VERSION ($BUILD_NUMBER)"
+rm -rf "$ARCHIVE" "$EXPORT_DIR"
 xcodebuild -project "$PROJ" -scheme WorkroomApp -configuration Release \
   -derivedDataPath "$BUILD" \
   -clonedSourcePackagesDirPath "$BUILD/SourcePackages" \
+  -archivePath "$ARCHIVE" \
   MARKETING_VERSION="$SHORT_VERSION" CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
-  build
+  archive
+
+EXPORT_PLIST="${BUILD}/ExportOptions.plist"
+cat >"$EXPORT_PLIST" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>method</key><string>developer-id</string>
+  <key>teamID</key><string>B898J443L9</string>
+</dict>
+</plist>
+PLIST
+
+echo "==> Exporting (Developer ID; re-signs nested code with a secure timestamp)"
+xcodebuild -exportArchive -archivePath "$ARCHIVE" -exportPath "$EXPORT_DIR" \
+  -exportOptionsPlist "$EXPORT_PLIST"
 
 echo "==> Verifying signatures"
 codesign --verify --strict --verbose=2 "$APP"
