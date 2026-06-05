@@ -129,16 +129,25 @@ func TestRunFailureWithStreamOmitsOutputFromError(t *testing.T) {
 func TestRunSetsEnvVars(t *testing.T) {
 	dir := t.TempDir()
 	scriptPath := filepath.Join(dir, "env_check")
-	os.WriteFile(scriptPath, []byte("#!/usr/bin/env bash\necho \"NAME=$WORKROOM_NAME\"\necho \"PARENT=$WORKROOM_PARENT_DIR\"\n"), 0o755)
+	os.WriteFile(scriptPath, []byte(
+		"#!/usr/bin/env bash\n"+
+			"echo \"NAME=$WORKROOM_NAME\"\n"+
+			"echo \"PATH=$WORKROOM_PATH\"\n"+
+			"echo \"ROOT=$WORKROOM_ROOT_PATH\"\n"+
+			"echo \"PARENT=$WORKROOM_PARENT_DIR\"\n"), 0o755)
 
 	output, err := Run("setup", scriptPath, dir, "my-workroom", "/parent/dir", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.Contains(output, "NAME=my-workroom") {
-		t.Fatalf("expected WORKROOM_NAME in output, got %q", output)
-	}
-	if !strings.Contains(output, "PARENT=/parent/dir") {
-		t.Fatalf("expected WORKROOM_PARENT_DIR in output, got %q", output)
+	for _, want := range []string{
+		"NAME=my-workroom",
+		"PATH=" + dir, // WORKROOM_PATH is the workroom directory the script runs in
+		"ROOT=/parent/dir",
+		"PARENT=/parent/dir", // deprecated alias still set for backward compatibility
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("expected %q in script output, got %q", want, output)
+		}
 	}
 }

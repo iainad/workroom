@@ -140,8 +140,9 @@ Alias: `workroom d`
 
 ## Setup and teardown scripts
 
-Workroom runs user-defined scripts automatically during create and delete operations — whether
-you drive it from the app or the CLI.
+Both the CLI **and** the macOS app automatically run user-defined scripts during create and
+delete operations — the app drives the same engine, so the same hooks work no matter how you use
+Workroom.
 
 ### Setup script
 
@@ -153,10 +154,12 @@ Place an executable script at `scripts/workroom_teardown` in your project. It wi
 
 ### Environment variables
 
-The following environment variables are available to setup and teardown scripts:
+The same environment variables are available to **both** the setup and teardown scripts:
 
-- `WORKROOM_NAME` - The name of the workroom being created or deleted.
-- `WORKROOM_PARENT_DIR` - The absolute path to the parent project directory. Since scripts run inside the workroom directory, this lets you reference files in the original project root.
+- `WORKROOM_NAME` — The name of the workroom being created or deleted.
+- `WORKROOM_PATH` — The absolute path to the workroom directory (also the script's working directory).
+- `WORKROOM_ROOT_PATH` — The absolute path to the root project the workroom belongs to. Since scripts run inside the workroom directory, this lets you reference files back in the original project.
+- `WORKROOM_PARENT_DIR` — _Deprecated_ alias for `WORKROOM_ROOT_PATH`, still set for existing scripts. Prefer `WORKROOM_ROOT_PATH`.
 
 ## Releasing
 
