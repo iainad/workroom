@@ -56,6 +56,15 @@ struct WorkroomTerminalsView: View {
     }
     // Create the first terminal once the pane appears (and for each new target).
     .task(id: target.id) { sessions.ensureTab(for: target) }
+    // Focusing a terminal clears its unread. This view only ever renders the selected target's
+    // active terminal, so `active.id` changing *is* a focus change — whether from a chip tap,
+    // ⌘1–9, the sidebar switching targets, or a close revealing a neighbour. One hook covers
+    // them all; `initial` handles the target's first appearance (e.g. arriving from the empty
+    // state with unread already waiting). Returning to the app with the same tab still focused
+    // is handled separately by RootView's didBecomeActive → markFocusedTerminalRead.
+    .onChange(of: active?.id, initial: true) { _, id in
+      if let id { notifications.markRead(tab: id) }
+    }
     // Drive the "Close Terminal" menu command's enabled state.
     .focusedSceneValue(\.hasTerminal, !tabs.isEmpty)
   }
@@ -184,8 +193,8 @@ struct WorkroomTerminalsView: View {
         if inside { hoveredTab = tab.id } else if hoveredTab == tab.id { hoveredTab = nil }
       }
       .onTapGesture {
+        // Selecting changes `active.id`; the view's .onChange hook marks the tab read.
         sessions.select(tab.id, for: target)
-        notifications.markRead(tab: tab.id)
       }
       // Measure in .global space: a .local drag reads coordinates relative to the
       // chip, which itself moves via .offset(dragTranslation) — that feedback loop
