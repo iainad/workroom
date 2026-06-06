@@ -40,6 +40,13 @@ make cli-install                    # install to $GOBIN
 The macOS app targets (`app-build`, `app-run`, `app-test`, `app-format`, `app-lint`, …) are
 documented in `macapp/CLAUDE.md`.
 
+## Releases
+
+Tag-driven (see README "Releases"). After a release publishes, **curate its GitHub release
+notes** — replace GoReleaser's raw commit list with a succinct, themed summary in the style of
+`v2.0.0-beta.1` (a headline, a one-line framing, and grouped bullets). The commit list is what
+the git log is for.
+
 ## Architecture
 
 Go project using Cobra for CLI, with clean internal package separation:
