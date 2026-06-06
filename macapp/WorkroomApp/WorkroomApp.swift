@@ -39,6 +39,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
   private var monitor: Any?
 
   func applicationDidFinishLaunching(_ notification: Notification) {
+    // Disable native macOS window tabbing. It tabs whole app windows (each with its own
+    // sidebar) — a level above our per-workroom terminal tabs and a poor fit for a
+    // single-window, sidebar-driven app. Off, it also drops the auto-injected
+    // "Show/Hide Tab Bar" + "Show All Tabs" View-menu items that otherwise read as if they
+    // control the terminal tabs.
+    NSWindow.allowsAutomaticWindowTabbing = false
+
     // Receive notification clicks (authorization is requested lazily on first post).
     UNUserNotificationCenter.current().delegate = self
 
@@ -151,6 +158,12 @@ struct WorkroomCommands: Commands {
       Toggle("Show Notifications", isOn: $showNotifications)
         .keyboardShortcut("n", modifiers: [.command, .option])
     }
+
+    // Drop the WindowGroup's auto-provided File ▸ New Window (⌘N). Workroom is single-window
+    // (see NSWindow.allowsAutomaticWindowTabbing = false) — a second window just spawns a
+    // redundant sidebar. Our own File-menu items below anchor at `after: .newItem`, so they
+    // still render even though this group's default content is now empty.
+    CommandGroup(replacing: .newItem) {}
 
     CommandGroup(after: .newItem) {
       Button("New Terminal") {
