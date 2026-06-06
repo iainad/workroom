@@ -138,6 +138,9 @@ struct WorkroomCommands: Commands {
   @FocusedValue(\.hasTerminal) private var hasTerminal
   // Shared with RootView's inspector + toolbar toggle (same key) so all three stay in sync.
   @AppStorage(NotificationsInspector.storageKey) private var showNotifications = false
+  // Same key as the Settings checkbox so the two stay in sync; GhosttySurfaceView reads it
+  // on each selection, so toggling here takes effect on the next drag.
+  @AppStorage(CopyOnSelect.storageKey) private var copyOnSelect = true
 
   var body: some Commands {
     CommandGroup(after: .appInfo) {
@@ -157,6 +160,15 @@ struct WorkroomCommands: Commands {
       // View menu: toggle the notifications inspector (checkmark reflects open/closed).
       Toggle("Show Notifications", isOn: $showNotifications)
         .keyboardShortcut("n", modifiers: [.command, .option])
+    }
+
+    CommandGroup(after: .pasteboard) {
+      // Edit menu: toggle copy-on-select (checkmark reflects state). A divider sets it apart
+      // from the standard Cut/Copy/Paste group above, since it governs clipboard behaviour
+      // rather than performing an action. No shortcut — it's a set-and-forget preference,
+      // mirrored by the Settings checkbox.
+      Divider()
+      Toggle("Copy on Select", isOn: $copyOnSelect)
     }
 
     // Drop the WindowGroup's auto-provided File ▸ New Window (⌘N). Workroom is single-window
