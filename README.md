@@ -1,44 +1,92 @@
 # Workroom
 
-Work on several branches or features of a project at once — each in its own isolated copy —
-without stashing, switching, or tripping over uncommitted changes. Workroom manages those copies
-("workrooms") for you using [Git](https://git-scm.com/) worktrees or
-[Jujutsu](https://martinvonz.github.io/jj/) workspaces, auto-detecting which your project uses.
+### Mission control for every branch you're running at once.
 
-A workroom is a full, isolated copy of your project. Spin one up per feature or bugfix, jump
-between them freely, and keep using whatever editor or IDE you like — Workroom handles the
-worktree/workspace bookkeeping. Workrooms live under a central directory (`~/workrooms` by
-default, configurable via `workrooms_dir` in `~/.config/workroom/config.json`).
+Spin up a workroom, get a terminal, get notified.
 
-Workroom comes in two forms that share the same engine:
+**Workroom is a native [macOS app](#the-macos-app) for running many copies of a project at once.**
+Every project gets a sidebar; every workroom inside it gets its own persistent terminal. Spin a new
+workroom up in one click, jump between their terminals freely without losing a running build or dev
+server, and get notified the moment one finishes or needs your input — instead of hunting through a
+wall of terminal tabs to find out.
 
-- **The Workroom macOS app** — a native app with a sidebar of your projects and their workrooms,
-  embedded terminals, and one-click create/delete. **This is the recommended way to use Workroom.**
-- **The `workroom` CLI** — a single binary that does everything from the terminal. Use it
-  standalone if you prefer the command line or are on Linux/Windows. **You don't need it if you
-  use the macOS app — the app bundles the CLI and drives it for you.**
+Under the hood, a workroom is a full, isolated copy of your project — its own
+[Git](https://git-scm.com/) worktree or [Jujutsu](https://martinvonz.github.io/jj/) workspace, so
+you can work on several branches or features at the same time without stashing, switching, or
+tripping over uncommitted changes. Workroom does all that bookkeeping for you (auto-detecting Git
+vs JJ) and keeps your workrooms under a central directory (`~/workrooms` by default, configurable
+via `workrooms_dir` in `~/.config/workroom/config.json`).
+
+The app bundles and drives the same `workroom` engine that also ships as a
+[standalone CLI](#the-cli-standalone) — handy for terminal-first workflows, and the only option on
+Linux/Windows.
 
 ## The macOS app
 
-The native app (macOS 14 Sonoma or later, Apple Silicon) gives you a sidebar of projects and
-their workrooms, an embedded terminal per workroom, theming, desktop notifications, and ⌘-click to
-open file paths in your editor.
+> **🚧 Beta.** The macOS app is young and under active development — expect rough edges, and some
+> flows still want polish. [Bug reports and feedback](https://github.com/joelmoss/workroom/issues)
+> are very welcome.
 
-**Install:** download the latest `workroom-macos-app_<version>.dmg` from the
+The native app (macOS 14 Sonoma or later, Apple Silicon) is a home for every project you work on
+and every workroom inside it. Pick a workroom in the sidebar, get a real terminal already `cd`'d
+into it, and run whatever you like — Workroom keeps each one alive and out of the others' way.
+
+### Install
+
+Download the latest `workroom-macos-app_<version>.dmg` from the
 [Releases page](https://github.com/joelmoss/workroom/releases/latest), open it, and drag
 **Workroom** into Applications. The app is Developer ID-signed and notarized, so it launches with
 no Gatekeeper warning — and it **updates itself** in the background (or on demand via
 *Workroom ▸ Check for Updates…*).
 
-Want the `workroom` command available in your terminal too? The app installs it on request:
-*Workroom ▸ Install ‘workroom’ Command in PATH…* (no separate download needed).
+That's the whole install. The `workroom` CLI is bundled inside the app and driven for you, so
+there's nothing else to download. Want the command in your own shell too? *Workroom ▸ Install
+‘workroom’ Command in PATH…* symlinks it into your `PATH` (prompting for admin once if needed).
 
-Build and run it from source with `make app-run` (see [`macapp/README.md`](macapp/README.md)).
+Building from source instead? See [`macapp/README.md`](macapp/README.md) (`make app-run`).
+
+### What you get
+
+**A sidebar of everything you're working on.** Each project expands into its workrooms as a tree,
+and every row shows its current Git branch or JJ bookmark inline — with an "ahead of upstream"
+marker and a warning when a folder has gone missing. Add a project, expand/collapse it, and pick a
+target; your layout, selection, and expansion state are remembered across launches.
+
+**A live terminal in every workroom.** Selecting a workroom gives you an embedded terminal (powered
+by [libghostty](https://ghostty.org)) already in the right directory. Each workroom keeps **its own
+terminal alive for the session** — switch away to another workroom and your dev server, build, or
+REPL keeps running, ready exactly as you left it when you come back. Open as many terminals per
+target as you want in a draggable tab strip; tabs label themselves with the running command or
+working directory.
+
+**See work happening at a glance.** While a command runs, the tab and its sidebar row animate so
+you can tell what's busy without switching to it. When a backgrounded terminal posts a notification,
+its tab and project light up, and — if Workroom isn't the frontmost app — you get a desktop banner.
+A notifications inspector keeps the history; click any entry (or the banner) to jump straight to the
+terminal that raised it.
+
+**Create and delete without touching the command line.** Hit the **+** on a project to spin up a
+new workroom. Your `scripts/workroom_setup` runs behind a live progress overlay so you watch
+dependencies install and config copy in real time, and the terminal opens only once setup is done.
+Deleting is a hover-to-trash with a confirmation; teardown runs in the background and the row clears
+immediately. (See [Setup and teardown scripts](#setup-and-teardown-scripts).)
+
+**Jump in with the keyboard.** `⌘1`–`⌘9` focus terminals left-to-right, `⌘T` opens a new one, `⌘W`
+closes the active one (with an optional confirm), and `⌘O` adds a project. A global `⌘§` hotkey
+shows or hides Workroom from anywhere.
+
+**Stay in your editor.** `⌘`-click a file path in any terminal to open it in your editor — VS Code,
+Zed, or Xcode — at the right working directory. The detail toolbar also has *Open in…*, *Reveal in
+Finder*, and *Copy Path* for the selected workroom.
+
+**Make it yours.** System / Light / Dark theming (terminals re-theme live), copy-on-select,
+confirm-before-quit and confirm-before-close toggles, and an editor preference all live in
+Preferences (`⌘,`).
 
 ## The CLI (standalone)
 
 Prefer the terminal, or running on Linux/Windows? The `workroom` CLI does everything on its own.
-(Skip this entirely if you use the macOS app — it already includes the CLI.)
+(Skip this entirely if you use the macOS app — it already bundles the CLI and drives it for you.)
 
 ### Installation
 
@@ -140,15 +188,15 @@ Alias: `workroom d`
 
 ## Setup and teardown scripts
 
-Both the CLI **and** the macOS app automatically run user-defined scripts during create and
-delete operations — the app drives the same engine, so the same hooks work no matter how you use
-Workroom.
+Both the macOS app **and** the CLI automatically run user-defined scripts during create and delete
+operations — the app drives the same engine, so the same hooks work no matter how you use Workroom.
 
 ### Setup script
 
 Place an executable script at `scripts/workroom_setup` in your project (remember `chmod +x`). It
 runs **inside the new workroom** right after creation — a good place to install dependencies and
-pull in gitignored local config that the worktree/workspace doesn't carry over:
+pull in gitignored local config that the worktree/workspace doesn't carry over. (In the macOS app,
+its output streams into the setup overlay as it runs.)
 
 ```bash
 #!/usr/bin/env bash
