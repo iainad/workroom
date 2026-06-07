@@ -37,8 +37,11 @@ struct WorkroomApp: App {
 /// menu, and the monitor sees the keys before the focused terminal does.
 final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
   private var monitor: Any?
-  /// Held for the app's lifetime so the global ⌘§ show/hide shortcut stays registered (issue #13).
+  /// The global ⌘§ show/hide shortcut while enabled, else nil (issue #13). Registered/torn down by
+  /// `updateGlobalHotkey()` to follow the `GlobalHotkeyEnabled` setting.
   private var showHideHotkey: GlobalHotkey?
+  /// Observes defaults so toggling the hotkey setting takes effect immediately.
+  private var defaultsObserver: NSObjectProtocol?
 
   func applicationDidFinishLaunching(_ notification: Notification) {
     // Disable native macOS window tabbing. It tabs whole app windows (each with its own
@@ -65,10 +68,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     // NSView), so the SwiftTerm-era NSEvent monitors that worked around its public-not-open methods
     // are gone.
 
-    // Global ⌘§ to show/hide Workroom from anywhere (issue #13). Carbon's RegisterEventHotKey is
-    // system-wide and needs no permission; the key/modifier live in GlobalHotkey.commandSection.
-    showHideHotkey = GlobalHotkey.commandSection {
-      AppDelegate.toggleAppVisibility()
+    // Global ⌘§ to show/hide Workroom from anywhere (issue #13), gated by GlobalHotkeyEnabled.
+    // Re-run on any defaults change so toggling the setting registers/unregisters it live.
+    updateGlobalHotkey()
+    defaultsObserver = NotificationCenter.default.addObserver(
+      forName: UserDefaults.didChangeNotification, object: nil, queue: .main
+    ) { [weak self] _ in self?.updateGlobalHotkey() }
+  }
+
+  /// Register or tear down the global ⌘§ hotkey to match the `GlobalHotkeyEnabled` setting.
+  /// Idempotent — only (un)registers when the desired state differs from the current one — so it's
+  /// safe to call on launch and on every defaults change. Carbon's RegisterEventHotKey is
+  /// system-wide and needs no permission; the key/modifier live in `GlobalHotkey.commandSection`.
+  private func updateGlobalHotkey() {
+    if GlobalHotkeyEnabled.isEnabled {
+      if showHideHotkey == nil {
+        showHideHotkey = GlobalHotkey.commandSection { AppDelegate.toggleAppVisibility() }
+      }
+    } else {
+      showHideHotkey = nil  // GlobalHotkey.deinit unregisters
     }
   }
 

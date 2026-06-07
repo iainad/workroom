@@ -8,6 +8,7 @@ struct SettingsView: View {
   @AppStorage(ThemePreference.storageKey) private var theme: ThemePreference = .system
   @AppStorage(CopyOnSelect.storageKey) private var copyOnSelect = true
   @AppStorage(ConfirmOnQuit.storageKey) private var confirmOnQuit = true
+  @AppStorage(GlobalHotkeyEnabled.storageKey) private var globalHotkey = true
   // Bundle id of the editor for ⌘-clicked file paths; "" = the file's default app.
   @AppStorage(TerminalLinkOpener.editorStorageKey) private var pathEditor = ""
   @EnvironmentObject private var updater: Updater
@@ -23,6 +24,8 @@ struct SettingsView: View {
       Toggle("Copy on select", isOn: $copyOnSelect)
 
       Toggle("Confirm before quitting", isOn: $confirmOnQuit)
+
+      Toggle("Global show/hide hotkey (⌘§)", isOn: $globalHotkey)
 
       Picker("Open file paths in", selection: $pathEditor) {
         Text("Default App").tag("")
