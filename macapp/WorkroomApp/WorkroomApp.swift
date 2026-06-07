@@ -37,6 +37,8 @@ struct WorkroomApp: App {
 /// menu, and the monitor sees the keys before the focused terminal does.
 final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
   private var monitor: Any?
+  /// Held for the app's lifetime so the global ⌘§ show/hide shortcut stays registered (issue #13).
+  private var showHideHotkey: GlobalHotkey?
 
   func applicationDidFinishLaunching(_ notification: Notification) {
     // Disable native macOS window tabbing. It tabs whole app windows (each with its own
@@ -62,6 +64,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     // ⌘-click-to-open-in-editor and copy-on-select now live inside GhosttySurfaceView (we own the
     // NSView), so the SwiftTerm-era NSEvent monitors that worked around its public-not-open methods
     // are gone.
+
+    // Global ⌘§ to show/hide Workroom from anywhere (issue #13). Carbon's RegisterEventHotKey is
+    // system-wide and needs no permission; the key/modifier live in GlobalHotkey.commandSection.
+    showHideHotkey = GlobalHotkey.commandSection {
+      AppDelegate.toggleAppVisibility()
+    }
+  }
+
+  /// Show/hide Workroom for the global hotkey: hide when we're frontmost, otherwise unhide and pull
+  /// the app forward. Runs on the main thread (Carbon delivers hot-key events there).
+  private static func toggleAppVisibility() {
+    if NSApp.isActive {
+      NSApp.hide(nil)
+    } else {
+      NSApp.unhide(nil)
+      NSApp.activate(ignoringOtherApps: true)
+    }
   }
 
   /// A notification was clicked: route to its terminal (the ids ride in `userInfo`). Reuses the
