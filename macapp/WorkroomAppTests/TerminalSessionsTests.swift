@@ -86,4 +86,67 @@ final class TerminalSessionsTests: XCTestCase {
     s.addTab(for: target)
     XCTAssertEqual(s.tabs(for: target).first?.title, "Terminal 1")
   }
+
+  // MARK: Live titles (issue #2)
+
+  func testRunningCommandShowsThenClearsWhenFinished() {
+    let s = makeSessions()
+    s.addTab(for: target)
+    let view = s.tabs(for: target).first!.view
+
+    // A running command takes over from the default…
+    view.onTitleChange?("npm run dev")
+    XCTAssertEqual(s.tabs(for: target).first?.title, "npm run dev")
+
+    // …a later command wins…
+    view.onTitleChange?("vim README.md")
+    XCTAssertEqual(s.tabs(for: target).first?.title, "vim README.md")
+
+    // …and finishing the command falls back to the default "Terminal N".
+    view.onCommandFinished?()
+    XCTAssertEqual(s.tabs(for: target).first?.title, "Terminal 1")
+  }
+
+  func testDirectoryTitlesAreIgnoredSoTheCommandSurvives() {
+    let s = makeSessions()
+    s.addTab(for: target)
+    let view = s.tabs(for: target).first!.view
+    view.handlePwd("/var/data/proj")  // cwd outside $HOME, so its `~` form is itself
+
+    // The directory title the shell sets at the prompt is ignored → default stays.
+    view.onTitleChange?("/var/data/proj")
+    XCTAssertEqual(s.tabs(for: target).first?.title, "Terminal 1")
+
+    // The command shows…
+    view.onTitleChange?("sleep 5")
+    XCTAssertEqual(s.tabs(for: target).first?.title, "sleep 5")
+
+    // …and a directory title fired *during* the command doesn't clobber it.
+    view.onTitleChange?("/var/data/proj")
+    XCTAssertEqual(s.tabs(for: target).first?.title, "sleep 5")
+  }
+
+  func testSurfaceTitleIsScopedToItsOwnTab() {
+    let s = makeSessions()
+    s.addTab(for: target)
+    s.addTab(for: target)
+    s.tabs(for: target)[1].view.onTitleChange?("vim")
+    XCTAssertEqual(s.tabs(for: target).map(\.title), ["Terminal 1", "vim"])
+  }
+
+  func testIsDirectoryTitleRecognizesPromptTitlesButNotCommands() {
+    let home = "/Users/me"
+    let cwd = "/Users/me/dev/codaset"
+    // Directory / prompt titles in every form the shell emits:
+    XCTAssertTrue(TerminalSessions.isDirectoryTitle(cwd, cwd: cwd, home: home))
+    XCTAssertTrue(TerminalSessions.isDirectoryTitle("~/dev/codaset", cwd: cwd, home: home))
+    XCTAssertTrue(
+      TerminalSessions.isDirectoryTitle("me@MacBookPro:~/dev/codaset", cwd: cwd, home: home))
+    // Real commands are not directory titles:
+    XCTAssertFalse(TerminalSessions.isDirectoryTitle("sleep 5", cwd: cwd, home: home))
+    XCTAssertFalse(TerminalSessions.isDirectoryTitle("vim README.md", cwd: cwd, home: home))
+    XCTAssertFalse(TerminalSessions.isDirectoryTitle("make: build failed", cwd: cwd, home: home))
+    // No cwd yet → can't classify, so nothing is treated as a directory.
+    XCTAssertFalse(TerminalSessions.isDirectoryTitle("~/dev/codaset", cwd: nil, home: home))
+  }
 }

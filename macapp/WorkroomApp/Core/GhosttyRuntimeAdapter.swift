@@ -30,6 +30,23 @@ final class GhosttyRuntimeAdapter {
       view.handlePwd(String(cString: pwd))
       return true
 
+    case GHOSTTY_ACTION_SET_TITLE:
+      // OSC 0/2 — the running command's name while a command is busy (via shell-integration
+      // preexec), or the directory the shell sets at each prompt. The tab strip keeps the command
+      // and ignores the directory titles (issue #2).
+      guard let view = surfaceView(from: target), let title = action.action.set_title.title else {
+        return false
+      }
+      view.onTitleChange?(String(cString: title))
+      return true
+
+    case GHOSTTY_ACTION_COMMAND_FINISHED:
+      // The shell returned to the prompt (OSC 133 D) — clear the tab's command title back to the
+      // default (issue #2).
+      guard let view = surfaceView(from: target) else { return false }
+      view.onCommandFinished?()
+      return true
+
     case GHOSTTY_ACTION_DESKTOP_NOTIFICATION:
       guard let view = surfaceView(from: target) else { return false }
       let note = action.action.desktop_notification

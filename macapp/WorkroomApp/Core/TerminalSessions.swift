@@ -6,7 +6,14 @@ import AppKit
 struct TerminalTab: Identifiable {
   let id = UUID()
   let root: PaneNode
-  let title: String
+  /// Shown until the surface reports a title — and again whenever it reports an empty one.
+  let defaultTitle: String
+  /// The surface's latest non-empty title (OSC 0/2 via shell integration): the running command
+  /// while busy, the working directory when idle. Nil until the first report (issue #2).
+  var liveTitle: String?
+
+  /// What the tab strip displays.
+  var title: String { liveTitle ?? defaultTitle }
 
   var view: GhosttySurfaceView { root.firstLeaf.view }
 }
@@ -151,7 +158,7 @@ final class TerminalSessions: ObservableObject {
 
   private func makeTab(for target: TerminalTarget, count: Int) -> TerminalTab {
     let view = makeView(target)
-    let tab = TerminalTab(root: .leaf(TerminalPane(view: view)), title: "Terminal \(count)")
+    let tab = TerminalTab(root: .leaf(TerminalPane(view: view)), defaultTitle: "Terminal \(count)")
 
     // Forward this terminal's activity, tagged with its target + tab id, to the handler.
     // [weak self] + value-type-only captures: the view must not retain sessions.
@@ -159,6 +166,15 @@ final class TerminalSessions: ObservableObject {
     let tabID = tab.id
     view.onActivity = { [weak self] activity in
       self?.activityHandler?(targetID, tabID, activity)
+    }
+
+    // Show the running command on the tab, ignoring the directory titles the shell sets at each
+    // prompt; clear back to the default when the command finishes (issue #2).
+    view.onTitleChange = { [weak self] title in
+      self?.updateTitle(title, forTab: tabID, target: targetID)
+    }
+    view.onCommandFinished = { [weak self] in
+      self?.clearLiveTitle(forTab: tabID, target: targetID)
     }
 
     // ⌘-click link handling (replaces the old AppDelegate NSEvent monitors). cwd comes from the
@@ -175,6 +191,53 @@ final class TerminalSessions: ObservableObject {
       TerminalLinkOpener.handleOpenURL(url, cwd: view?.lastKnownCwd ?? projectPath)
     }
     return tab
+  }
+
+  /// Show a surface-reported title on its tab as the running command (issue #2). The shell re-sets
+  /// the title to the working directory (and `user@host:dir`) at every prompt; those would clobber
+  /// the command, so they're ignored — only a real command title sticks, until `command_finished`
+  /// clears it (`clearLiveTitle`). Re-storing the value-type tab in the `@Published` dict re-renders
+  /// the strip; the early-out avoids redundant churn on repeated identical titles.
+  private func updateTitle(_ title: String, forTab tabID: TerminalTab.ID, target: TerminalTarget.ID)
+  {
+    guard var tabs = tabsByTarget[target], let i = tabs.firstIndex(where: { $0.id == tabID })
+    else { return }
+    let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty, !Self.isDirectoryTitle(trimmed, cwd: tabs[i].view.lastKnownCwd) else {
+      return
+    }
+    guard tabs[i].liveTitle != trimmed else { return }
+    tabs[i].liveTitle = trimmed
+    tabsByTarget[target] = tabs
+  }
+
+  /// Drop a tab's command title back to its default when the command finishes (issue #2).
+  private func clearLiveTitle(forTab tabID: TerminalTab.ID, target: TerminalTarget.ID) {
+    guard var tabs = tabsByTarget[target], let i = tabs.firstIndex(where: { $0.id == tabID }),
+      tabs[i].liveTitle != nil
+    else { return }
+    tabs[i].liveTitle = nil
+    tabsByTarget[target] = tabs
+  }
+
+  /// Whether `title` is just the working directory (the idle title the shell/prompt sets) rather
+  /// than a running command — so the tab strip can ignore it (issue #2). Recognizes the absolute
+  /// cwd, its `~`-abbreviated form, and a leading `user@host:` prompt prefix. Pure for testability.
+  static func isDirectoryTitle(_ title: String, cwd: String?, home: String = NSHomeDirectory())
+    -> Bool
+  {
+    guard let cwd, !cwd.isEmpty else { return false }
+    // Strip a leading "user@host:" prefix (no spaces, and contains "@" — so real titles with a
+    // colon like "make: error" aren't touched).
+    var path = title
+    if let colon = title.firstIndex(of: ":") {
+      let prefix = title[..<colon]
+      if prefix.contains("@"), !prefix.contains(" ") {
+        path = String(title[title.index(after: colon)...])
+      }
+    }
+    let tilde = cwd.hasPrefix(home) ? "~" + cwd.dropFirst(home.count) : cwd
+    return path == cwd || path == tilde
   }
 
   /// Tear down every surface in a tab (plan A1: `GhosttySurfaceView.tearDown` clears callbacks before

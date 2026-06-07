@@ -24,6 +24,12 @@ final class GhosttySurfaceView: NSView {
   var onOpenURL: ((URL) -> Bool)?
   var onCmdClickFile: ((String) -> Void)?
   var resolveCmdHoverFile: ((String) -> Bool)?
+  /// The surface's latest title (OSC 0/2, via shell integration): the running command while busy,
+  /// the working directory when idle. Forwarded to the tab strip (issue #2).
+  var onTitleChange: ((String) -> Void)?
+  /// The shell returned to its prompt (OSC 133 D / `GHOSTTY_ACTION_COMMAND_FINISHED`) — the tab
+  /// strip uses this to drop the finished command's title back to the default (issue #2).
+  var onCommandFinished: (() -> Void)?
 
   /// Set from `GHOSTTY_ACTION_MOUSE_OVER_LINK` (an OSC 8 / detected URL is under the pointer).
   var hasOSC8LinkUnderCursor = false
