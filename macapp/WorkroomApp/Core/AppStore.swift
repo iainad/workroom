@@ -427,17 +427,17 @@ final class AppStore: ObservableObject {
       terminals.select(tabID, for: target)
     }
     if let notifID {
-      notifications.markRead(notifID: notifID)
+      notifications.dismiss(notifID: notifID)
     } else if let tabID {
-      notifications.markRead(tab: tabID)
+      notifications.dismiss(tab: tabID)
     }
   }
 
-  /// On app refocus, clear unread for the now-visible terminal (the selected target's active
-  /// tab). Called from `RootView`'s `didBecomeActive` hook.
-  func markFocusedTerminalRead() {
+  /// On app refocus, dismiss the notifications for the now-visible terminal (the selected target's
+  /// active tab) — you're looking at it. Called from `RootView`'s `didBecomeActive` hook.
+  func dismissFocusedTerminalNotifications() {
     guard let target = selectedTarget, let active = terminals.activeTab(for: target) else { return }
-    notifications.markRead(tab: active.id)
+    notifications.dismiss(tab: active.id)
   }
 
   /// Human-readable origin for a notification: the project name, plus the workroom for a

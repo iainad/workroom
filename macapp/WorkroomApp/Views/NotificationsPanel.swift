@@ -7,9 +7,9 @@ enum NotificationsInspector {
   static let storageKey = "showNotificationsInspector"
 }
 
-/// The right-hand notifications inspector (`.inspector`, macOS 14): the full session history,
-/// newest first, with read/unread state. Tapping an item opens the terminal it came from
-/// (`AppStore.openTerminal`), which also marks that item read.
+/// The right-hand notifications inspector (`.inspector`, macOS 14): the session history, newest
+/// first. There's no read state — tapping an item opens the terminal it came from
+/// (`AppStore.openTerminal`) and dismisses it; the panel only ever shows pending notifications.
 struct NotificationsPanel: View {
   /// Whether the inspector is presented. SwiftUI keeps inspector toolbar contributions alive
   /// while collapsed, so the buttons are gated on this.
@@ -27,16 +27,8 @@ struct NotificationsPanel: View {
       .frame(minWidth: 260, maxWidth: .infinity, maxHeight: .infinity)
       .toolbar {
         if isOpen {
-          ToolbarItem(placement: .primaryAction) {
-            Button {
-              notifications.markAllRead()
-            } label: {
-              Image(systemName: "checkmark.circle")
-            }
-            .help("Mark all read")
-            .accessibilityLabel("Mark all read")
-            .disabled(!notifications.hasUnread)
-          }
+          // Just "Clear": with no read state, dismissing everything *is* clearing, so the former
+          // "Mark all read" button would be a duplicate.
           ToolbarItem(placement: .primaryAction) {
             Button {
               notifications.clear()
@@ -76,23 +68,26 @@ struct NotificationsPanel: View {
   }
 
   private func row(_ item: WorkroomNotification) -> some View {
-    HStack(alignment: .top, spacing: 8) {
-      Circle()
-        .fill(item.isRead ? Color.clear : Color.accentColor)
-        .frame(width: 7, height: 7)
-        .padding(.top, 5)
+    // No read/unread state to indicate (read ⇒ dismissed), so there's no leading dot. A titleless
+    // notification leads with its body rather than a placeholder; one with neither shows just its
+    // source + time.
+    let headline = item.title.isEmpty ? (item.body ?? "") : item.title
+    let subtext = item.title.isEmpty ? nil : item.body
+    return HStack(alignment: .top, spacing: 8) {
       VStack(alignment: .leading, spacing: 2) {
-        HStack(spacing: 4) {
-          Text(item.title)
-            .font(.callout)
-            .fontWeight(item.isRead ? .regular : .semibold)
-            .lineLimit(1)
-          if item.count > 1 {
-            Text("×\(item.count)").font(.caption2).foregroundStyle(.secondary)
+        if !headline.isEmpty {
+          HStack(spacing: 4) {
+            Text(headline)
+              .font(.callout)
+              .fontWeight(.semibold)
+              .lineLimit(1)
+            if item.count > 1 {
+              Text("×\(item.count)").font(.caption2).foregroundStyle(.secondary)
+            }
           }
         }
-        if let body = item.body, !body.isEmpty {
-          Text(body).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+        if let subtext, !subtext.isEmpty {
+          Text(subtext).font(.caption).foregroundStyle(.secondary).lineLimit(2)
         }
         HStack(spacing: 4) {
           if !item.source.isEmpty {
@@ -108,7 +103,5 @@ struct NotificationsPanel: View {
     }
     .padding(.vertical, 2)
     .contentShape(Rectangle())
-    // Read notifications recede; unread stay full-strength.
-    .opacity(item.isRead ? 0.5 : 1)
   }
 }

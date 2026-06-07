@@ -26,9 +26,8 @@ struct WorkroomNotification: Identifiable, Equatable {
   var title: String
   var body: String?
   var date: Date
-  var isRead: Bool
-  /// Number of coalesced events this entry represents (bells coalesce per tab; OSC entries
-  /// stay distinct, so theirs is always 1).
+  /// Number of coalesced events this entry represents (OSC entries stay distinct, so it's always
+  /// 1 today; retained for the panel's ×N display).
   var count: Int
 }
 
@@ -36,17 +35,17 @@ struct WorkroomNotification: Identifiable, Equatable {
 /// (system banner, sidebar/tab/toolbar badges, the inspector panel). Owned by `AppStore`
 /// (`let notifications = NotificationCenterStore()`), mirroring `let terminals = TerminalSessions()`.
 ///
-/// Unread counts are COMPUTED by scanning `items` (capped at 500) rather than maintained as
-/// incremental tallies — there is nothing to keep in sync, so a badge can't drift (issue #10
-/// review, cross-model tension 1).
+/// There is no read state: a notification lives until it's dismissed — the user focuses or opens
+/// its terminal, clicks it in the panel, or clears the panel — or until it's evicted at the cap.
+/// Nothing lingers once seen. Counts are COMPUTED by scanning `items` (capped at 500) rather than
+/// maintained as incremental tallies, so a badge can't drift (issue #10 review, tension 1).
 ///
 /// ```
 ///   record(target,tab,activity, focused) ─▶ focused? drop
-///                                          ─▶ bell: coalesce into the tab's unread bell item
 ///                                          ─▶ osc:  append a distinct item
 ///                                          ─▶ trim to 500 (drop oldest)
-///   unread(tab|target) / totalUnread  = scan items where !isRead, sum .count
-///   markRead(...) / removeForTarget    = in-place flag / filter
+///   count(tab|target) / total          = scan items, sum .count
+///   dismiss(...) / removeForTarget     = filter the matching items out
 /// ```
 @MainActor
 final class NotificationCenterStore: ObservableObject {
@@ -74,12 +73,13 @@ final class NotificationCenterStore: ObservableObject {
   ) -> WorkroomNotification? {
     guard !focused else { return nil }
     guard case .osc(let title, let body) = activity else { return nil }
-    // OSC notifications carry a real message — keep each one distinct in the history.
+    // OSC notifications carry a real message — keep each one distinct in the history. The title is
+    // stored verbatim (empty allowed); the panel leads with the body when there's no title rather
+    // than showing a placeholder.
     return append(
       WorkroomNotification(
         id: UUID(), targetID: targetID, tabID: tabID, kind: .osc, source: source,
-        title: title.isEmpty ? "Notification" : title, body: body, date: now(), isRead: false,
-        count: 1))
+        title: title, body: body, date: now(), count: 1))
   }
 
   @discardableResult
@@ -93,32 +93,24 @@ final class NotificationCenterStore: ObservableObject {
 
   // MARK: Derived counts (computed scans — no incremental state to drift)
 
-  func unread(tab: TerminalTab.ID) -> Int {
-    items.lazy.filter { $0.tabID == tab && !$0.isRead }.reduce(0) { $0 + $1.count }
+  func count(tab: TerminalTab.ID) -> Int {
+    items.lazy.filter { $0.tabID == tab }.reduce(0) { $0 + $1.count }
   }
 
-  func unread(target: TerminalTarget.ID) -> Int {
-    items.lazy.filter { $0.targetID == target && !$0.isRead }.reduce(0) { $0 + $1.count }
+  func count(target: TerminalTarget.ID) -> Int {
+    items.lazy.filter { $0.targetID == target }.reduce(0) { $0 + $1.count }
   }
 
-  var totalUnread: Int {
-    items.lazy.filter { !$0.isRead }.reduce(0) { $0 + $1.count }
+  var total: Int {
+    items.reduce(0) { $0 + $1.count }
   }
-
-  var hasUnread: Bool { items.contains { !$0.isRead } }
 
   // MARK: Mutations
 
-  func markRead(notifID: UUID) { markRead { $0.id == notifID } }
-  func markRead(tab: TerminalTab.ID) { markRead { $0.tabID == tab } }
-  func markRead(target: TerminalTarget.ID) { markRead { $0.targetID == target } }
-  func markAllRead() { markRead { _ in true } }
-
-  private func markRead(_ matches: (WorkroomNotification) -> Bool) {
-    for i in items.indices where !items[i].isRead && matches(items[i]) {
-      items[i].isRead = true
-    }
-  }
+  /// Dismiss (delete) a notification once it's been seen — there is no read state to leave behind,
+  /// so reading is removal. Dismissing by tab clears everything that terminal accrued.
+  func dismiss(notifID: UUID) { items.removeAll { $0.id == notifID } }
+  func dismiss(tab: TerminalTab.ID) { items.removeAll { $0.tabID == tab } }
 
   /// Drop a deleted target's items (so a removed workroom's badges/history disappear). Returns
   /// the affected tab ids so the caller can also withdraw any delivered system banners.

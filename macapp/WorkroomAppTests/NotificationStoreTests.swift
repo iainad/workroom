@@ -2,9 +2,10 @@ import XCTest
 
 @testable import Workroom
 
-/// `NotificationCenterStore` computed counts, read-state, and eviction (issue #10). `@MainActor`
-/// because the store is main-actor isolated; a fixed clock keeps ordering stable. (Bell coalescing
-/// was removed with the libghostty migration — the bell is no longer a recorded activity; see C1.)
+/// `NotificationCenterStore` computed counts, dismissal, and eviction (issue #10). There is no
+/// read state — dismissing deletes — so "seen" notifications never linger. `@MainActor` because the
+/// store is main-actor isolated; a fixed clock keeps ordering stable. (Bell coalescing was removed
+/// with the libghostty migration — the bell is no longer a recorded activity; see C1.)
 @MainActor
 final class NotificationStoreTests: XCTestCase {
   private let target = "wr|/p|foo"
@@ -21,7 +22,7 @@ final class NotificationStoreTests: XCTestCase {
     let tab = UUID()
     XCTAssertNil(s.record(targetID: target, tabID: tab, activity: osc("x"), focused: true))
     XCTAssertTrue(s.items.isEmpty)
-    XCTAssertEqual(s.totalUnread, 0)
+    XCTAssertEqual(s.total, 0)
   }
 
   func testOSCItemsStayDistinct() {
@@ -30,7 +31,7 @@ final class NotificationStoreTests: XCTestCase {
     s.record(targetID: target, tabID: tab, activity: osc("one"), focused: false)
     s.record(targetID: target, tabID: tab, activity: osc("two"), focused: false)
     XCTAssertEqual(s.items.count, 2)
-    XCTAssertEqual(s.unread(tab: tab), 2)
+    XCTAssertEqual(s.count(tab: tab), 2)
   }
 
   func testCountsRollUpTabToTargetToTotal() {
@@ -40,29 +41,40 @@ final class NotificationStoreTests: XCTestCase {
     s.record(targetID: target, tabID: tabA, activity: osc("a"), focused: false)
     s.record(targetID: target, tabID: tabB, activity: osc("b"), focused: false)
     s.record(targetID: otherTarget, tabID: UUID(), activity: osc("c"), focused: false)
-    XCTAssertEqual(s.unread(tab: tabA), 1)
-    XCTAssertEqual(s.unread(target: target), 2)
-    XCTAssertEqual(s.totalUnread, 3)
+    XCTAssertEqual(s.count(tab: tabA), 1)
+    XCTAssertEqual(s.count(target: target), 2)
+    XCTAssertEqual(s.total, 3)
   }
 
-  func testMarkReadByTabLeavesOthers() {
+  func testDismissByTabDeletesItsItemsAndLeavesOthers() {
     let s = makeStore()
     let tabA = UUID()
     let tabB = UUID()
     s.record(targetID: target, tabID: tabA, activity: osc("a"), focused: false)
     s.record(targetID: target, tabID: tabB, activity: osc("b"), focused: false)
-    s.markRead(tab: tabA)
-    XCTAssertEqual(s.unread(tab: tabA), 0)
-    XCTAssertEqual(s.unread(tab: tabB), 1)
-    XCTAssertTrue(s.hasUnread)
+    s.dismiss(tab: tabA)
+    // Dismissed ⇒ gone (not flagged): the item is removed, the other survives.
+    XCTAssertEqual(s.items.count, 1)
+    XCTAssertEqual(s.count(tab: tabA), 0)
+    XCTAssertEqual(s.count(tab: tabB), 1)
+    XCTAssertEqual(s.total, 1)
   }
 
-  func testMarkAllRead() {
+  func testDismissByNotifIDDeletesJustThatItem() {
+    let s = makeStore()
+    let tab = UUID()
+    let one = s.record(targetID: target, tabID: tab, activity: osc("one"), focused: false)
+    s.record(targetID: target, tabID: tab, activity: osc("two"), focused: false)
+    s.dismiss(notifID: one!.id)
+    XCTAssertEqual(s.items.map(\.title), ["two"])
+  }
+
+  func testClearRemovesEverything() {
     let s = makeStore()
     s.record(targetID: target, tabID: UUID(), activity: osc("x"), focused: false)
-    s.markAllRead()
-    XCTAssertFalse(s.hasUnread)
-    XCTAssertEqual(s.totalUnread, 0)
+    s.clear()
+    XCTAssertTrue(s.items.isEmpty)
+    XCTAssertEqual(s.total, 0)
   }
 
   func testRemoveForTargetReturnsTabsAndDropsItems() {
@@ -73,8 +85,8 @@ final class NotificationStoreTests: XCTestCase {
     s.record(targetID: otherTarget, tabID: tabB, activity: osc("b"), focused: false)
     let dropped = s.removeForTarget(target)
     XCTAssertEqual(dropped, [tabA])
-    XCTAssertEqual(s.unread(target: target), 0)
-    XCTAssertEqual(s.totalUnread, 1)
+    XCTAssertEqual(s.count(target: target), 0)
+    XCTAssertEqual(s.total, 1)
   }
 
   func testHistoryTrimsToCapDroppingOldest() {

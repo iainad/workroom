@@ -56,14 +56,14 @@ struct WorkroomTerminalsView: View {
     }
     // Create the first terminal once the pane appears (and for each new target).
     .task(id: target.id) { sessions.ensureTab(for: target) }
-    // Focusing a terminal clears its unread. This view only ever renders the selected target's
-    // active terminal, so `active.id` changing *is* a focus change — whether from a chip tap,
-    // ⌘1–9, the sidebar switching targets, or a close revealing a neighbour. One hook covers
-    // them all; `initial` handles the target's first appearance (e.g. arriving from the empty
-    // state with unread already waiting). Returning to the app with the same tab still focused
-    // is handled separately by RootView's didBecomeActive → markFocusedTerminalRead.
+    // Focusing a terminal dismisses its notifications. This view only ever renders the selected
+    // target's active terminal, so `active.id` changing *is* a focus change — whether from a chip
+    // tap, ⌘1–9, the sidebar switching targets, or a close revealing a neighbour. One hook covers
+    // them all; `initial` handles the target's first appearance (e.g. arriving from the empty state
+    // with notifications already waiting). Returning to the app with the same tab still focused is
+    // handled separately by RootView's didBecomeActive → dismissFocusedTerminalNotifications.
     .onChange(of: active?.id, initial: true) { _, id in
-      if let id { notifications.markRead(tab: id) }
+      if let id { notifications.dismiss(tab: id) }
     }
     // Drive the "Close Terminal" menu command's enabled state.
     .focusedSceneValue(\.hasTerminal, !tabs.isEmpty)
@@ -126,11 +126,11 @@ struct WorkroomTerminalsView: View {
     let showClose = hoveredTab == tab.id && draggingID == nil
     // Activity in an unfocused tab highlights the tab itself (accent title + faint accent
     // fill) instead of a count — a tab is too narrow for a number.
-    let hasUnread = notifications.unread(tab: tab.id) > 0
+    let hasActivity = notifications.count(tab: tab.id) > 0
     return Text(tab.title)
       .font(.callout)
       .lineLimit(1)
-      .foregroundStyle(hasUnread ? Color.accentColor : Color.primary)
+      .foregroundStyle(hasActivity ? Color.accentColor : Color.primary)
       // On hover, fade the title's right edge so the close button — overlaid on top of
       // the text and taking no layout space — reads cleanly.
       .mask(
@@ -168,7 +168,7 @@ struct WorkroomTerminalsView: View {
       // Unread activity tints the whole tab with the accent color (pairs with the accent title).
       .background {
         RoundedRectangle(cornerRadius: 6)
-          .fill(Color.accentColor.opacity(hasUnread ? 0.15 : 0))
+          .fill(Color.accentColor.opacity(hasActivity ? 0.15 : 0))
       }
       .background {
         RoundedRectangle(cornerRadius: 6)

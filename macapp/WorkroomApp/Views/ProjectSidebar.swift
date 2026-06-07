@@ -188,7 +188,7 @@ struct ProjectSidebar: View {
           .foregroundStyle(.secondary)
       }
       Spacer(minLength: 0)
-      UnreadDot(count: notifications.unread(target: target.id))
+      UnreadDot(count: notifications.count(target: target.id))
       if target.isMissing {
         Image(systemName: "exclamationmark.triangle.fill")
           .foregroundStyle(.yellow)
@@ -210,7 +210,7 @@ struct ProjectSidebar: View {
   @ViewBuilder
   private func workroomRow(_ workroom: Workroom, in project: Project) -> some View {
     let id = SidebarID.workroom(project: project.path, name: workroom.name)
-    let unread = notifications.unread(
+    let unread = notifications.count(
       target: TerminalTarget.workroomID(project: project.path, name: workroom.name))
     HStack(spacing: 6) {
       // No icon gutter: the workroom label sits at the root's left (icon) edge, so the
@@ -243,13 +243,13 @@ struct ProjectSidebar: View {
     }
   }
 
-  /// Total unread for a project: its root plus every workroom. Lets the (possibly collapsed)
-  /// project row surface activity from any child. Reuses `unread(target:)` and the canonical id
-  /// builders, so no target-id string parsing leaks in here.
+  /// Total notifications for a project: its root plus every workroom. Lets the (possibly
+  /// collapsed) project row surface activity from any child. Reuses `count(target:)` and the
+  /// canonical id builders, so no target-id string parsing leaks in here.
   private func projectUnread(_ project: Project) -> Int {
-    var total = notifications.unread(target: TerminalTarget.rootID(project: project.path))
+    var total = notifications.count(target: TerminalTarget.rootID(project: project.path))
     for workroom in project.workrooms {
-      total += notifications.unread(
+      total += notifications.count(
         target: TerminalTarget.workroomID(project: project.path, name: workroom.name))
     }
     return total

@@ -50,13 +50,13 @@ struct RootView: View {
         } label: {
           HStack(spacing: 3) {
             Image(systemName: "bell")
-            UnreadBadge(count: notifications.totalUnread)
+            UnreadBadge(count: notifications.total)
           }
         }
         .help("Notifications")
         .accessibilityLabel(
-          notifications.totalUnread > 0
-            ? "Notifications, \(notifications.totalUnread) unread" : "Notifications")
+          notifications.total > 0
+            ? "Notifications, \(notifications.total) unread" : "Notifications")
       }
     }
     .inspector(isPresented: $showNotifications) {
@@ -65,17 +65,17 @@ struct RootView: View {
     }
     .onAppear {
       applyAppearance()
-      updateDockBadge(notifications.totalUnread)
+      updateDockBadge(notifications.total)
     }
     .onChange(of: theme) { _ in applyAppearance() }
-    // Mirror the aggregate unread count onto the Dock icon badge.
-    .onChange(of: notifications.totalUnread) { updateDockBadge($0) }
+    // Mirror the aggregate notification count onto the Dock icon badge.
+    .onChange(of: notifications.total) { updateDockBadge($0) }
     // Keep the root branch labels reasonably current: refresh when the app regains
     // focus (throttled, so rapid alt-tabbing doesn't fork a git/jj process per project).
-    // Regaining focus also clears the now-visible terminal's unread (you're looking at it).
+    // Regaining focus also dismisses the now-visible terminal's notifications (you're looking at it).
     .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification))
     { _ in
-      store.markFocusedTerminalRead()
+      store.dismissFocusedTerminalNotifications()
       Task { await store.reloadIfStale() }
     }
     // Publish selection state for menu-command enablement (see WorkroomCommands).

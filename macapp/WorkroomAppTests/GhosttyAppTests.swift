@@ -16,11 +16,12 @@ final class GhosttyAppTests: XCTestCase {
 
 /// T2: the pure notification mapper that replaces the deleted OSCParserTests coverage.
 final class TerminalActivityMapperTests: XCTestCase {
-  func testEmptyTitleFallsBackToNotification() {
+  func testEmptyTitleIsKeptEmpty() {
+    // No placeholder: a titleless notification stays titleless (the UI leads with the body).
     guard
       case .osc(let title, let body) = GhosttyRuntimeAdapter.terminalActivity(title: "", body: nil)
     else { return XCTFail("expected .osc") }
-    XCTAssertEqual(title, "Notification")
+    XCTAssertEqual(title, "")
     XCTAssertNil(body)
   }
 

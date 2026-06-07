@@ -41,7 +41,7 @@ final class NotificationRoutingTests: XCTestCase {
     let notifID = UUID()
     let n = WorkroomNotification(
       id: notifID, targetID: "wr|/a|foo", tabID: tab, kind: .osc, source: "a / foo", title: "T",
-      body: "B", date: Date(timeIntervalSince1970: 0), isRead: false, count: 1)
+      body: "B", date: Date(timeIntervalSince1970: 0), count: 1)
     let p = SystemNotifier.payload(for: n)
     XCTAssertEqual(p.identifier, tab.uuidString)  // one banner per tab → re-post replaces
     XCTAssertEqual(p.title, "T")

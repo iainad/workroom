@@ -168,10 +168,10 @@ final class GhosttyRuntimeAdapter {
 
   /// Map a libghostty desktop-notification (title, optional body) to Workroom's `TerminalActivity`.
   /// Pure + side-effect-free so it's testable without a live terminal (replaces the deleted
-  /// `OSCParserTests` coverage). Empty title falls back to "Notification"; empty body → nil.
+  /// `OSCParserTests` coverage). The title is kept verbatim — including empty: the UI shows no
+  /// placeholder for a titleless notification (it leads with the body instead). Empty body → nil.
   static func terminalActivity(title: String, body: String?) -> TerminalActivity {
-    let resolvedTitle = title.isEmpty ? "Notification" : title
     let resolvedBody = (body?.isEmpty ?? true) ? nil : body
-    return .osc(title: resolvedTitle, body: resolvedBody)
+    return .osc(title: title, body: resolvedBody)
   }
 }
