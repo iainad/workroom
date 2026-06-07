@@ -48,8 +48,6 @@ struct NotificationsPanel: View {
     if notifications.items.isEmpty {
       ContentUnavailableView {
         Label("No notifications", systemImage: "bell.slash")
-      } description: {
-        Text("Activity in unfocused terminals (OSC 9/99/777 notifications) shows up here.")
       }
     } else {
       List {
