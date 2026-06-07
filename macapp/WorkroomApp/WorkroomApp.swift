@@ -262,6 +262,19 @@ struct WorkroomCommands: Commands {
       .keyboardShortcut("w", modifiers: .command)
       .disabled(hasTerminal != true)
 
+      // Split the focused pane with a new terminal beside it (issue #3): ⌘D right, ⇧⌘D down.
+      Button("Split Right") {
+        AppStore.shared.splitFocusedRight()
+      }
+      .keyboardShortcut("d", modifiers: .command)
+      .disabled(hasTerminal != true)
+
+      Button("Split Down") {
+        AppStore.shared.splitFocusedDown()
+      }
+      .keyboardShortcut("d", modifiers: [.command, .shift])
+      .disabled(hasTerminal != true)
+
       Button("Add Project…") {
         AppStore.shared.requestAddProject = true
       }

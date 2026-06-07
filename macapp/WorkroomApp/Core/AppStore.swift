@@ -399,13 +399,25 @@ final class AppStore: ObservableObject {
     if confirmed { terminals.closeTab(tabID, for: target) }
   }
 
-  /// Focus the terminal tab at `index` (0-based, left-to-right) in the selected target
-  /// (⌘1…⌘9). No-ops if there's no tab at that position.
+  /// Focus the terminal tab at `index` (0-based, left-to-right across solo + split panes) in the
+  /// selected target (⌘1…⌘9). No-ops if there's no tab at that position.
   func focusTerminalTab(at index: Int) {
     guard let target = selectedTarget else { return }
     let tabs = terminals.tabs(for: target)
     guard tabs.indices.contains(index) else { return }
     terminals.select(tabs[index].id, for: target)
+  }
+
+  /// Split the focused pane by opening a new terminal beside it: ⌘D to the right, ⇧⌘D below
+  /// (issue #3). The new terminal inherits the focused pane's working directory.
+  func splitFocusedRight() {
+    guard let target = selectedTarget, !target.isMissing else { return }
+    terminals.splitFocusedPane(for: target, orientation: .horizontal)
+  }
+
+  func splitFocusedDown() {
+    guard let target = selectedTarget, !target.isMissing else { return }
+    terminals.splitFocusedPane(for: target, orientation: .vertical)
   }
 
   // MARK: Notifications
@@ -416,11 +428,19 @@ final class AppStore: ObservableObject {
   private func handleActivity(
     targetID: TerminalTarget.ID, tabID: TerminalTab.ID, activity: TerminalActivity
   ) {
-    let focused = isFocused(targetID: targetID, tabID: tabID)
+    // "Seen" = on screen (the focused solo tab or any pane of the visible split) — those are
+    // suppressed (D3). A visible pane that isn't the cursor pane gets a border flash instead of a
+    // badge, so split-mates still signal activity without nagging.
+    let seen = isFocused(targetID: targetID, tabID: tabID)
+    if seen, let target = selectedTarget, target.id == targetID,
+      terminals.focusedTab(for: target)?.id != tabID
+    {
+      terminals.pulsePaneActivity(tabID)
+    }
     guard
       let note = notifications.record(
         targetID: targetID, tabID: tabID, source: notificationSource(forTargetID: targetID),
-        activity: activity, focused: focused)
+        activity: activity, focused: seen)
     else { return }
     guard NotificationGate.shouldPostBanner(recorded: true, appActive: NSApp.isActive) else {
       return
@@ -432,13 +452,16 @@ final class AppStore: ObservableObject {
     }
   }
 
-  /// Whether the user is currently looking at this exact terminal: the app is frontmost, one of
-  /// its windows is key, and this is the selected target's active tab. Window-aware so a sheet,
-  /// a background window, or a non-frontmost app don't count as focused (issue #10, tension 2).
+  /// Whether the user is currently looking at this terminal: the app is frontmost, one of its windows
+  /// is key, and the tab is **visible** in the selected target — the focused solo tab, or any pane of
+  /// the on-screen split (issue #3, decision D3). A notification's job is to surface the unseen, and an
+  /// on-screen pane is seen — so visible panes are suppressed; a visible non-focused pane gets a
+  /// per-pane border flash instead (see `handleActivity`). Window-aware so a sheet, a background
+  /// window, or a non-frontmost app don't count as focused (issue #10, tension 2).
   func isFocused(targetID: TerminalTarget.ID, tabID: TerminalTab.ID) -> Bool {
     guard NSApp.isActive, NSApp.keyWindow != nil else { return false }
     guard let target = selectedTarget, target.id == targetID else { return false }
-    return terminals.activeTab(for: target)?.id == tabID
+    return terminals.visibleTabIDs(for: target).contains(tabID)
   }
 
   /// Bring the app forward and select the terminal a notification came from, marking it read.

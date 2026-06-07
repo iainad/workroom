@@ -19,6 +19,12 @@ struct WorkroomTerminalsView: View {
   @State private var dragTranslation: CGFloat = 0
   @State private var widths: [TerminalTab.ID: CGFloat] = [:]
 
+  // Drag a tab chip down into a pane to split (issue #3). `chipPaneDrag` is the live drop preview
+  // (content-local), shown by `PaneTreeView`; `contentFrame` is the pane area's global rect, used to
+  // tell "over the strip" (reorder) from "over a pane" (drop-to-split) and to localise the cursor.
+  @State private var chipPaneDrag: PaneDragState?
+  @State private var contentFrame: CGRect = .zero
+
   private let tabSpacing: CGFloat = 4
 
   var body: some View {
@@ -29,9 +35,20 @@ struct WorkroomTerminalsView: View {
     // vertical slack when there's no terminal below it and balloons.
     Group {
       if let active {
-        TerminalContainerView(view: active.view)
-          .id(active.id)  // re-mount when the active tab changes
-          .padding(8)
+        // Always render through the one pane tree — a solo terminal is just a single-leaf layout.
+        // Routing solo and split through the SAME host means a surface has exactly one owner; an
+        // earlier split→solo bug came from two `TerminalContainerView`s (the solo branch and the dying
+        // split leaf) fighting over the same surface and stranding it in a detached container (#3).
+        PaneTreeView(
+          layout: contentLayout(active: active), target: target, sessions: sessions,
+          externalDrag: chipPaneDrag
+        )
+        .background(
+          GeometryReader { geo in
+            Color.clear.preference(key: ContentFrameKey.self, value: geo.frame(in: .global))
+          }
+        )
+        .padding(8)
       } else {
         ContentUnavailableView {
           Label("No terminal", systemImage: "terminal")
@@ -45,6 +62,7 @@ struct WorkroomTerminalsView: View {
       }
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity)
+    .onPreferenceChange(ContentFrameKey.self) { contentFrame = $0 }
     .safeAreaInset(edge: .top, spacing: 0) {
       // No tab bar when there are no terminals: the empty state's "New Terminal" button (and ⌘T)
       // cover adding one, so the strip and its "+" would be redundant.
@@ -55,8 +73,12 @@ struct WorkroomTerminalsView: View {
         }
       }
     }
-    // Create the first terminal once the pane appears (and for each new target).
-    .task(id: target.id) { sessions.ensureTab(for: target) }
+    // Create the first terminal once the pane appears (and for each new target), then reconcile
+    // occlusion so the right surfaces render after a target switch (issue #3).
+    .task(id: target.id) {
+      sessions.ensureTab(for: target)
+      sessions.reconcileOcclusion(for: target)
+    }
     // Focusing a terminal dismisses its notifications. This view only ever renders the selected
     // target's active terminal, so `active.id` changing *is* a focus change — whether from a chip
     // tap, ⌘1–9, the sidebar switching targets, or a close revealing a neighbour. One hook covers
@@ -70,10 +92,70 @@ struct WorkroomTerminalsView: View {
     .focusedSceneValue(\.hasTerminal, !tabs.isEmpty)
   }
 
+  /// The layout the content area renders: the split when it's visible, else the focused solo tab.
+  private func contentLayout(active: TerminalTab) -> PaneLayout {
+    sessions.isSplitVisible(for: target)
+      ? (sessions.split(for: target) ?? .leaf(active.id)) : .leaf(active.id)
+  }
+
+  /// The content-local point for a chip drag at `global`, or nil when the cursor is outside the pane
+  /// area (i.e. still over the strip → a reorder, not a drop-into-pane).
+  private func chipLocal(_ global: CGPoint) -> CGPoint? {
+    guard contentFrame.contains(global) else { return nil }
+    return CGPoint(x: global.x - contentFrame.minX, y: global.y - contentFrame.minY)
+  }
+
+  /// Where a chip dropped at `global` lands (pane + edge), using the same pane plan the renderer uses,
+  /// or nil if it isn't over a pane.
+  private func chipDropTarget(at global: CGPoint) -> (tab: TerminalTab.ID, edge: PaneEdge)? {
+    guard let local = chipLocal(global), let active = sessions.activeTab(for: target) else {
+      return nil
+    }
+    let plan = PaneTreeLayout.plan(
+      contentLayout(active: active), in: CGRect(origin: .zero, size: contentFrame.size))
+    return PaneTreeLayout.dropTarget(at: local, panes: plan.panes)
+  }
+
+  /// A rounded "well" + accent underline behind the split's contiguous chip run, so it's easy to see
+  /// which tabs are grouped/split (issue #3). Hidden during a drag (group-aware strip drag is Phase 2),
+  /// and only shown for a real split (≥2 members).
+  @ViewBuilder
+  private func splitWell(_ tabs: [TerminalTab]) -> some View {
+    if draggingID == nil, let run = splitRunRect(tabs) {
+      RoundedRectangle(cornerRadius: 7)
+        .fill(Color.primary.opacity(0.06))
+        .overlay(alignment: .bottom) {
+          RoundedRectangle(cornerRadius: 1)
+            .fill(Color.accentColor.opacity(0.55))
+            .frame(height: 2)
+            .padding(.horizontal, 3)
+        }
+        .frame(width: run.width)
+        .offset(x: run.x)
+    }
+  }
+
+  /// The x-offset and width of the split members' contiguous run within the chip strip, in the chips'
+  /// coordinate space (x = 0 at the first chip). `nil` when there's no split. Members are guaranteed
+  /// contiguous by `displayedTabIDs`.
+  private func splitRunRect(_ tabs: [TerminalTab]) -> (x: CGFloat, width: CGFloat)? {
+    guard let members = sessions.split(for: target)?.tabIDs, members.count >= 2 else { return nil }
+    let memberSet = Set(members)
+    let idxs = tabs.indices.filter { memberSet.contains(tabs[$0].id) }
+    guard let first = idxs.first, let last = idxs.last else { return nil }
+    var x: CGFloat = 0
+    for i in 0..<first { x += (widths[tabs[i].id] ?? 0) + tabSpacing }
+    var width: CGFloat = 0
+    for i in first...last { width += widths[tabs[i].id] ?? 0 }
+    width += tabSpacing * CGFloat(last - first)
+    return (x, width)
+  }
+
   private func tabBar(_ tabs: [TerminalTab], activeID: TerminalTab.ID?) -> some View {
     // Resolve the drag once per layout: which tab is dragging, and where it would land.
     let draggedIndex = draggingID.flatMap { id in tabs.firstIndex { $0.id == id } }
-    let dropTarget = draggedIndex.map { dropTargetIndex(tabs, draggedIndex: $0) }
+    // While dragging a chip down into a pane, the strip stops opening a reorder gap.
+    let dropTarget = chipPaneDrag != nil ? nil : draggedIndex.map { dropTargetIndex(tabs, draggedIndex: $0) }
     let draggedWidth = draggingID.flatMap { widths[$0] } ?? 0
 
     return HStack(spacing: 0) {
@@ -95,6 +177,7 @@ struct WorkroomTerminalsView: View {
                 isDragging || reduceMotion ? nil : .easeInOut(duration: 0.18), value: offsetX)
           }
         }
+        .background(alignment: .leading) { splitWell(tabs) }
         .padding(.horizontal, 8)
         .onPreferenceChange(TabWidthKey.self) { widths = $0 }
       }
@@ -198,8 +281,19 @@ struct WorkroomTerminalsView: View {
           if draggingID == nil { draggingID = tab.id }
           guard draggingID == tab.id else { return }
           dragTranslation = value.translation.width
+          // Dragged down over the pane area → preview a drop-into-pane (the strip stops gapping).
+          chipPaneDrag = chipLocal(value.location).map { PaneDragState(tabID: tab.id, location: $0) }
         }
-        .onEnded { _ in commitDrag() }
+        .onEnded { value in
+          if let drop = chipDropTarget(at: value.location) {
+            sessions.moveTabIntoSplit(tab.id, ontoEdge: drop.edge, of: drop.tab, for: target)
+            draggingID = nil
+            dragTranslation = 0
+          } else {
+            commitDrag()  // a plain strip reorder
+          }
+          chipPaneDrag = nil
+        }
     )
   }
 
@@ -272,6 +366,16 @@ private struct TabWidthKey: PreferenceKey {
     value: inout [TerminalTab.ID: CGFloat], nextValue: () -> [TerminalTab.ID: CGFloat]
   ) {
     value.merge(nextValue()) { _, new in new }
+  }
+}
+
+/// The pane area's global frame — lets the strip localise a chip drag and tell "over the strip"
+/// (reorder) from "over a pane" (drop-to-split).
+private struct ContentFrameKey: PreferenceKey {
+  static var defaultValue: CGRect = .zero
+  static func reduce(value: inout CGRect, nextValue: () -> CGRect) {
+    let next = nextValue()
+    if next != .zero { value = next }
   }
 }
 

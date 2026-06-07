@@ -31,6 +31,10 @@ final class GhosttySurfaceView: NSView {
   /// The shell returned to its prompt (OSC 133 D / `GHOSTTY_ACTION_COMMAND_FINISHED`) — the tab
   /// strip uses this to drop the finished command's title back to the default (issue #2).
   var onCommandFinished: (() -> Void)?
+  /// This pane became first responder (mouse click or programmatic focus) — the host makes it the
+  /// selection (issue #3, splits). `becomeFirstResponder` is the single chokepoint for every focus
+  /// path, so one hook covers them all. Value-type captures only.
+  var onFocused: (() -> Void)?
 
   /// Set from `GHOSTTY_ACTION_MOUSE_OVER_LINK` (an OSC 8 / detected URL is under the pointer).
   var hasOSC8LinkUnderCursor = false
@@ -81,6 +85,9 @@ final class GhosttySurfaceView: NSView {
     setupScrollbar()
     setupDragAndDrop()
     setAccessibilityRole(.textArea)
+    // Stable id so UI tests can count on-screen panes (a surface only appears in the a11y tree while
+    // it's actually mounted in a window — exactly the "is this pane rendering?" signal we need).
+    setAccessibilityIdentifier("terminal.surface")
     let dir = URL(fileURLWithPath: workingDirectory).lastPathComponent
     setAccessibilityLabel(dir.isEmpty ? "Terminal" : "Terminal — \(dir)")
   }
@@ -163,6 +170,7 @@ final class GhosttySurfaceView: NSView {
     onOpenURL = nil
     onCmdClickFile = nil
     resolveCmdHoverFile = nil
+    onFocused = nil
     if let occlusionObserver {
       NotificationCenter.default.removeObserver(occlusionObserver)
       self.occlusionObserver = nil
@@ -276,7 +284,10 @@ final class GhosttySurfaceView: NSView {
 
   override func becomeFirstResponder() -> Bool {
     let ok = super.becomeFirstResponder()
-    if ok { setSurfaceFocused(true) }
+    if ok {
+      setSurfaceFocused(true)
+      onFocused?()
+    }
     return ok
   }
 
@@ -554,13 +565,16 @@ final class GhosttySurfaceView: NSView {
   /// AppDelegate monitor; included here defensively. ⌘C/⌘V/etc. fall through to libghostty.
   private func isAppShortcut(_ event: NSEvent) -> Bool {
     let flags = event.modifierFlags.intersection([.command, .shift, .option, .control])
-    guard flags == .command else { return false }
     guard let chars = event.charactersIgnoringModifiers, let ch = chars.first else { return false }
+    // ⇧⌘D (Split Down) is a real menu command; it has Shift so it fails the command-only guard below,
+    // so catch it explicitly to keep it from the terminal and let the menu key-equivalent fire.
+    if flags == [.command, .shift], Character(ch.lowercased()) == "d" { return true }
+    guard flags == .command else { return false }
     if ("1"..."9").contains(ch) { return true }  // focus tab N
-    // ⌘T/⌘W/⌘O are real menu commands; ⌘Q/⌘H/⌘M/⌘, are system standards. NOT ⌘N — Workroom's only
+    // ⌘T/⌘W/⌘O/⌘D are real menu commands; ⌘Q/⌘H/⌘M/⌘, are system standards. NOT ⌘N — Workroom's only
     // N command is ⌥⌘N (which fails the `flags == .command` guard above), so plain ⌘N must pass
     // through to the terminal rather than being swallowed.
-    return ["t", "w", "o", "q", "h", "m", ","].contains(Character(ch.lowercased()))
+    return ["t", "w", "o", "d", "q", "h", "m", ","].contains(Character(ch.lowercased()))
   }
 
   private func buildKeyEvent(from event: NSEvent, action: ghostty_input_action_e)
