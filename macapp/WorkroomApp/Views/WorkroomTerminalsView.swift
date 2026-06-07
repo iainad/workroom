@@ -123,91 +123,74 @@ struct WorkroomTerminalsView: View {
   }
 
   private func tabChip(_ tab: TerminalTab, isActive: Bool, isDragging: Bool) -> some View {
-    let showClose = hoveredTab == tab.id && draggingID == nil
+    let isHovered = hoveredTab == tab.id && draggingID == nil
     // Activity in an unfocused tab highlights the tab itself (accent title + faint accent
     // fill) instead of a count — a tab is too narrow for a number.
     let hasActivity = notifications.count(tab: tab.id) > 0
-    return Text(tab.title)
-      .font(.callout)
-      .lineLimit(1)
-      .foregroundStyle(hasActivity ? Color.accentColor : Color.primary)
-      // On hover, fade the title's right edge so the close button — overlaid on top of
-      // the text and taking no layout space — reads cleanly.
-      .mask(
-        HStack(spacing: 0) {
-          Rectangle()
-          LinearGradient(
-            stops: [
-              .init(color: .black, location: 0),
-              .init(color: showClose ? .clear : .black, location: 0.45),
-              .init(color: showClose ? .clear : .black, location: 1),
-            ],
-            startPoint: .leading,
-            endPoint: .trailing
-          )
-          .frame(width: 46)
+    // Title and close button laid out side by side: the ✕ is always visible (no hover gate) and
+    // set well clear of the title by the HStack spacing, so they never crowd or overlap.
+    return HStack(spacing: 12) {
+      Text(tab.title)
+        .font(.callout)
+        .lineLimit(1)
+        .foregroundStyle(hasActivity ? Color.accentColor : Color.primary)
+      TabCloseButton {
+        sessions.closeTab(tab.id, for: target)
+      }
+      .help("Close \(tab.title)")
+      .accessibilityLabel("Close \(tab.title)")
+    }
+    .padding(.leading, 10)
+    .padding(.trailing, 4)  // tighter than the leading inset — the ✕ sits near the chip's edge
+    .padding(.vertical, 4)
+    // Subtle highlight for active/hover; a solid lifted chip while dragging.
+    .background {
+      RoundedRectangle(cornerRadius: 6)
+        .fill(Color.primary.opacity(isActive ? 0.1 : (isHovered ? 0.05 : 0)))
+    }
+    // Unread activity tints the whole tab with the accent color (pairs with the accent title).
+    .background {
+      RoundedRectangle(cornerRadius: 6)
+        .fill(Color.accentColor.opacity(hasActivity ? 0.15 : 0))
+    }
+    .background {
+      RoundedRectangle(cornerRadius: 6)
+        .fill(.thickMaterial)
+        .overlay(
+          RoundedRectangle(cornerRadius: 6)
+            .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
+        )
+        .opacity(isDragging ? 1 : 0)
+    }
+    // Measure the chip's natural width for the drag gap math.
+    .background {
+      GeometryReader { geo in
+        Color.clear.preference(key: TabWidthKey.self, value: [tab.id: geo.size.width])
+      }
+    }
+    .contentShape(Rectangle())
+    .accessibilityIdentifier("terminal.tab.\(tab.title)")
+    .scaleEffect(isDragging ? 1.04 : 1)
+    .shadow(color: .black.opacity(isDragging ? 0.25 : 0), radius: isDragging ? 6 : 0, y: 2)
+    .onHover { inside in
+      if inside { hoveredTab = tab.id } else if hoveredTab == tab.id { hoveredTab = nil }
+    }
+    .onTapGesture {
+      // Selecting changes `active.id`; the view's .onChange hook marks the tab read.
+      sessions.select(tab.id, for: target)
+    }
+    // Measure in .global space: a .local drag reads coordinates relative to the
+    // chip, which itself moves via .offset(dragTranslation) — that feedback loop
+    // dampens the translation so the chip lags the cursor. Global space is fixed.
+    .gesture(
+      DragGesture(minimumDistance: 6, coordinateSpace: .global)
+        .onChanged { value in
+          if draggingID == nil { draggingID = tab.id }
+          guard draggingID == tab.id else { return }
+          dragTranslation = value.translation.width
         }
-      )
-      .padding(.horizontal, 10)
-      .padding(.vertical, 4)
-      .overlay(alignment: .trailing) {
-        TabCloseButton {
-          sessions.closeTab(tab.id, for: target)
-        }
-        .help("Close \(tab.title)")
-        .accessibilityLabel("Close \(tab.title)")
-        .opacity(showClose ? 1 : 0)
-        .allowsHitTesting(showClose)
-        .padding(.trailing, 4)
-      }
-      // Subtle highlight for active/hover; a solid lifted chip while dragging.
-      .background {
-        RoundedRectangle(cornerRadius: 6)
-          .fill(Color.primary.opacity(isActive ? 0.1 : (showClose ? 0.05 : 0)))
-      }
-      // Unread activity tints the whole tab with the accent color (pairs with the accent title).
-      .background {
-        RoundedRectangle(cornerRadius: 6)
-          .fill(Color.accentColor.opacity(hasActivity ? 0.15 : 0))
-      }
-      .background {
-        RoundedRectangle(cornerRadius: 6)
-          .fill(.thickMaterial)
-          .overlay(
-            RoundedRectangle(cornerRadius: 6)
-              .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
-          )
-          .opacity(isDragging ? 1 : 0)
-      }
-      // Measure the chip's natural width for the drag gap math.
-      .background {
-        GeometryReader { geo in
-          Color.clear.preference(key: TabWidthKey.self, value: [tab.id: geo.size.width])
-        }
-      }
-      .contentShape(Rectangle())
-      .accessibilityIdentifier("terminal.tab.\(tab.title)")
-      .scaleEffect(isDragging ? 1.04 : 1)
-      .shadow(color: .black.opacity(isDragging ? 0.25 : 0), radius: isDragging ? 6 : 0, y: 2)
-      .onHover { inside in
-        if inside { hoveredTab = tab.id } else if hoveredTab == tab.id { hoveredTab = nil }
-      }
-      .onTapGesture {
-        // Selecting changes `active.id`; the view's .onChange hook marks the tab read.
-        sessions.select(tab.id, for: target)
-      }
-      // Measure in .global space: a .local drag reads coordinates relative to the
-      // chip, which itself moves via .offset(dragTranslation) — that feedback loop
-      // dampens the translation so the chip lags the cursor. Global space is fixed.
-      .gesture(
-        DragGesture(minimumDistance: 6, coordinateSpace: .global)
-          .onChanged { value in
-            if draggingID == nil { draggingID = tab.id }
-            guard draggingID == tab.id else { return }
-            dragTranslation = value.translation.width
-          }
-          .onEnded { _ in commitDrag() }
-      )
+        .onEnded { _ in commitDrag() }
+    )
   }
 
   /// Where the dragged tab would land given its current translation: walk outward from
