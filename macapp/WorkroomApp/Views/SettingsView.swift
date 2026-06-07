@@ -7,6 +7,7 @@ import SwiftUI
 struct SettingsView: View {
   @AppStorage(ThemePreference.storageKey) private var theme: ThemePreference = .system
   @AppStorage(CopyOnSelect.storageKey) private var copyOnSelect = true
+  @AppStorage(ConfirmOnQuit.storageKey) private var confirmOnQuit = true
   // Bundle id of the editor for ⌘-clicked file paths; "" = the file's default app.
   @AppStorage(TerminalLinkOpener.editorStorageKey) private var pathEditor = ""
   @EnvironmentObject private var updater: Updater
@@ -20,6 +21,8 @@ struct SettingsView: View {
       }
 
       Toggle("Copy on select", isOn: $copyOnSelect)
+
+      Toggle("Confirm before quitting", isOn: $confirmOnQuit)
 
       Picker("Open file paths in", selection: $pathEditor) {
         Text("Default App").tag("")

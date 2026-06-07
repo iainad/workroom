@@ -81,12 +81,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     completionHandler()
   }
 
-  /// Always confirm before quitting: quitting tears down every terminal (and anything
-  /// running in them) at once, with no undo. `@MainActor` so the `NSAlert` (a main-actor
-  /// AppKit type) call is clean — AppKit always invokes this on the main thread. Closing a
-  /// window doesn't quit the app, so this gate fires only on a real quit.
+  /// Confirm before quitting unless the user turned it off (`ConfirmOnQuit`, default on): quitting
+  /// tears down every terminal (and anything running in them) at once, with no undo. `@MainActor`
+  /// so the `NSAlert` (a main-actor AppKit type) call is clean — AppKit always invokes this on the
+  /// main thread. Closing a window doesn't quit the app, so this gate fires only on a real quit.
   @MainActor
   func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+    guard ConfirmOnQuit.isEnabled else { return .terminateNow }
     let alert = NSAlert()
     alert.messageText = "Quit Workroom?"
     alert.informativeText = "Quitting closes all terminals and stops any running processes."
@@ -141,6 +142,9 @@ struct WorkroomCommands: Commands {
   // Same key as the Settings checkbox so the two stay in sync; GhosttySurfaceView reads it
   // on each selection, so toggling here takes effect on the next drag.
   @AppStorage(CopyOnSelect.storageKey) private var copyOnSelect = true
+  // Gate the quit-confirmation alert. Same key as the Settings checkbox so the two stay in sync;
+  // AppDelegate reads it in applicationShouldTerminate.
+  @AppStorage(ConfirmOnQuit.storageKey) private var confirmOnQuit = true
 
   var body: some Commands {
     CommandGroup(after: .appInfo) {
@@ -154,6 +158,14 @@ struct WorkroomCommands: Commands {
       Button("Install ‘workroom’ Command in PATH…") {
         Task { await CommandLineInstaller.runFromMenu() }
       }
+    }
+
+    // Sit the quit-confirmation toggle just above Quit (default on): `.appVisibility` is the
+    // Hide/Show All group, the last thing before Quit, so `after:` lands between it and Quit. A
+    // divider separates it from that group; mirrored by the Settings checkbox.
+    CommandGroup(after: .appVisibility) {
+      Divider()
+      Toggle("Confirm Before Quitting", isOn: $confirmOnQuit)
     }
 
     CommandGroup(after: .sidebar) {
