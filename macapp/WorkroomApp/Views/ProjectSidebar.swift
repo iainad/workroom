@@ -9,8 +9,9 @@ struct ProjectSidebar: View {
   @EnvironmentObject var store: AppStore
   @EnvironmentObject var notifications: NotificationCenterStore
   @State private var showImporter = false
-  /// Project paths the user has collapsed. Absence means expanded (the default).
-  @State private var collapsed: Set<String> = []
+  /// Project paths the user has collapsed. Absence means expanded (the default). Persisted
+  /// across launches (issue #14) — `CollapsedProjects` keeps the contains/insert/remove API.
+  @AppStorage(SidebarPersistence.collapsedProjectsKey) private var collapsed = CollapsedProjects()
   @State private var hovered: SidebarID?
   @State private var themeHovering = false
   @State private var addProjectHovering = false

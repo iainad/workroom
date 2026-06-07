@@ -29,8 +29,11 @@ final class AppStore: ObservableObject {
   @Published var selectedProjectID: Project.ID?
   /// The selected terminal target — a `.root` or a `.workroom` (never `.project`), or nil
   /// when nothing is selected (the launch state). `.project` is not a target; clicking a
-  /// project toggles its expansion instead.
-  @Published var selectedTargetID: SidebarID?
+  /// project toggles its expansion instead. Persisted across launches (issue #14) via `didSet`
+  /// and restored in `apply()`.
+  @Published var selectedTargetID: SidebarID? {
+    didSet { SidebarPersistence.selection = Self.targetIDString(for: selectedTargetID) }
+  }
   /// Per-project resolved root branch/bookmark labels, hydrated asynchronously after each
   /// load (see `resolveBranches`). Absent ⇒ the root row shows a dim "root" until resolved.
   @Published var rootRefs: [Project.ID: RootRef] = [:]
@@ -66,8 +69,12 @@ final class AppStore: ObservableObject {
   private var branchTask: Task<Void, Never>?
   /// When the project list was last loaded — used to throttle the on-focus refresh.
   private var lastLoadAt: Date = .distantPast
+  /// The selection persisted from a previous launch (issue #14), applied once on the first
+  /// successful load (see `apply`). Consumed there so a later refresh can't resurrect it.
+  private var pendingRestoreSelection: TerminalTarget.ID?
 
   private init() {
+    pendingRestoreSelection = SidebarPersistence.selection
     // Route each terminal's activity (OSC/bell) through the notification spine, gated on
     // focus, and raise a native banner only when the app is backgrounded.
     terminals.activityHandler = { [weak self] targetID, tabID, activity in
@@ -139,9 +146,17 @@ final class AppStore: ObservableObject {
 
   private func apply(_ fresh: [Project]) {
     projects = fresh
-    // Keep a project as the New-Workroom context; default to the first.
+    // First load after launch: restore last session's selection (issue #14) before it's
+    // validated below. Resolved against the live projects, so a since-deleted target — or a
+    // restore that loses the race to a user click — resolves to nil and falls through.
+    if selectedTargetID == nil, let saved = pendingRestoreSelection {
+      selectedTargetID = Self.sidebarID(forTargetID: saved, in: fresh)
+    }
+    pendingRestoreSelection = nil
+    // Keep a project as the New-Workroom context; prefer the (possibly restored) selection's
+    // project, else the first.
     if selectedProjectID == nil || !fresh.contains(where: { $0.id == selectedProjectID }) {
-      selectedProjectID = fresh.first?.id
+      selectedProjectID = Self.projectPath(of: selectedTargetID) ?? fresh.first?.id
     }
     // Keep the selected target only if it still exists. `validatedSelection` can only
     // return the existing selection or nil — it never fabricates one, so a load/refresh
@@ -451,6 +466,25 @@ final class AppStore: ObservableObject {
       }
     }
     return nil
+  }
+
+  /// Encode a selectable target to its `TerminalTarget.ID` string for persistence (issue #14) —
+  /// the inverse of `sidebarID(forTargetID:in:)`. `.project`/nil aren't selectable targets.
+  nonisolated static func targetIDString(for id: SidebarID?) -> String? {
+    switch id {
+    case .root(let path): return TerminalTarget.rootID(project: path)
+    case .workroom(let path, let name): return TerminalTarget.workroomID(project: path, name: name)
+    case .project, .none: return nil
+    }
+  }
+
+  /// The owning project path of any sidebar id (used to keep the New-Workroom context on the
+  /// restored selection's project).
+  nonisolated static func projectPath(of id: SidebarID?) -> String? {
+    switch id {
+    case .root(let path), .workroom(let path, _), .project(let path): return path
+    case .none: return nil
+    }
   }
 
   // MARK: Errors

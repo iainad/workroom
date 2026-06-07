@@ -16,6 +16,9 @@ struct RootView: View {
     NavigationSplitView {
       ProjectSidebar()
         .frame(minWidth: 240)
+        // Persist the user-dragged sidebar width across launches (issue #14) via the
+        // underlying NSSplitView's autosave — SwiftUI offers no width binding.
+        .background(SplitViewAutosave(name: "WorkroomSidebarSplit"))
     } detail: {
       detail
     }
