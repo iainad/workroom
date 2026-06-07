@@ -87,6 +87,58 @@ final class TerminalSessionsTests: XCTestCase {
     XCTAssertEqual(s.tabs(for: target).first?.title, "Terminal 1")
   }
 
+  // MARK: Running state (issue #28)
+
+  func testIsRunningTracksCommandLifecycle() {
+    let s = makeSessions()
+    s.addTab(for: target)
+    let tab = s.tabs(for: target).first!
+
+    // A fresh tab sits at the prompt — nothing running.
+    XCTAssertFalse(s.tabs(for: target).first!.isRunning)
+    XCTAssertFalse(s.isRunning(forTargetID: target.id))
+
+    // A command's title (preexec) marks it running…
+    tab.view.onTitleChange?("npm run dev")
+    XCTAssertTrue(s.tabs(for: target).first!.isRunning)
+    XCTAssertTrue(s.isRunning(forTargetID: target.id))
+
+    // …and command_finished returns it to idle.
+    tab.view.onCommandFinished?()
+    XCTAssertFalse(s.tabs(for: target).first!.isRunning)
+    XCTAssertFalse(s.isRunning(forTargetID: target.id))
+  }
+
+  func testDirectoryTitlesDoNotCountAsRunning() {
+    let s = makeSessions()
+    s.addTab(for: target)
+    let view = s.tabs(for: target).first!.view
+    view.handlePwd("/var/data/proj")  // cwd outside $HOME, so its `~` form is itself
+
+    // The directory title the shell sets at the prompt isn't a command — still idle.
+    view.onTitleChange?("/var/data/proj")
+    XCTAssertFalse(s.isRunning(forTargetID: target.id))
+  }
+
+  func testIsRunningAggregatesAcrossTabs() {
+    let s = makeSessions()
+    s.addTab(for: target)
+    s.addTab(for: target)
+
+    // A command in the second tab makes the whole target "running".
+    s.tabs(for: target)[1].view.onTitleChange?("make build")
+    XCTAssertTrue(s.isRunning(forTargetID: target.id))
+
+    // It clears once that tab finishes (the first never ran).
+    s.tabs(for: target)[1].view.onCommandFinished?()
+    XCTAssertFalse(s.isRunning(forTargetID: target.id))
+  }
+
+  func testUnknownTargetIsNotRunning() {
+    let s = makeSessions()
+    XCTAssertFalse(s.isRunning(forTargetID: "wr|/p|never-opened"))
+  }
+
   // MARK: Live titles (issue #2)
 
   func testRunningCommandShowsThenClearsWhenFinished() {

@@ -169,6 +169,15 @@ struct WorkroomTerminalsView: View {
         Color.clear.preference(key: TabWidthKey.self, value: [tab.id: geo.size.width])
       }
     }
+    // A flowing underline along the chip's base while a command runs in this tab (issue #28).
+    // An overlay so it never changes the chip's measured width (the drag gap math reads that).
+    .overlay(alignment: .bottom) {
+      if tab.isRunning {
+        RunningUnderline()
+          .padding(.horizontal, 6)
+          .padding(.bottom, 1)
+      }
+    }
     .contentShape(Rectangle())
     .accessibilityIdentifier("terminal.tab.\(tab.title)")
     .scaleEffect(isDragging ? 1.04 : 1)
@@ -263,6 +272,44 @@ private struct TabWidthKey: PreferenceKey {
     value: inout [TerminalTab.ID: CGFloat], nextValue: () -> [TerminalTab.ID: CGFloat]
   ) {
     value.merge(nextValue()) { _, new in new }
+  }
+}
+
+/// A thin accent underline that flows left→right while a command runs in a tab (issue #28): a base
+/// accent track with a brighter highlight that sweeps across it, conveying indeterminate progress.
+/// Under Reduce Motion the sweep is dropped for a static, fuller-opacity track.
+private struct RunningUnderline: View {
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @State private var sweeping = false
+
+  var body: some View {
+    GeometryReader { geo in
+      let width = geo.size.width
+      let highlight = max(20, width * 0.4)
+      Capsule()
+        .fill(Color.accentColor.opacity(reduceMotion ? 0.7 : 0.25))
+        .overlay(alignment: .leading) {
+          if !reduceMotion {
+            Capsule()
+              .fill(
+                LinearGradient(
+                  colors: [.clear, Color.accentColor, .clear],
+                  startPoint: .leading, endPoint: .trailing)
+              )
+              .frame(width: highlight)
+              // Travel the highlight from just off the leading edge to just off the trailing edge.
+              .offset(x: sweeping ? width : -highlight)
+          }
+        }
+        .clipShape(Capsule())
+    }
+    .frame(height: 2)
+    .onAppear {
+      guard !reduceMotion else { return }
+      withAnimation(.linear(duration: 1.1).repeatForever(autoreverses: false)) {
+        sweeping = true
+      }
+    }
   }
 }
 

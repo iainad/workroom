@@ -26,6 +26,7 @@ struct WorkroomApp: App {
       RootView()
         .environmentObject(store)
         .environmentObject(store.notifications)
+        .environmentObject(store.terminals)
         .frame(minWidth: 900, minHeight: 560)
         .task { await store.bootstrap() }
     }

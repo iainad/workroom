@@ -9,6 +9,7 @@ import UniformTypeIdentifiers
 struct ProjectSidebar: View {
   @EnvironmentObject var store: AppStore
   @EnvironmentObject var notifications: NotificationCenterStore
+  @EnvironmentObject var terminals: TerminalSessions
   @State private var showImporter = false
   /// Project paths the user has collapsed. Absence means expanded (the default). Persisted
   /// across launches (issue #14) as a native string set via `Defaults`.
@@ -195,6 +196,11 @@ struct ProjectSidebar: View {
           .foregroundStyle(.yellow)
           .help("Project folder not found")
       }
+      // Trailing-most so it lines up with the workroom rows' spinner column. The root has no
+      // delete button to swap with, so it just shows while a command runs.
+      if terminals.isRunning(forTargetID: target.id) {
+        RunningSpinner()
+      }
     }
     .padding(.leading, childLeading)
     .contentShape(Rectangle())
@@ -211,8 +217,8 @@ struct ProjectSidebar: View {
   @ViewBuilder
   private func workroomRow(_ workroom: Workroom, in project: Project) -> some View {
     let id = SidebarID.workroom(project: project.path, name: workroom.name)
-    let unread = notifications.count(
-      target: TerminalTarget.workroomID(project: project.path, name: workroom.name))
+    let targetID = TerminalTarget.workroomID(project: project.path, name: workroom.name)
+    let unread = notifications.count(target: targetID)
     HStack(spacing: 6) {
       // No icon gutter: the workroom label sits at the root's left (icon) edge, so the
       // root and its workrooms read as siblings rather than nesting workrooms under the
@@ -225,8 +231,17 @@ struct ProjectSidebar: View {
           .foregroundStyle(.yellow)
           .help(warning.message)
       }
-      DeleteRowButton(name: workroom.name, visible: hovered == id) {
-        store.pendingDeletion = PendingWorkroomDeletion(workroom: workroom, project: project)
+      // Trailing slot: a progress spinner while a command runs, swapped for the delete button
+      // on hover — so a workroom stays deletable even mid-run (issue #28). The delete button is
+      // always laid out (it reveals via opacity), so it fixes the slot's size and the spinner,
+      // which is smaller, can't shift the row.
+      ZStack {
+        if terminals.isRunning(forTargetID: targetID), hovered != id {
+          RunningSpinner()
+        }
+        DeleteRowButton(name: workroom.name, visible: hovered == id) {
+          store.pendingDeletion = PendingWorkroomDeletion(workroom: workroom, project: project)
+        }
       }
     }
     .padding(.leading, childLeading)
@@ -322,6 +337,18 @@ struct ProjectSidebar: View {
     }
     .padding(.horizontal, 8)
     .padding(.vertical, 6)
+  }
+}
+
+/// The small indeterminate spinner shown on a root/workroom row while one of its terminals is
+/// running a command (issue #28). Matches the project row's create/delete spinner so the sidebar
+/// has one progress idiom.
+private struct RunningSpinner: View {
+  var body: some View {
+    ProgressView()
+      .controlSize(.small)
+      .help("Running a command")
+      .accessibilityLabel("Running a command")
   }
 }
 

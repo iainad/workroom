@@ -15,6 +15,12 @@ struct TerminalTab: Identifiable {
   /// What the tab strip displays.
   var title: String { liveTitle ?? defaultTitle }
 
+  /// Whether a foreground command is currently running in this tab (issue #28). True between a
+  /// command's title (shell-integration preexec, OSC 0/2) and `command_finished` (OSC 133 D) — the
+  /// same lifecycle that drives `liveTitle`, so the two are one signal. Drives the tab's flowing
+  /// underline and the sidebar row's progress spinner.
+  var isRunning: Bool { liveTitle != nil }
+
   var view: GhosttySurfaceView { root.firstLeaf.view }
 }
 
@@ -74,6 +80,13 @@ final class TerminalSessions: ObservableObject {
       return match
     }
     return tabs.first
+  }
+
+  /// Whether any of a target's terminals is currently running a command (issue #28). Keyed on the
+  /// raw `TerminalTarget.ID` so the sidebar — which builds those ids for a row without holding the
+  /// `TerminalTarget` — can drive its progress spinner directly.
+  func isRunning(forTargetID id: TerminalTarget.ID) -> Bool {
+    (tabsByTarget[id] ?? []).contains { $0.isRunning }
   }
 
   /// Create the target's first terminal the first time its pane appears. Once it has been opened, an
