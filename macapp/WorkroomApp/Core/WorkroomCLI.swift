@@ -127,20 +127,24 @@ final class WorkroomCLI {
     try throwIfError(result)
   }
 
-  /// Creates a workroom. `onReady(name, path)` fires when the workroom exists but
-  /// setup is still running; `onLog` streams setup output lines as they arrive.
+  /// Creates a workroom. `onReady(name, path, hasSetup)` fires when the workroom exists
+  /// but setup is still running — `hasSetup` reports whether a setup script will run, so
+  /// the caller can block on its log. `onLog` streams setup output lines as they arrive.
   @discardableResult
   func create(
     project: String,
     onLog: ((String) -> Void)? = nil,
-    onReady: ((String, String) -> Void)? = nil
+    onReady: ((_ name: String, _ path: String, _ hasSetup: Bool) -> Void)? = nil
   ) async throws -> CreateResponse {
     let result = try await run(
       ["create", "--json", "--no-editor", "--project", project], timeout: 600
     ) { event in
       switch event.type {
       case "log": if let text = event.text { onLog?(text) }
-      case "created": if let name = event.name, let path = event.path { onReady?(name, path) }
+      case "created":
+        if let name = event.name, let path = event.path {
+          onReady?(name, path, event.setup ?? false)
+        }
       default: break
       }
     }

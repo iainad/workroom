@@ -42,6 +42,7 @@ var createCmd = &cobra.Command{
 			svc.OnReady = func(r workroom.CreateResult) {
 				writeJSONEvent(os.Stderr, map[string]any{
 					"type": "created", "name": r.Name, "path": r.Path, "vcs": r.VCS, "project": r.Project,
+					"setup": r.HasSetup,
 				})
 			}
 			res, err := svc.CreateNamed(dir, nil)

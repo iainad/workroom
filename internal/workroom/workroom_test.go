@@ -271,8 +271,46 @@ func TestCreateOnReadyFiresBeforeSetup(t *testing.T) {
 	if ready.Name != "foo" || ready.Path != filepath.Join(workroomsDir, "foo") {
 		t.Fatalf("OnReady got unexpected result: %+v", *ready)
 	}
+	if !ready.HasSetup {
+		t.Fatal("OnReady result should report HasSetup when a setup script exists")
+	}
 	if setupRanWhenReady {
 		t.Fatal("OnReady fired after the setup script ran; it must fire before")
+	}
+}
+
+func TestCreateOnReadyReportsNoSetupScript(t *testing.T) {
+	dir := t.TempDir()
+	os.Mkdir(filepath.Join(dir, ".jj"), 0o755)
+	workroomsDir := filepath.Join(dir, "workrooms")
+
+	// No scripts/workroom_setup exists, so HasSetup must be false.
+	mock := &mockExecutor{
+		output: "default: mk 6ec05f05 (no description set)",
+		onRun: func(_, name string, args []string) {
+			if name == "jj" && len(args) > 1 && args[0] == "workspace" && args[1] == "add" {
+				os.MkdirAll(args[2], 0o755)
+			}
+		},
+	}
+	jj := &vcs.JJ{Executor: mock}
+
+	svc, _, _ := newTestService(t, jj)
+	svc.Config = newTestConfig(t, filepath.Join(dir, "config.json"))
+	svc.Config.SetWorkroomsDir(workroomsDir)
+	svc.NameGenFunc = func() string { return "foo" }
+
+	var ready *CreateResult
+	svc.OnReady = func(r CreateResult) { ready = &r }
+
+	if _, err := svc.CreateNamed(dir, nil); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if ready == nil {
+		t.Fatal("OnReady was not called")
+	}
+	if ready.HasSetup {
+		t.Fatal("OnReady result should report HasSetup=false when no setup script exists")
 	}
 }
 

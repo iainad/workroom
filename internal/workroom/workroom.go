@@ -151,13 +151,16 @@ func (s *Service) vcsForType(t vcs.Type) (vcs.VCS, error) {
 }
 
 // CreateResult describes a newly created workroom. SetupOutput is captured for the
-// human renderer and is not part of the machine payload.
+// human renderer and is not part of the machine payload. HasSetup reports whether a
+// setup script exists for the project (resolved before OnReady fires) so a GUI can
+// decide to block on the setup log; it too stays out of the machine payload.
 type CreateResult struct {
 	Name        string `json:"name"`
 	Path        string `json:"path"`
 	VCS         string `json:"vcs"`
 	Project     string `json:"project"`
 	SetupOutput string `json:"-"`
+	HasSetup    bool   `json:"-"`
 }
 
 // CreateNamed generates a unique name, creates the VCS workspace, updates config,
@@ -233,6 +236,13 @@ func (s *Service) CreateNamed(dir string, setupOut io.Writer) (CreateResult, err
 	// can still report what was created.
 	res = CreateResult{Name: name, Path: wrPath, VCS: string(s.VCS.Type()), Project: dir}
 
+	// Resolve whether a setup script exists before signalling readiness, so OnReady
+	// carries HasSetup and a GUI can decide to block on the setup log up front.
+	setupScript := filepath.Join(dir, "scripts", "workroom_setup")
+	if _, err := os.Stat(setupScript); err == nil {
+		res.HasSetup = true
+	}
+
 	// Signal readiness before the (potentially slow) setup script runs, so a GUI can
 	// show the workroom and stream setup output beneath its terminal immediately.
 	if !s.Pretend && s.OnReady != nil {
@@ -244,8 +254,7 @@ func (s *Service) CreateNamed(dir string, setupOut io.Writer) (CreateResult, err
 	if setupOut == nil {
 		setupOut = s.ScriptLogWriter
 	}
-	setupScript := filepath.Join(dir, "scripts", "workroom_setup")
-	if _, err := os.Stat(setupScript); err == nil {
+	if res.HasSetup {
 		s.sayStatus("setup", fmt.Sprintf("Running %s from %q", setupScript, wrPath))
 		if !s.Pretend {
 			out, scriptErr := script.Run("setup", setupScript, wrPath, name, dir, setupOut)

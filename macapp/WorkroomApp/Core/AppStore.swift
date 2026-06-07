@@ -236,17 +236,22 @@ final class AppStore: ObservableObject {
 
     let session = ScriptLogSession(
       title: "Setting up new workroom in \(project.displayName)", phase: "setup")
+    // Whether the project has a setup script; reported by the early "created" event.
+    // A blocking session shows its log full-pane (no terminal) until the user dismisses.
+    var hasSetup = false
     do {
       let created = try await WorkroomCLI.shared.create(
         project: project.path,
         onLog: { text in
           DispatchQueue.main.async { session.append(text) }
         },
-        onReady: { name, _ in
-          // The workroom now exists; mount it and dock the streaming log under
-          // its terminal so setup output appears live from the start.
+        onReady: { name, _, setup in
+          // The workroom now exists; mount it and (if a setup script will run) block its
+          // terminal behind the streaming setup log so output appears live from the start.
           DispatchQueue.main.async {
-            Task { @MainActor in await self.mountSetupLog(session, workroom: name, project: project)
+            hasSetup = setup
+            Task { @MainActor in
+              await self.mountSetupLog(session, workroom: name, project: project, blocking: setup)
             }
           }
         }
@@ -255,15 +260,18 @@ final class AppStore: ObservableObject {
       await reload()
       // Mount now if the early "created" event never arrived (older CLI).
       if session.targetID == nil {
-        await mountSetupLog(session, workroom: created.name, project: project)
+        await mountSetupLog(session, workroom: created.name, project: project, blocking: hasSetup)
       }
-      // A run with no output leaves nothing to dock.
-      if session.lines.isEmpty, let id = session.targetID { logs[id] = nil }
+      // A non-blocking run with no output leaves nothing to dock. A blocking session
+      // stays up (even with no output) until the user dismisses it.
+      if !session.blocking, session.lines.isEmpty, let id = session.targetID { logs[id] = nil }
     } catch {
       // Even on (partial) failure, reload so a "created but setup failed" workroom shows up.
       await reload()
       if let id = session.targetID {
-        // The workroom exists; show the failure in its docked log.
+        // The workroom exists; show the failure in its log. Keep it blocking (if a setup
+        // script ran) so the failure replaces the terminal until the user dismisses it.
+        session.blocking = hasSetup
         logs[id] = session
         selectedProjectID = project.id
         selectedTargetID = targetIDFromLogKey(id, project: project)
@@ -275,13 +283,15 @@ final class AppStore: ObservableObject {
     }
   }
 
-  /// Mounts a just-created workroom (selecting it so its terminal opens) and docks the
-  /// setup log under it. Safe to call more than once.
-  private func mountSetupLog(_ session: ScriptLogSession, workroom name: String, project: Project)
-    async
-  {
+  /// Mounts a just-created workroom (selecting it) and attaches its setup log. When
+  /// `blocking` is true the log replaces the terminal full-pane (a setup script is
+  /// running); otherwise it docks beneath the terminal. Safe to call more than once.
+  private func mountSetupLog(
+    _ session: ScriptLogSession, workroom name: String, project: Project, blocking: Bool = false
+  ) async {
     let id = TerminalTarget.workroomID(project: project.path, name: name)
     session.targetID = id
+    session.blocking = blocking
     logs[id] = session
     await reload()
     selectedProjectID = project.id
@@ -506,6 +516,11 @@ final class ScriptLogSession: ObservableObject, Identifiable {
   /// The terminal target id this log is docked under, once the CLI reports the workroom
   /// exists. nil while the workroom is still being created.
   var targetID: TerminalTarget.ID?
+  /// When true, this session blocks its workroom's terminal: the detail pane shows the
+  /// setup log full-pane (no terminal) until the user dismisses it. Set once, before the
+  /// session is inserted into the observed `logs` dict, so it must NOT be @Published —
+  /// flipping it after mount would create then tear down a terminal (mirrors `targetID`).
+  var blocking = false
   @Published private(set) var lines: [LogLine] = []
   @Published private(set) var isFinished = false
   @Published private(set) var failureMessage: String?
