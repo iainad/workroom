@@ -6,6 +6,7 @@ import SwiftUI
 struct WorkroomTerminalsView: View {
   let target: TerminalTarget
   @ObservedObject var sessions: TerminalSessions
+  @EnvironmentObject var store: AppStore
   @EnvironmentObject var notifications: NotificationCenterStore
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @State private var hoveredTab: TerminalTab.ID?
@@ -135,7 +136,7 @@ struct WorkroomTerminalsView: View {
         .lineLimit(1)
         .foregroundStyle(hasActivity ? Color.accentColor : Color.primary)
       TabCloseButton {
-        sessions.closeTab(tab.id, for: target)
+        store.requestCloseTerminalTab(tab.id, for: target)
       }
       .help("Close \(tab.title)")
       .accessibilityLabel("Close \(tab.title)")

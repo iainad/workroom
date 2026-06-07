@@ -19,6 +19,9 @@ extension Defaults.Keys {
   /// Confirm before quitting (quitting tears down every terminal with no undo).
   static let confirmOnQuit = Key<Bool>("confirmOnQuit", default: true)
 
+  /// Confirm before closing a terminal (closing kills its shell and any running process, no undo).
+  static let confirmOnCloseTerminal = Key<Bool>("confirmOnCloseTerminal", default: true)
+
   /// Whether the global ⌘§ show/hide hotkey is registered (issue #13).
   static let globalHotkey = Key<Bool>("globalHotkeyEnabled", default: true)
 

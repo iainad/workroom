@@ -370,7 +370,33 @@ final class AppStore: ObservableObject {
     guard let target = selectedTarget,
       let active = terminals.activeTab(for: target)
     else { return }
-    terminals.closeTab(active.id, for: target)
+    requestCloseTerminalTab(active.id, for: target)
+  }
+
+  /// Close a terminal tab, confirming first when `confirmOnCloseTerminal` is on (the default). The
+  /// tab-strip ✕ and the ⌘W command both route through here, so the confirmation — and its "Don't
+  /// ask me again" suppression — lives in one place. Closing a terminal kills its shell and anything
+  /// running in it with no undo, so the alert mirrors the quit confirmation (same destruction class).
+  func requestCloseTerminalTab(_ tabID: TerminalTab.ID, for target: TerminalTarget) {
+    guard let tab = terminals.tabs(for: target).first(where: { $0.id == tabID }) else { return }
+    guard Defaults[.confirmOnCloseTerminal] else {
+      terminals.closeTab(tabID, for: target)
+      return
+    }
+    let alert = NSAlert()
+    alert.messageText = "Close ‘\(tab.title)’?"
+    alert.informativeText = "Closing this terminal stops any process running in it."
+    alert.addButton(withTitle: "Close")
+    alert.addButton(withTitle: "Cancel")
+    alert.showsSuppressionButton = true
+    alert.suppressionButton?.title = "Don't ask me again"
+    let confirmed = alert.runModal() == .alertFirstButtonReturn
+    // Ticking the box stops future confirmations whether they Close or Cancel — it means "stop
+    // asking". Writes the same key the Settings toggle binds to.
+    if alert.suppressionButton?.state == .on {
+      Defaults[.confirmOnCloseTerminal] = false
+    }
+    if confirmed { terminals.closeTab(tabID, for: target) }
   }
 
   /// Focus the terminal tab at `index` (0-based, left-to-right) in the selected target

@@ -9,6 +9,7 @@ struct SettingsView: View {
   @Default(.theme) private var theme
   @Default(.copyOnSelect) private var copyOnSelect
   @Default(.confirmOnQuit) private var confirmOnQuit
+  @Default(.confirmOnCloseTerminal) private var confirmOnCloseTerminal
   @Default(.globalHotkey) private var globalHotkey
   // Bundle id of the editor for ⌘-clicked file paths; "" = the file's default app.
   @Default(.filePathEditor) private var pathEditor
@@ -25,6 +26,8 @@ struct SettingsView: View {
       Toggle("Copy on select", isOn: $copyOnSelect)
 
       Toggle("Confirm before quitting", isOn: $confirmOnQuit)
+
+      Toggle("Confirm before closing a terminal", isOn: $confirmOnCloseTerminal)
 
       Toggle("Global show/hide hotkey (⌘§)", isOn: $globalHotkey)
 
