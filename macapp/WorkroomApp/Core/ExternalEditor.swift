@@ -24,6 +24,14 @@ struct ExternalEditor: Identifiable {
     }
   }
 
+  /// The app's Finder icon, sized for inline display beside its name in the
+  /// "Open in…" button and menu.
+  var icon: NSImage {
+    let icon = NSWorkspace.shared.icon(forFile: appURL.path)
+    icon.size = NSSize(width: 20, height: 20)
+    return icon
+  }
+
   /// Open `path` (a workroom directory) in this editor.
   func open(_ path: String) {
     NSWorkspace.shared.open(

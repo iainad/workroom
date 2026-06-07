@@ -146,13 +146,29 @@ struct RootView: View {
           let remembered = editors.first { $0.id == lastEditorID } ?? editors[0]
           Menu {
             ForEach(editors) { editor in
-              Button(editor.name) {
+              Button {
                 lastEditorID = editor.id
                 editor.open(target.path)
+              } label: {
+                Label {
+                  Text(editor.name)
+                } icon: {
+                  Image(nsImage: editor.icon).renderingMode(.original)
+                }
               }
             }
           } label: {
-            Label("Open in…", systemImage: "arrow.up.forward.app")
+            Label {
+              Text("Open in…")
+            } icon: {
+              // The toolbar auto-scales SF Symbols but renders a bitmap at its own size, so
+              // fit the app icon into a hidden reference symbol to match the other toolbar icons.
+              Image(systemName: "arrow.up.forward.app")
+                .hidden()
+                .overlay {
+                  Image(nsImage: remembered.icon).renderingMode(.original).resizable().scaledToFit()
+                }
+            }
           } primaryAction: {
             remembered.open(target.path)
           }
