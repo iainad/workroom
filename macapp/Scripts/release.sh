@@ -14,6 +14,10 @@
 #
 #   - CI / API key: set NOTARY_KEY_PATH (App Store Connect .p8), NOTARY_KEY_ID, NOTARY_ISSUER_ID.
 #
+# Optional — Sentry dSYM upload (so release crash reports symbolicate): install sentry-cli
+# (brew install getsentry/tools/sentry-cli) and set SENTRY_AUTH_TOKEN, SENTRY_ORG, SENTRY_PROJECT.
+# Absent any of them the upload step skips; it never blocks a release.
+#
 # Then: macapp/Scripts/release.sh
 set -euo pipefail
 
@@ -85,6 +89,24 @@ xcodebuild -project "$PROJ" -scheme WorkroomApp -configuration Release \
   -archivePath "$ARCHIVE" \
   MARKETING_VERSION="$SHORT_VERSION" CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
   archive
+
+# Upload dSYMs to Sentry so release crashes symbolicate. The archive bundles them in
+# Workroom.xcarchive/dSYMs/ (the app's, plus the from-source Sentry frameworks'). Optional and
+# non-fatal, like the Sparkle signing below: runs only when sentry-cli is installed and
+# SENTRY_AUTH_TOKEN/SENTRY_ORG/SENTRY_PROJECT are set, else it skips with a note. We do this right
+# after archiving — symbols are tied to the compiled binary, not to signing/notarization — and a
+# symbol-upload hiccup must never block shipping an otherwise-good build.
+if [ -n "${SENTRY_AUTH_TOKEN:-}" ] && [ -n "${SENTRY_ORG:-}" ] && [ -n "${SENTRY_PROJECT:-}" ]; then
+  if command -v sentry-cli >/dev/null 2>&1; then
+    echo "==> Uploading dSYMs to Sentry ($SENTRY_ORG/$SENTRY_PROJECT)"
+    sentry-cli debug-files upload --org "$SENTRY_ORG" --project "$SENTRY_PROJECT" "${ARCHIVE}/dSYMs" \
+      || echo "warning: Sentry dSYM upload failed; continuing release." >&2
+  else
+    echo "note: sentry-cli not found; skipping Sentry dSYM upload (brew install getsentry/tools/sentry-cli)." >&2
+  fi
+else
+  echo "note: SENTRY_AUTH_TOKEN/SENTRY_ORG/SENTRY_PROJECT unset; skipping Sentry dSYM upload." >&2
+fi
 
 EXPORT_PLIST="${BUILD}/ExportOptions.plist"
 cat >"$EXPORT_PLIST" <<'PLIST'

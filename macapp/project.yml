@@ -29,6 +29,12 @@ packages:
     # to a self-built xcframework from a Ghostty fork for full pin/patch control (see plan CMT-2).
     url: https://github.com/Lakr233/libghostty-spm
     exactVersion: 1.2.3
+  Sentry:
+    # Crash reporting, app-hang detection, tracing, profiling, and metrics. We link the `Sentry`
+    # SPM product (the recommended static framework — it also re-exports the SwiftUI APIs since
+    # 9.4.1). SDK init + the macOS-trimmed option set live in WorkroomApp.init() (SentrySDK.start).
+    url: https://github.com/getsentry/sentry-cocoa
+    from: "9.16.1"
 
 targets:
   WorkroomApp:
@@ -49,6 +55,8 @@ targets:
       # (GPU renderer + CoreText font backend + HID).
       - package: libghostty
         product: GhosttyKit
+      - package: Sentry
+        product: Sentry
       - sdk: Metal.framework
       - sdk: MetalKit.framework
       - sdk: CoreText.framework

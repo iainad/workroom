@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import GhosttyKit
+import Sentry
 import os
 
 /// Owns the single libghostty runtime (`ghostty_app_t`) for the whole app, plus the loaded
@@ -52,12 +53,12 @@ final class GhosttyApp {
     guard resolveResources() else { return }  // logs + bails if resources missing
 
     guard ghostty_init(UInt(CommandLine.argc), CommandLine.unsafeArgv) == GHOSTTY_SUCCESS else {
-      logger.error("ghostty_init failed — terminals unavailable")
+      reportStartupFailure("ghostty_init failed — terminals unavailable")
       return
     }
 
     guard let cfg = makeConfig() else {
-      logger.error("ghostty_config_new failed — terminals unavailable")
+      reportStartupFailure("ghostty_config_new failed — terminals unavailable")
       return
     }
 
@@ -88,7 +89,7 @@ final class GhosttyApp {
     }
 
     guard let createdApp = ghostty_app_new(&rt, cfg) else {
-      logger.error("ghostty_app_new failed — terminals unavailable")
+      reportStartupFailure("ghostty_app_new failed — terminals unavailable")
       ghostty_config_free(cfg)
       return
     }
@@ -100,6 +101,16 @@ final class GhosttyApp {
     logger.info("libghostty ready (build mode \(info.build_mode.rawValue), version available)")
   }
 
+  /// Log a libghostty startup failure and report it to Sentry. The terminal engine is the app's
+  /// core feature; when it fails to come up the app degrades to a placeholder rather than crashing
+  /// (the fail-soft contract above), so the crash handler never sees these — a Sentry event is the
+  /// only way we'd learn the engine broke in the field. The `os.Logger` line stays for local
+  /// `log stream`/Console debugging; Sentry gets the same message at `level`.
+  private func reportStartupFailure(_ message: String, level: SentryLevel = .error) {
+    logger.error("\(message, privacy: .public)")
+    SentrySDK.capture(message: message) { scope in scope.setLevel(level) }
+  }
+
   /// Point `GHOSTTY_RESOURCES_DIR` at the bundled `ghostty/` tree (terminfo + shell-integration).
   /// Returns false (and logs) if the resources are missing — shell integration, the `xterm-ghostty`
   /// terminfo entry, and OSC-7 cwd reporting all depend on them. See Resources/ghostty/SOURCE.md.
@@ -108,7 +119,7 @@ final class GhosttyApp {
       FileManager.default.fileExists(
         atPath: resourcesURL.appendingPathComponent("shell-integration").path)
     else {
-      logger.error("bundled ghostty resources not found — terminals unavailable")
+      reportStartupFailure("bundled ghostty resources not found — terminals unavailable")
       unsetenv("GHOSTTY_RESOURCES_DIR")
       return false
     }
@@ -126,7 +137,9 @@ final class GhosttyApp {
     {
       terminfoDirectory = terminfoURL.path
     } else {
-      logger.error("bundled xterm-ghostty terminfo missing — terminal line editing may misbehave")
+      reportStartupFailure(
+        "bundled xterm-ghostty terminfo missing — terminal line editing may misbehave",
+        level: .warning)
     }
     return true
   }

@@ -9,6 +9,11 @@ struct WorkroomApp: App {
   @StateObject private var updater = Updater()
 
   init() {
+    // Start Sentry first, before anything else can crash — the crash handler must be
+    // installed as early as possible. Runs on the main thread (App.init does), as the SDK
+    // requires. macOS-trimmed option set: see SentryConfig.start().
+    SentryConfig.start()
+
     // Ensure the in-process environment (inherited by the bundled `workroom`
     // binary and the terminals) can find git/jj, which a Finder-launched .app's
     // minimal PATH excludes.

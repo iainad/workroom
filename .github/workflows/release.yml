@@ -31,6 +31,8 @@ jobs:
   # goreleaser created above. Requires repo secrets: MACOS_CERTIFICATE / MACOS_CERTIFICATE_PWD
   # (base64 .p12 + password), KEYCHAIN_PASSWORD, and the App Store Connect notary API key
   # NOTARY_KEY / NOTARY_KEY_ID / NOTARY_ISSUER_ID.
+  # Optional: SENTRY_AUTH_TOKEN / SENTRY_ORG / SENTRY_PROJECT enable Sentry dSYM upload so release
+  # crashes symbolicate; release.sh skips that step when any of them (or sentry-cli) is absent.
   macapp:
     needs: release
     runs-on: macos-15
@@ -48,8 +50,9 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Install XcodeGen + create-dmg
-        run: brew install xcodegen create-dmg
+      - name: Install XcodeGen + create-dmg + sentry-cli
+        # sentry-cli uploads dSYMs in release.sh (skipped there if the Sentry env vars are unset).
+        run: brew install xcodegen create-dmg getsentry/tools/sentry-cli
 
       - name: Import Developer ID signing certificate
         env:
@@ -76,6 +79,11 @@ jobs:
           # Empty until the secret is added — release.sh then skips signing (DMG still ships).
           SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
           VERSION: ${{ github.ref_name }}
+          # Sentry dSYM upload (optional — release.sh skips when any is empty). ORG/PROJECT are
+          # slugs, not secrets, but kept as secrets here to match this job's convention.
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
         run: |
           echo "$NOTARY_KEY" | openssl base64 -d -A > "$RUNNER_TEMP/notary.p8"
           NOTARY_KEY_PATH="$RUNNER_TEMP/notary.p8" make app-release
