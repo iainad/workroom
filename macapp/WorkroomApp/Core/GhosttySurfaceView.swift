@@ -6,7 +6,8 @@ import GhosttyKit
 /// This is the libghostty replacement for SwiftTerm's `LocalProcessTerminalView`.
 ///
 /// Ported from Muxy's `GhosttyTerminalNSView` (MIT) as inspiration, trimmed to Workroom's existing
-/// feature set: no splits UI, search, progress, drag-and-drop, dynamic titles, or remote streaming.
+/// feature set: no splits UI, search, progress, dynamic titles, or remote streaming. (File/image
+/// drops are handled host-side — see the drag-and-drop extension below.)
 ///
 /// Lifecycle (plan A1): the surface is created when the view enters a window and freed in
 /// `tearDown()`/`deinit`; callbacks are nil'd and the C-string config pointers freed on teardown so
@@ -71,6 +72,7 @@ final class GhosttySurfaceView: NSView {
     wantsLayer = true
     setupTrackingArea()
     setupScrollbar()
+    setupDragAndDrop()
     setAccessibilityRole(.textArea)
     let dir = URL(fileURLWithPath: workingDirectory).lastPathComponent
     setAccessibilityLabel(dir.isEmpty ? "Terminal" : "Terminal — \(dir)")
@@ -820,6 +822,93 @@ final class GhosttySurfaceView: NSView {
   override func updateTrackingAreas() {
     super.updateTrackingAreas()
     setupTrackingArea()
+  }
+}
+
+// MARK: - Drag-and-drop (files / images → a path at the cursor)
+
+extension GhosttySurfaceView {
+  /// Accept file and image drops. A terminal can't render an image, so a drop inserts a
+  /// shell-quoted path at the cursor: a dropped file's own path, or — for raw image data with no
+  /// file backing (a browser image, a Preview selection, a screenshot) — a temp PNG we write.
+  /// (Issue #21.)
+  func setupDragAndDrop() {
+    registerForDraggedTypes([.fileURL, .png, .tiff])
+  }
+
+  override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+    dropOperation(for: sender)
+  }
+
+  override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+    dropOperation(for: sender)
+  }
+
+  override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+    let paths = droppedPaths(from: sender.draggingPasteboard)
+    guard !paths.isEmpty else { return false }
+    // Route input here so what the user types after the path lands in this terminal.
+    window?.makeFirstResponder(self)
+    // Trailing space separates the path(s) from whatever is typed next.
+    let text = paths.map(Self.shellQuoted).joined(separator: " ") + " "
+    insertText(text, replacementRange: NSRange(location: NSNotFound, length: 0))
+    return true
+  }
+
+  /// `.copy` when the drag carries something we can turn into a path, else none (declines it).
+  private func dropOperation(for sender: NSDraggingInfo) -> NSDragOperation {
+    canAcceptDrop(sender.draggingPasteboard) ? .copy : []
+  }
+
+  private func canAcceptDrop(_ pasteboard: NSPasteboard) -> Bool {
+    if pasteboard.canReadObject(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true])
+    {
+      return true
+    }
+    return pasteboard.data(forType: .png) != nil || pasteboard.data(forType: .tiff) != nil
+  }
+
+  /// The absolute path(s) a drop resolves to: dropped files keep their own paths; raw image data is
+  /// written to a temp PNG. File URLs win when both are present (a Finder image drag carries both).
+  private func droppedPaths(from pasteboard: NSPasteboard) -> [String] {
+    let options: [NSPasteboard.ReadingOptionKey: Any] = [.urlReadingFileURLsOnly: true]
+    if let urls = pasteboard.readObjects(forClasses: [NSURL.self], options: options) as? [URL],
+      !urls.isEmpty
+    {
+      return urls.map(\.path)
+    }
+    if let path = Self.saveDroppedImage(pasteboard) { return [path] }
+    return []
+  }
+
+  /// Persist raw dropped image data to a temp PNG and return its path. TIFF (the common in-memory
+  /// drag form) is transcoded to PNG so the on-disk file matches its `.png` extension.
+  private static func saveDroppedImage(_ pasteboard: NSPasteboard) -> String? {
+    let pngData: Data?
+    if let png = pasteboard.data(forType: .png) {
+      pngData = png
+    } else if let tiff = pasteboard.data(forType: .tiff), let rep = NSBitmapImageRep(data: tiff) {
+      pngData = rep.representation(using: .png, properties: [:])
+    } else {
+      pngData = nil
+    }
+    guard let data = pngData else { return nil }
+    let dir = FileManager.default.temporaryDirectory
+      .appendingPathComponent("WorkroomDroppedImages", isDirectory: true)
+    try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    let url = dir.appendingPathComponent("image-\(UUID().uuidString).png")
+    do {
+      try data.write(to: url)
+    } catch {
+      return nil
+    }
+    return url.path
+  }
+
+  /// POSIX single-quote a path so spaces and shell metacharacters are taken literally by the shell
+  /// that receives the inserted text.
+  private static func shellQuoted(_ path: String) -> String {
+    "'" + path.replacingOccurrences(of: "'", with: "'\\''") + "'"
   }
 }
 
