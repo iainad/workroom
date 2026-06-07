@@ -1,3 +1,4 @@
+import Defaults
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -10,12 +11,12 @@ struct ProjectSidebar: View {
   @EnvironmentObject var notifications: NotificationCenterStore
   @State private var showImporter = false
   /// Project paths the user has collapsed. Absence means expanded (the default). Persisted
-  /// across launches (issue #14) — `CollapsedProjects` keeps the contains/insert/remove API.
-  @AppStorage(SidebarPersistence.collapsedProjectsKey) private var collapsed = CollapsedProjects()
+  /// across launches (issue #14) as a native string set via `Defaults`.
+  @Default(.collapsedProjects) private var collapsed
   @State private var hovered: SidebarID?
   @State private var themeHovering = false
   @State private var addProjectHovering = false
-  @AppStorage(ThemePreference.storageKey) private var theme: ThemePreference = .system
+  @Default(.theme) private var theme
 
   /// Width of the leading icon gutter shared by every child row, so the root's house icon
   /// and the (icon-less) workroom labels line up in one column.

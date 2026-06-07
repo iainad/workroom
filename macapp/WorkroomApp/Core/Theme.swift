@@ -1,8 +1,11 @@
 import AppKit
+import Defaults
 
-/// The user's appearance choice. Persisted in UserDefaults via @AppStorage; `.system`
-/// (the default) follows the OS appearance, while `.light`/`.dark` force a scheme.
-enum ThemePreference: String, CaseIterable {
+/// The user's appearance choice. Persisted via `Defaults[.theme]`; `.system` (the default)
+/// follows the OS appearance, while `.light`/`.dark` force a scheme. `PreferRawRepresentable`
+/// stores the bare raw string (e.g. "system") — matching the old `@AppStorage` encoding, so
+/// existing choices survive the upgrade — rather than Defaults' default Codable/JSON bridge.
+enum ThemePreference: String, CaseIterable, Defaults.Serializable, Defaults.PreferRawRepresentable {
   case system
   case light
   case dark
@@ -43,10 +46,4 @@ enum ThemePreference: String, CaseIterable {
     let all = Self.allCases
     return all[(all.firstIndex(of: self)! + 1) % all.count]
   }
-}
-
-/// Shared UserDefaults key so the toggle (in the sidebar) and the scheme application
-/// (at the root) read and write the same stored value.
-extension ThemePreference {
-  static let storageKey = "themePreference"
 }

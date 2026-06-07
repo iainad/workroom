@@ -1,10 +1,17 @@
+import Defaults
 import XCTest
 
 @testable import Workroom
 
+/// `Defaults[.copyOnSelect]` must default to ON — the key is absent until the user first toggles it
+/// — and otherwise honour the stored value. The `Key`'s `default: true` is what guarantees this;
+/// the old hand-rolled `object(forKey:) as? Bool ?? true` (and the latent bug where a bare
+/// `bool(forKey:)` would have defaulted to `false`) is gone by construction.
 final class CopyOnSelectTests: XCTestCase {
 
-  private let key = CopyOnSelect.storageKey
+  /// The raw UserDefaults key behind `Defaults.Keys.copyOnSelect` — used only to save/restore the
+  /// real stored value so the test never leaks into the user's defaults.
+  private let key = "copyOnSelect"
   private var saved: Any?
 
   override func setUp() {
@@ -13,7 +20,6 @@ final class CopyOnSelectTests: XCTestCase {
   }
 
   override func tearDown() {
-    // Restore the real preference so the test doesn't leak into the user's defaults.
     if let saved {
       UserDefaults.standard.set(saved, forKey: key)
     } else {
@@ -22,19 +28,16 @@ final class CopyOnSelectTests: XCTestCase {
     super.tearDown()
   }
 
-  /// The chosen default is ON: copy-on-select must be enabled until the user explicitly
-  /// turns it off. The key is absent until the menu toggle first writes it, so "unset"
-  /// has to read as `true` (a plain `bool(forKey:)` would wrongly default to `false`).
   func testEnabledByDefaultWhenUnset() {
     UserDefaults.standard.removeObject(forKey: key)
-    XCTAssertTrue(CopyOnSelect.isEnabled)
+    XCTAssertTrue(Defaults[.copyOnSelect])
   }
 
   func testRespectsStoredValue() {
-    UserDefaults.standard.set(false, forKey: key)
-    XCTAssertFalse(CopyOnSelect.isEnabled)
+    Defaults[.copyOnSelect] = false
+    XCTAssertFalse(Defaults[.copyOnSelect])
 
-    UserDefaults.standard.set(true, forKey: key)
-    XCTAssertTrue(CopyOnSelect.isEnabled)
+    Defaults[.copyOnSelect] = true
+    XCTAssertTrue(Defaults[.copyOnSelect])
   }
 }

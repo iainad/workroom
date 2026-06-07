@@ -1,16 +1,17 @@
 import AppKit
+import Defaults
 import SwiftUI
 
 struct RootView: View {
   @EnvironmentObject var store: AppStore
   @EnvironmentObject var notifications: NotificationCenterStore
-  @AppStorage(ThemePreference.storageKey) private var theme: ThemePreference = .system
+  @Default(.theme) private var theme
   /// Bundle id of the last editor picked from the "Open in…" menu — the toolbar button's
   /// primary action reopens in it.
-  @AppStorage("openInEditorBundleID") private var lastEditorID = ""
-  /// Whether the right-hand notifications inspector is open. `@AppStorage` (not `@State`) so the
+  @Default(.lastEditor) private var lastEditorID
+  /// Whether the right-hand notifications inspector is open. `@Default` (not `@State`) so the
   /// View-menu command (WorkroomCommands) toggles the same value.
-  @AppStorage(NotificationsInspector.storageKey) private var showNotifications = false
+  @Default(.showNotifications) private var showNotifications
 
   var body: some View {
     NavigationSplitView {

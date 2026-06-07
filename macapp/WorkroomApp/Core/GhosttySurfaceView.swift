@@ -1,4 +1,5 @@
 import AppKit
+import Defaults
 import GhosttyKit
 
 /// One terminal surface: an `NSView` that hosts a `ghostty_surface_t` (Metal-rendered by libghostty
@@ -762,9 +763,9 @@ final class GhosttySurfaceView: NSView {
   }
 
   /// Copy-on-select: on mouse-up, copy the current selection to the pasteboard if enabled (the
-  /// xterm/iTerm2 convention). Gated by the existing `CopyOnSelect` toggle.
+  /// xterm/iTerm2 convention). Gated by the `copyOnSelect` setting.
   private func autoCopySelectionIfEnabled() {
-    guard CopyOnSelect.isEnabled, let selection = readSelectionText(), !selection.isEmpty else {
+    guard Defaults[.copyOnSelect], let selection = readSelectionText(), !selection.isEmpty else {
       return
     }
     let pb = NSPasteboard.general

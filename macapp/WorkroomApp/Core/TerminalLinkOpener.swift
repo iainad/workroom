@@ -1,4 +1,5 @@
 import AppKit
+import Defaults
 
 /// ⌘-clicking a *file path* in a terminal opens it in the editor chosen in the "Open File Paths In"
 /// menu — by default the file's default app (`open <path>`), or a specific editor
@@ -6,10 +7,6 @@ import AppKit
 /// ⌘-click (for bare paths) and libghostty's open-URL action; relative paths resolve against the
 /// surface's `GHOSTTY_ACTION_PWD`-tracked cwd (see plan CMT-1).
 enum TerminalLinkOpener {
-  /// UserDefaults key for the chosen editor's bundle id; empty/absent means "the file's default
-  /// app". Bound to the "Open File Paths in..." menu picker (see `WorkroomCommands`).
-  static let editorStorageKey = "filePathEditorBundleID"
-
   /// Web URL schemes we leave to the browser/mail handler (not treated as file paths).
   private static let passthroughSchemes = [
     "http://", "https://", "ftp://", "ssh://", "git://",
@@ -42,8 +39,7 @@ enum TerminalLinkOpener {
   private static func openFile(_ path: String) {
     let task = Process()
     task.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-    task.arguments = openArguments(
-      path: path, editorBundleID: UserDefaults.standard.string(forKey: editorStorageKey))
+    task.arguments = openArguments(path: path, editorBundleID: Defaults[.filePathEditor])
     do { try task.run() } catch { NSLog("Workroom: failed to open \(path): \(error)") }
   }
 

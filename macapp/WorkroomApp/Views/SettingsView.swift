@@ -1,16 +1,17 @@
+import Defaults
 import SwiftUI
 
 /// The app's Settings window (⌘,). Consolidates the preferences that previously lived in the
-/// Edit and View menus. Each control binds the *same* `@AppStorage` key its old menu item used,
+/// Edit and View menus. Each control binds the *same* `Defaults` key its old menu item used,
 /// so the stored value — and everything observing it (appearance application in `RootView`,
 /// copy-on-select, ⌘-click file opening) — is unchanged; only the surface moves here.
 struct SettingsView: View {
-  @AppStorage(ThemePreference.storageKey) private var theme: ThemePreference = .system
-  @AppStorage(CopyOnSelect.storageKey) private var copyOnSelect = true
-  @AppStorage(ConfirmOnQuit.storageKey) private var confirmOnQuit = true
-  @AppStorage(GlobalHotkeyEnabled.storageKey) private var globalHotkey = true
+  @Default(.theme) private var theme
+  @Default(.copyOnSelect) private var copyOnSelect
+  @Default(.confirmOnQuit) private var confirmOnQuit
+  @Default(.globalHotkey) private var globalHotkey
   // Bundle id of the editor for ⌘-clicked file paths; "" = the file's default app.
-  @AppStorage(TerminalLinkOpener.editorStorageKey) private var pathEditor = ""
+  @Default(.filePathEditor) private var pathEditor
   @EnvironmentObject private var updater: Updater
 
   var body: some View {

@@ -1,12 +1,5 @@
 import SwiftUI
 
-/// Namespacing for the notifications inspector's shared open/closed state. Backed by
-/// `@AppStorage` so both `RootView` (the inspector + toolbar toggle) and `WorkroomCommands`
-/// (the View-menu item) drive the same value.
-enum NotificationsInspector {
-  static let storageKey = "showNotificationsInspector"
-}
-
 /// The right-hand notifications inspector (`.inspector`, macOS 14): the session history, newest
 /// first. There's no read state — tapping an item opens the terminal it came from
 /// (`AppStore.openTerminal`) and dismisses it; the panel only ever shows pending notifications.

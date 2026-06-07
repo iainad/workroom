@@ -1,3 +1,4 @@
+import Defaults
 import Foundation
 import SwiftUI
 
@@ -32,7 +33,7 @@ final class AppStore: ObservableObject {
   /// project toggles its expansion instead. Persisted across launches (issue #14) via `didSet`
   /// and restored in `apply()`.
   @Published var selectedTargetID: SidebarID? {
-    didSet { SidebarPersistence.selection = Self.targetIDString(for: selectedTargetID) }
+    didSet { Defaults[.sidebarSelection] = Self.targetIDString(for: selectedTargetID) }
   }
   /// Per-project resolved root branch/bookmark labels, hydrated asynchronously after each
   /// load (see `resolveBranches`). Absent ⇒ the root row shows a dim "root" until resolved.
@@ -74,7 +75,7 @@ final class AppStore: ObservableObject {
   private var pendingRestoreSelection: TerminalTarget.ID?
 
   private init() {
-    pendingRestoreSelection = SidebarPersistence.selection
+    pendingRestoreSelection = Defaults[.sidebarSelection]
     // Route each terminal's activity (OSC/bell) through the notification spine, gated on
     // focus, and raise a native banner only when the app is backgrounded.
     terminals.activityHandler = { [weak self] targetID, tabID, activity in

@@ -1,4 +1,5 @@
 import AppKit
+import Defaults
 import SwiftUI
 import UserNotifications
 
@@ -43,10 +44,12 @@ struct WorkroomApp: App {
 final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
   private var monitor: Any?
   /// The global ⌘§ show/hide shortcut while enabled, else nil (issue #13). Registered/torn down by
-  /// `updateGlobalHotkey()` to follow the `GlobalHotkeyEnabled` setting.
+  /// `updateGlobalHotkey()` to follow the `globalHotkey` setting.
   private var showHideHotkey: GlobalHotkey?
-  /// Observes defaults so toggling the hotkey setting takes effect immediately.
-  private var defaultsObserver: NSObjectProtocol?
+  /// Observes the `globalHotkey` setting so toggling it takes effect immediately.
+  private var hotkeyObservation: Task<Void, Never>?
+
+  deinit { hotkeyObservation?.cancel() }
 
   func applicationDidFinishLaunching(_ notification: Notification) {
     // Disable native macOS window tabbing. It tabs whole app windows (each with its own
@@ -73,20 +76,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     // NSView), so the SwiftTerm-era NSEvent monitors that worked around its public-not-open methods
     // are gone.
 
-    // Global ⌘§ to show/hide Workroom from anywhere (issue #13), gated by GlobalHotkeyEnabled.
-    // Re-run on any defaults change so toggling the setting registers/unregisters it live.
+    // Global ⌘§ to show/hide Workroom from anywhere (issue #13), gated by the `globalHotkey`
+    // setting. Register now, then re-run on each change of *that* key (scoped, unlike the old
+    // blanket didChangeNotification observer) so toggling the setting registers/unregisters it live.
     updateGlobalHotkey()
-    defaultsObserver = NotificationCenter.default.addObserver(
-      forName: UserDefaults.didChangeNotification, object: nil, queue: .main
-    ) { [weak self] _ in self?.updateGlobalHotkey() }
+    hotkeyObservation = Task { @MainActor [weak self] in
+      for await _ in Defaults.updates(.globalHotkey, initial: false) {
+        self?.updateGlobalHotkey()
+      }
+    }
   }
 
-  /// Register or tear down the global ⌘§ hotkey to match the `GlobalHotkeyEnabled` setting.
+  /// Register or tear down the global ⌘§ hotkey to match the `globalHotkey` setting.
   /// Idempotent — only (un)registers when the desired state differs from the current one — so it's
-  /// safe to call on launch and on every defaults change. Carbon's RegisterEventHotKey is
-  /// system-wide and needs no permission; the key/modifier live in `GlobalHotkey.commandSection`.
+  /// safe to call on launch and on every change. Carbon's RegisterEventHotKey is system-wide and
+  /// needs no permission; the key/modifier live in `GlobalHotkey.commandSection`.
   private func updateGlobalHotkey() {
-    if GlobalHotkeyEnabled.isEnabled {
+    if Defaults[.globalHotkey] {
       if showHideHotkey == nil {
         showHideHotkey = GlobalHotkey.commandSection { AppDelegate.toggleAppVisibility() }
       }
@@ -123,14 +129,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     completionHandler()
   }
 
-  /// Confirm before quitting unless the user turned it off (`ConfirmOnQuit`, default on): quitting
+  /// Confirm before quitting unless the user turned it off (`confirmOnQuit`, default on): quitting
   /// tears down every terminal (and anything running in them) at once, with no undo. The dialog's
   /// "Don't ask me again" checkbox turns the setting off (same key as the menu/Settings toggles).
   /// `@MainActor` so the `NSAlert` (a main-actor AppKit type) call is clean — AppKit always invokes
   /// this on the main thread. Closing a window doesn't quit the app, so this fires only on a quit.
   @MainActor
   func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-    guard ConfirmOnQuit.isEnabled else { return .terminateNow }
+    guard Defaults[.confirmOnQuit] else { return .terminateNow }
     let alert = NSAlert()
     alert.messageText = "Quit Workroom?"
     alert.informativeText = "Quitting closes all terminals and stops any running processes."
@@ -142,7 +148,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     // Ticking the box stops future confirmations — whether they Quit or Cancel, the checkbox
     // means "stop asking". Writes the same key the menu/Settings toggles bind to.
     if alert.suppressionButton?.state == .on {
-      ConfirmOnQuit.isEnabled = false
+      Defaults[.confirmOnQuit] = false
     }
     return shouldQuit ? .terminateNow : .terminateCancel
   }
@@ -189,13 +195,13 @@ struct WorkroomCommands: Commands {
   @FocusedValue(\.workroomSelected) private var workroomSelected
   @FocusedValue(\.hasTerminal) private var hasTerminal
   // Shared with RootView's inspector + toolbar toggle (same key) so all three stay in sync.
-  @AppStorage(NotificationsInspector.storageKey) private var showNotifications = false
+  @Default(.showNotifications) private var showNotifications
   // Same key as the Settings checkbox so the two stay in sync; GhosttySurfaceView reads it
   // on each selection, so toggling here takes effect on the next drag.
-  @AppStorage(CopyOnSelect.storageKey) private var copyOnSelect = true
+  @Default(.copyOnSelect) private var copyOnSelect
   // Gate the quit-confirmation alert. Same key as the Settings checkbox so the two stay in sync;
   // AppDelegate reads it in applicationShouldTerminate.
-  @AppStorage(ConfirmOnQuit.storageKey) private var confirmOnQuit = true
+  @Default(.confirmOnQuit) private var confirmOnQuit
 
   var body: some Commands {
     CommandGroup(after: .appInfo) {
