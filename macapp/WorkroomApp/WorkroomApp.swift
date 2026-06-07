@@ -65,12 +65,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
       let flags = event.modifierFlags.intersection([.command, .shift, .option, .control])
-      guard flags == .command,
-        let chars = event.charactersIgnoringModifiers,
+      // ⌘1–9: focus the Nth tab (caught here so it fires before the terminal swallows the digit).
+      if flags == .command, let chars = event.charactersIgnoringModifiers,
         let digit = Int(chars), (1...9).contains(digit)
-      else { return event }
-      Task { @MainActor in AppStore.shared.focusTerminalTab(at: digit - 1) }
-      return nil  // consume so it doesn't reach the terminal
+      {
+        Task { @MainActor in AppStore.shared.focusTerminalTab(at: digit - 1) }
+        return nil  // consume so it doesn't reach the terminal
+      }
+      // ⌥⌘arrows: move focus between split panes — consumed only when focus actually moves, so the
+      // keys still reach the terminal when there's no split to navigate. (Virtual keycodes:
+      // left 123 / right 124 / down 125 / up 126.)
+      let arrows: [UInt16: PaneDirection] = [123: .left, 124: .right, 125: .down, 126: .up]
+      if flags == [.command, .option], let direction = arrows[event.keyCode],
+        MainActor.assumeIsolated({ AppStore.shared.focusPane(direction) })
+      {
+        return nil
+      }
+      return event
     }
 
     // ⌘-click-to-open-in-editor and copy-on-select now live inside GhosttySurfaceView (we own the

@@ -417,7 +417,25 @@ final class AppStore: ObservableObject {
 
   func splitFocusedDown() {
     guard let target = selectedTarget, !target.isMissing else { return }
-    terminals.splitFocusedPane(for: target, orientation: .vertical)
+    terminals.splitFocusedPane(for: target, edge: .bottom)
+  }
+
+  func splitFocusedLeft() {
+    guard let target = selectedTarget, !target.isMissing else { return }
+    terminals.splitFocusedPane(for: target, edge: .left)
+  }
+
+  func splitFocusedUp() {
+    guard let target = selectedTarget, !target.isMissing else { return }
+    terminals.splitFocusedPane(for: target, edge: .top)
+  }
+
+  /// Move keyboard focus to the adjacent pane in a split (⌥⌘arrows). Returns whether focus moved, so
+  /// the key monitor passes the event through to the terminal when there's no pane that way.
+  @discardableResult
+  func focusPane(_ direction: PaneDirection) -> Bool {
+    guard let target = selectedTarget else { return false }
+    return terminals.focusAdjacentPane(direction, for: target)
   }
 
   // MARK: Notifications

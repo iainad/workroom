@@ -743,8 +743,14 @@ final class GhosttySurfaceView: NSView {
       presentContextMenu(with: event)
       // popUpContextMenu runs a modal tracking loop that swallows the physical rightMouseUp, so
       // libghostty would never receive the RELEASE for the press above — balance it explicitly.
-      _ = ghostty_surface_mouse_button(
-        surface, GHOSTTY_MOUSE_RELEASE, GHOSTTY_MOUSE_RIGHT, modsFromEvent(event))
+      // Re-read `self.surface` rather than reusing the captured pointer: a context-menu command can
+      // free the surface during the modal (Close Terminal), and the balancing RELEASE on a freed
+      // surface is a use-after-free crash. (Those commands are also deferred — see presentContextMenu —
+      // so teardown happens after this event fully returns.)
+      if let surface = self.surface {
+        _ = ghostty_surface_mouse_button(
+          surface, GHOSTTY_MOUSE_RELEASE, GHOSTTY_MOUSE_RIGHT, modsFromEvent(event))
+      }
     }
   }
 
@@ -814,12 +820,56 @@ final class GhosttySurfaceView: NSView {
   // MARK: Context menu
 
   private func presentContextMenu(with event: NSEvent) {
+    // Right-click focuses this pane so the split/close commands below act on the one clicked.
+    window?.makeFirstResponder(self)
+
     let menu = NSMenu(title: "Terminal")
     let paste = NSMenuItem(title: "Paste", action: #selector(paste(_:)), keyEquivalent: "")
     paste.target = self
     paste.isEnabled = NSPasteboard.general.string(forType: .string).map { !$0.isEmpty } ?? false
     menu.addItem(paste)
+    menu.addItem(.separator())
+    menu.addItem(contextItem("New Terminal", #selector(contextNewTerminal), "t", .command))
+    menu.addItem(contextItem("Split Right", #selector(contextSplitRight), "d", .command))
+    menu.addItem(contextItem("Split Left", #selector(contextSplitLeft)))
+    menu.addItem(contextItem("Split Down", #selector(contextSplitDown), "d", [.command, .shift]))
+    menu.addItem(contextItem("Split Up", #selector(contextSplitUp)))
+    menu.addItem(.separator())
+    menu.addItem(contextItem("Close Terminal", #selector(contextCloseTerminal), "w", .command))
     NSMenu.popUpContextMenu(menu, with: event, for: self)
+  }
+
+  /// Build a context-menu item targeting this view; the optional key/modifiers are shown as a hint.
+  private func contextItem(
+    _ title: String, _ action: Selector, _ key: String = "", _ mods: NSEvent.ModifierFlags = []
+  ) -> NSMenuItem {
+    let item = NSMenuItem(title: title, action: action, keyEquivalent: key)
+    item.keyEquivalentModifierMask = mods
+    item.target = self
+    return item
+  }
+
+  // Context-menu commands act on the app's focused pane — which the right-click just made this one.
+  // Deferred to the next runloop so they run AFTER the menu modal and the `rightMouseDown` handler
+  // unwind: closing a pane frees its surface, and doing that mid-event (while `rightMouseDown` still
+  // holds a surface pointer for its balancing RELEASE) is a use-after-free crash.
+  @objc private func contextNewTerminal() {
+    DispatchQueue.main.async { AppStore.shared.newTerminalInSelectedTarget() }
+  }
+  @objc private func contextCloseTerminal() {
+    DispatchQueue.main.async { AppStore.shared.closeCurrentTerminalTab() }
+  }
+  @objc private func contextSplitRight() {
+    DispatchQueue.main.async { AppStore.shared.splitFocusedRight() }
+  }
+  @objc private func contextSplitLeft() {
+    DispatchQueue.main.async { AppStore.shared.splitFocusedLeft() }
+  }
+  @objc private func contextSplitDown() {
+    DispatchQueue.main.async { AppStore.shared.splitFocusedDown() }
+  }
+  @objc private func contextSplitUp() {
+    DispatchQueue.main.async { AppStore.shared.splitFocusedUp() }
   }
 
   @objc func paste(_ sender: Any?) {

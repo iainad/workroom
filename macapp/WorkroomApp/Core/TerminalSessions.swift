@@ -170,27 +170,36 @@ final class TerminalSessions: ObservableObject {
     return tab
   }
 
-  /// Split the focused pane by spawning a new terminal beside it (⌘D = .horizontal, ⇧⌘D = .vertical),
-  /// inheriting the focused pane's working directory. No-op (refused) if the focused pane is already too
-  /// small to halve (D4). If the focused tab is solo, any existing split is dissolved first — at most
-  /// one split exists at a time.
+  /// Split the focused pane by spawning a new terminal on the trailing side (⌘D right, ⇧⌘D down).
   func splitFocusedPane(for target: TerminalTarget, orientation: SplitOrientation) {
+    splitFocusedPane(for: target, edge: orientation == .horizontal ? .right : .bottom)
+  }
+
+  /// Split the focused pane by spawning a new terminal on `edge` (right/left/down/up), inheriting the
+  /// focused pane's working directory. No-op (refused) if the focused pane is already too small to
+  /// halve (D4). If the focused tab is solo, any existing split is dissolved first — at most one split
+  /// exists at a time.
+  func splitFocusedPane(for target: TerminalTarget, edge: PaneEdge) {
     guard let focused = focusedTab(for: target) else { return }
-    guard fits(splitting: focused.view, orientation: orientation) else { return }
+    guard fits(splitting: focused.view, orientation: edge.orientation) else { return }
 
     let cwd = focused.view.lastKnownCwd ?? target.path
     let newTab = makeTab(for: target, cwd: cwd)
     tabsByTarget[target.id, default: [:]][newTab.id] = newTab
 
     if let existing = splitByTarget[target.id], existing.contains(focused.id) {
-      // Grow the existing split beside the focused leaf.
+      // Grow the existing split beside the focused leaf, on the requested side.
       splitByTarget[target.id] = existing.inserting(
-        newTab.id, beside: focused.id, orientation: orientation, newLeafFirst: false, ratio: 0.5)
+        newTab.id, beside: focused.id, orientation: edge.orientation,
+        newLeafFirst: edge.placesDroppedFirst, ratio: 0.5)
     } else {
       // Start a fresh split from the focused solo tab; dissolve any other split.
+      let new = PaneLayout.leaf(newTab.id)
+      let anchor = PaneLayout.leaf(focused.id)
       splitByTarget[target.id] = .split(
-        id: UUID(), orientation: orientation, ratio: 0.5,
-        first: .leaf(focused.id), second: .leaf(newTab.id))
+        id: UUID(), orientation: edge.orientation, ratio: 0.5,
+        first: edge.placesDroppedFirst ? new : anchor,
+        second: edge.placesDroppedFirst ? anchor : new)
     }
     // Place the new tab right after the focused one in the loose order (display normalises anyway).
     insertID(newTab.id, after: focused.id, for: target)
@@ -261,6 +270,18 @@ final class TerminalSessions: ObservableObject {
   }
 
   func select(_ tabID: TerminalTab.ID, for target: TerminalTarget) { focus(tabID, for: target) }
+
+  /// Move focus to the adjacent pane in `direction` within the visible split (⌥⌘arrows, issue #3).
+  /// Returns whether focus actually moved, so the key monitor only swallows the event when it acts.
+  @discardableResult
+  func focusAdjacentPane(_ direction: PaneDirection, for target: TerminalTarget) -> Bool {
+    guard isSplitVisible(for: target), let split = splitByTarget[target.id],
+      let focused = focusedTabByTarget[target.id],
+      let next = PaneTreeLayout.adjacentPane(to: focused, direction: direction, in: split)
+    else { return false }
+    focus(next, for: target)
+    return true
+  }
 
   /// Reorder (drag-and-drop in the tab bar): move the dragged tab to `index` in the loose strip order,
   /// clamped to bounds. Display normalisation keeps the split's run contiguous regardless.

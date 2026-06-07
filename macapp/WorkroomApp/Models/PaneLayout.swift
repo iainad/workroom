@@ -35,6 +35,9 @@ enum PaneEdge {
   var placesDroppedFirst: Bool { self == .left || self == .top }
 }
 
+/// A direction to move keyboard focus between panes (⌥⌘arrows, issue #3 Phase 3).
+enum PaneDirection { case left, right, up, down }
+
 indirect enum PaneLayout: Equatable {
   case leaf(TerminalTab.ID)
   case split(

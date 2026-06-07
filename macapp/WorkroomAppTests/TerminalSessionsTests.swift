@@ -368,4 +368,34 @@ final class TerminalSessionsTests: XCTestCase {
     XCTAssertNil(s.split(for: target))  // only one would remain → no split
     XCTAssertEqual(s.activeTab(for: target)?.id, b)
   }
+
+  func testFocusAdjacentPaneMovesWithinSplit() {
+    let s = makeSessions()
+    s.addTab(for: target)
+    let a = s.activeTab(for: target)!.id
+    s.splitFocusedPane(for: target, orientation: .horizontal)  // [a, b], b focused
+    let b = s.activeTab(for: target)!.id
+    XCTAssertTrue(s.focusAdjacentPane(.left, for: target))
+    XCTAssertEqual(s.activeTab(for: target)?.id, a)
+    XCTAssertTrue(s.focusAdjacentPane(.right, for: target))
+    XCTAssertEqual(s.activeTab(for: target)?.id, b)
+    XCTAssertFalse(s.focusAdjacentPane(.right, for: target))  // nothing to the right of b
+  }
+
+  func testFocusAdjacentPaneNoSplitIsNoOp() {
+    let s = makeSessions()
+    s.addTab(for: target)
+    XCTAssertFalse(s.focusAdjacentPane(.right, for: target))
+  }
+
+  func testSplitFocusedPaneLeftPlacesNewPaneFirst() {
+    let s = makeSessions()
+    s.addTab(for: target)
+    let a = s.activeTab(for: target)!.id
+    s.splitFocusedPane(for: target, edge: .left)
+    let split = s.split(for: target)!
+    XCTAssertEqual(split.tabIDs.count, 2)
+    XCTAssertEqual(split.tabIDs.last, a)  // original is now on the right
+    XCTAssertEqual(split.tabIDs.first, s.activeTab(for: target)?.id)  // new pane: leading + focused
+  }
 }

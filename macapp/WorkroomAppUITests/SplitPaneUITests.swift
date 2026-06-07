@@ -93,4 +93,23 @@ final class SplitPaneUITests: XCTestCase {
     assertCount(surfaces(app), reaches: 2)
     assertCount(tabs(app), reaches: initial + 1)  // the split's new terminal has its own strip tab
   }
+
+  /// Regression: closing a pane from its own right-click menu must not crash the app. The
+  /// `rightMouseDown` handler balances its press with a RELEASE *after* the menu closes; closing the
+  /// pane used to free the surface mid-modal, so that RELEASE hit a freed surface (use-after-free).
+  func testRightClickCloseTerminalDoesNotCrash() throws {
+    let app = launchedApp()
+    try openWorkroom(app)
+    app.typeKey("d", modifierFlags: .command)  // split → two panes
+    assertCount(surfaces(app), reaches: 2)
+
+    surfaces(app).firstMatch.rightClick()
+    let close = app.menuItems["Close Terminal"]
+    XCTAssertTrue(close.waitForExistence(timeout: 3), "right-click menu should offer Close Terminal")
+    close.click()
+
+    XCTAssertTrue(
+      app.wait(for: .runningForeground, timeout: 3), "app must stay alive after Close Terminal")
+    assertCount(surfaces(app), reaches: 1)  // collapsed to the survivor, no crash
+  }
 }

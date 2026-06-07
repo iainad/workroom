@@ -205,6 +205,39 @@ enum PaneTreeLayout {
     return dy < 0 ? .top : .bottom
   }
 
+  /// The pane nearest `tabID` in `direction` within `layout`: the closest pane that lies that way and
+  /// overlaps on the perpendicular axis (so ⌥⌘→ from a tall left pane lands on whichever right pane
+  /// shares the most rows). Pure geometry over a reference rect — `nil` if there's nothing that way.
+  static func adjacentPane(to tabID: TerminalTab.ID, direction: PaneDirection, in layout: PaneLayout)
+    -> TerminalTab.ID?
+  {
+    let panes = plan(layout, in: CGRect(x: 0, y: 0, width: 1000, height: 1000)).panes
+    guard let from = panes[tabID] else { return nil }
+    let horizontal = direction == .left || direction == .right
+    var best: (id: TerminalTab.ID, primary: CGFloat, secondary: CGFloat)?
+    for (id, r) in panes where id != tabID {
+      let inDirection: Bool
+      switch direction {
+      case .right: inDirection = r.midX > from.midX
+      case .left: inDirection = r.midX < from.midX
+      case .down: inDirection = r.midY > from.midY
+      case .up: inDirection = r.midY < from.midY
+      }
+      let overlaps =
+        horizontal
+        ? (from.minY < r.maxY && r.minY < from.maxY) : (from.minX < r.maxX && r.minX < from.maxX)
+      guard inDirection, overlaps else { continue }
+      let primary = horizontal ? abs(r.midX - from.midX) : abs(r.midY - from.midY)
+      let secondary = horizontal ? abs(r.midY - from.midY) : abs(r.midX - from.midX)
+      if best == nil || primary < best!.primary
+        || (primary == best!.primary && secondary < best!.secondary)
+      {
+        best = (id, primary, secondary)
+      }
+    }
+    return best?.id
+  }
+
   /// The half-pane band to highlight for a drop on `edge`.
   static func edgeBand(_ edge: PaneEdge, in rect: CGRect) -> CGRect {
     switch edge {
