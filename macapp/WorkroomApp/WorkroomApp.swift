@@ -82,9 +82,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
   }
 
   /// Confirm before quitting unless the user turned it off (`ConfirmOnQuit`, default on): quitting
-  /// tears down every terminal (and anything running in them) at once, with no undo. `@MainActor`
-  /// so the `NSAlert` (a main-actor AppKit type) call is clean — AppKit always invokes this on the
-  /// main thread. Closing a window doesn't quit the app, so this gate fires only on a real quit.
+  /// tears down every terminal (and anything running in them) at once, with no undo. The dialog's
+  /// "Don't ask me again" checkbox turns the setting off (same key as the menu/Settings toggles).
+  /// `@MainActor` so the `NSAlert` (a main-actor AppKit type) call is clean — AppKit always invokes
+  /// this on the main thread. Closing a window doesn't quit the app, so this fires only on a quit.
   @MainActor
   func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
     guard ConfirmOnQuit.isEnabled else { return .terminateNow }
@@ -93,7 +94,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     alert.informativeText = "Quitting closes all terminals and stops any running processes."
     alert.addButton(withTitle: "Quit")
     alert.addButton(withTitle: "Cancel")
-    return alert.runModal() == .alertFirstButtonReturn ? .terminateNow : .terminateCancel
+    alert.showsSuppressionButton = true
+    alert.suppressionButton?.title = "Don't ask me again"
+    let shouldQuit = alert.runModal() == .alertFirstButtonReturn
+    // Ticking the box stops future confirmations — whether they Quit or Cancel, the checkbox
+    // means "stop asking". Writes the same key the menu/Settings toggles bind to.
+    if alert.suppressionButton?.state == .on {
+      ConfirmOnQuit.isEnabled = false
+    }
+    return shouldQuit ? .terminateNow : .terminateCancel
   }
 
   /// Ordered libghostty teardown before exit: free every surface (which clears its callbacks first),

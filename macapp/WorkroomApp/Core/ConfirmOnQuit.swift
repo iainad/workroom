@@ -8,8 +8,11 @@ enum ConfirmOnQuit {
   static let storageKey = "confirmOnQuit"
 
   /// Default ON: the key stays absent until the user first toggles it (both `Toggle`s are bound via
-  /// `@AppStorage`, default `true`), so treat "unset" as enabled.
+  /// `@AppStorage`, default `true`), so treat "unset" as enabled. Settable so the quit dialog's
+  /// "Don't ask me again" checkbox can turn it off — the bound `@AppStorage` toggles observe the
+  /// write and update.
   static var isEnabled: Bool {
-    UserDefaults.standard.object(forKey: storageKey) as? Bool ?? true
+    get { UserDefaults.standard.object(forKey: storageKey) as? Bool ?? true }
+    set { UserDefaults.standard.set(newValue, forKey: storageKey) }
   }
 }
