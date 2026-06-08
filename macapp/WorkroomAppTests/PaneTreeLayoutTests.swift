@@ -71,12 +71,14 @@ final class PaneTreeLayoutTests: XCTestCase {
     XCTAssertEqual(hitA?.tab, a)
     XCTAssertEqual(hitA?.edge, .right)
     XCTAssertEqual(PaneTreeLayout.dropTarget(at: CGPoint(x: 150, y: 50), panes: panes)?.tab, b)
-    XCTAssertNil(PaneTreeLayout.dropTarget(at: CGPoint(x: 500, y: 50), panes: panes))  // gap/outside
+    // gap/outside
+    XCTAssertNil(PaneTreeLayout.dropTarget(at: CGPoint(x: 500, y: 50), panes: panes))
   }
 
   func testEdgeBandIsHalfThePane() {
     let r = CGRect(x: 0, y: 0, width: 100, height: 80)
-    XCTAssertEqual(PaneTreeLayout.edgeBand(.right, in: r), CGRect(x: 50, y: 0, width: 50, height: 80))
+    XCTAssertEqual(
+      PaneTreeLayout.edgeBand(.right, in: r), CGRect(x: 50, y: 0, width: 50, height: 80))
     XCTAssertEqual(PaneTreeLayout.edgeBand(.top, in: r), CGRect(x: 0, y: 0, width: 100, height: 40))
     XCTAssertEqual(
       PaneTreeLayout.edgeBand(.bottom, in: r), CGRect(x: 0, y: 40, width: 100, height: 40))
@@ -102,7 +104,8 @@ final class PaneTreeLayoutTests: XCTestCase {
     // A | (B / C)
     let layout = PaneLayout.split(
       id: UUID(), orientation: .horizontal, ratio: 0.5, first: .leaf(a),
-      second: .split(id: UUID(), orientation: .vertical, ratio: 0.5, first: .leaf(b), second: .leaf(c))
+      second: .split(
+        id: UUID(), orientation: .vertical, ratio: 0.5, first: .leaf(b), second: .leaf(c))
     )
     XCTAssertEqual(PaneTreeLayout.adjacentPane(to: b, direction: .down, in: layout), c)
     XCTAssertEqual(PaneTreeLayout.adjacentPane(to: c, direction: .up, in: layout), b)

@@ -389,10 +389,13 @@ final class TerminalSessions: ObservableObject {
 
   /// Show a surface-reported command title on its tab; directory/prompt titles are ignored so the
   /// command sticks until `command_finished` clears it.
-  private func updateTitle(_ title: String, forTab tabID: TerminalTab.ID, target: TerminalTarget.ID) {
+  private func updateTitle(_ title: String, forTab tabID: TerminalTab.ID, target: TerminalTarget.ID)
+  {
     guard var tab = tabsByTarget[target]?[tabID] else { return }
     let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !trimmed.isEmpty, !Self.isDirectoryTitle(trimmed, cwd: tab.view.lastKnownCwd) else { return }
+    guard !trimmed.isEmpty, !Self.isDirectoryTitle(trimmed, cwd: tab.view.lastKnownCwd) else {
+      return
+    }
     guard tab.liveTitle != trimmed else { return }
     tab.liveTitle = trimmed
     tabsByTarget[target]?[tabID] = tab
@@ -467,7 +470,8 @@ final class TerminalSessions: ObservableObject {
 
   /// The tab to focus after `tabID` is closed: the on-screen neighbour that slides into its slot, else
   /// the new last on-screen tab, else nil.
-  private func closeSuccessor(of tabID: TerminalTab.ID, for target: TerminalTarget) -> TerminalTab.ID?
+  private func closeSuccessor(of tabID: TerminalTab.ID, for target: TerminalTarget) -> TerminalTab
+    .ID?
   {
     let order = displayedTabIDs(for: target)
     guard let idx = order.firstIndex(of: tabID) else { return order.first { $0 != tabID } }
@@ -481,8 +485,9 @@ final class TerminalSessions: ObservableObject {
     orderByTarget[target.id, default: []].append(tab.id)
   }
 
-  private func insertID(_ id: TerminalTab.ID, after other: TerminalTab.ID, for target: TerminalTarget)
-  {
+  private func insertID(
+    _ id: TerminalTab.ID, after other: TerminalTab.ID, for target: TerminalTarget
+  ) {
     var order = orderByTarget[target.id] ?? []
     order.removeAll { $0 == id }
     if let i = order.firstIndex(of: other) {

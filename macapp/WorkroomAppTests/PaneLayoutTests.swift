@@ -14,7 +14,8 @@ final class PaneLayoutTests: XCTestCase {
     let tree = PaneLayout.split(
       id: UUID(), orientation: .horizontal, ratio: 0.5,
       first: .leaf(a),
-      second: .split(id: UUID(), orientation: .vertical, ratio: 0.5, first: .leaf(b), second: .leaf(c))
+      second: .split(
+        id: UUID(), orientation: .vertical, ratio: 0.5, first: .leaf(b), second: .leaf(c))
     )
     XCTAssertEqual(tree.tabIDs, [a, b, c])
     XCTAssertEqual(tree.firstTabID, a)
@@ -53,7 +54,8 @@ final class PaneLayoutTests: XCTestCase {
     let tree = PaneLayout.split(
       id: UUID(), orientation: .horizontal, ratio: 0.5,
       first: .leaf(a),
-      second: .split(id: UUID(), orientation: .vertical, ratio: 0.5, first: .leaf(b), second: .leaf(c)))
+      second: .split(
+        id: UUID(), orientation: .vertical, ratio: 0.5, first: .leaf(b), second: .leaf(c)))
     let collapsed = tree.removingLeaf(b)
     XCTAssertEqual(collapsed?.tabIDs, [a, c])  // inner split collapses to c; outer keeps a|c
   }
@@ -68,7 +70,8 @@ final class PaneLayoutTests: XCTestCase {
     let tree = PaneLayout.split(
       id: UUID(), orientation: .horizontal, ratio: 0.5,
       first: .leaf(a),
-      second: .split(id: inner, orientation: .vertical, ratio: 0.5, first: .leaf(b), second: .leaf(c)))
+      second: .split(
+        id: inner, orientation: .vertical, ratio: 0.5, first: .leaf(b), second: .leaf(c)))
     let updated = tree.settingRatio(0.8, forSplit: inner)
     if case .split(_, _, _, _, .split(_, _, let r, _, _)) = updated {
       XCTAssertEqual(r, 0.8, accuracy: 0.0001)

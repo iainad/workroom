@@ -82,9 +82,11 @@ indirect enum PaneLayout: Equatable {
       return .split(
         id: sid, orientation: o, ratio: r,
         first: first.inserting(
-          newLeaf, beside: beside, orientation: orientation, newLeafFirst: newLeafFirst, ratio: ratio),
+          newLeaf, beside: beside, orientation: orientation, newLeafFirst: newLeafFirst,
+          ratio: ratio),
         second: second.inserting(
-          newLeaf, beside: beside, orientation: orientation, newLeafFirst: newLeafFirst, ratio: ratio))
+          newLeaf, beside: beside, orientation: orientation, newLeafFirst: newLeafFirst,
+          ratio: ratio))
     }
   }
 
