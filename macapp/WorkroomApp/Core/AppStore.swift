@@ -33,7 +33,11 @@ final class AppStore: ObservableObject {
   /// project toggles its expansion instead. Persisted across launches (issue #14) via `didSet`
   /// and restored in `apply()`.
   @Published var selectedTargetID: SidebarID? {
-    didSet { Defaults[.sidebarSelection] = Self.targetIDString(for: selectedTargetID) }
+    didSet {
+      Defaults[.sidebarSelection] = Self.targetIDString(for: selectedTargetID)
+      // Record the new location for back/forward (issue #26), unless we're replaying history.
+      if !isNavigatingHistory { recordCurrentLocation() }
+    }
   }
   /// Project paths the user has collapsed in the sidebar (issue #14). Held here as `@Published`
   /// rather than read via `@Default` in the view: a `@Default` change does not reliably re-evaluate
@@ -72,6 +76,16 @@ final class AppStore: ObservableObject {
   /// `UNUserNotificationCenter`.
   let systemNotifier: SystemNotifying = SystemNotifier()
 
+  /// Browser-style back/forward history of visited `(target, tab)` locations (issue #26).
+  /// `@Published` so toolbar/menu enablement (`canGoBack`/`canGoForward`) re-evaluates when it
+  /// changes. Session-only — deliberately not persisted across launches. `private(set)` so unit
+  /// tests can inspect it (read-only) while only the store mutates it.
+  @Published private(set) var history = NavigationHistory()
+  /// True while `navigateBack`/`navigateForward`/`applyLocation` are replaying, so the
+  /// `selectedTargetID` didSet and the `terminals.onFocusChange` seam don't re-record the very
+  /// location they're navigating to.
+  private var isNavigatingHistory = false
+
   private let resolver = BranchResolver()
   /// The in-flight branch-resolution sweep; cancelled and replaced on each reload so a
   /// slow sweep never writes stale labels over a newer one.
@@ -82,12 +96,24 @@ final class AppStore: ObservableObject {
   /// successful load (see `apply`). Consumed there so a later refresh can't resurrect it.
   private var pendingRestoreSelection: TerminalTarget.ID?
 
-  private init() {
+  /// `internal` (not `private`) so unit tests can build a non-singleton store (`AppStore()`),
+  /// inject `projects`, and drive the real recording/navigation paths. Production always uses the
+  /// `shared` singleton; `init` does no CLI work (only `bootstrap()`/`load()` do).
+  init() {
     pendingRestoreSelection = Defaults[.sidebarSelection]
     // Route each terminal's activity (OSC/bell) through the notification spine, gated on
     // focus, and raise a native banner only when the app is backgrounded.
     terminals.activityHandler = { [weak self] targetID, tabID, activity in
       self?.handleActivity(targetID: targetID, tabID: tabID, activity: activity)
+    }
+    // Record each focused-tab change for back/forward history (issue #26), unless we're replaying.
+    terminals.onFocusChange = { [weak self] _, _ in
+      guard let self, !self.isNavigatingHistory else { return }
+      self.recordCurrentLocation()
+    }
+    // Prune dead entries when tabs are closed/reaped, so canGoBack/Forward stay honest (issue #26).
+    terminals.onTabsRemoved = { [weak self] _, ids in
+      self?.history.prune(removing: Set(ids))
     }
     // Mirror the aggregate unread count onto the Dock icon badge (issue #32). Owned here, not in a
     // view: see `NotificationCenterStore.onTotalChange` for why a view-driven badge misses
@@ -104,8 +130,12 @@ final class AppStore: ObservableObject {
 
   /// The selected terminal target resolved against the current project list (nil if it no
   /// longer exists).
-  var selectedTarget: TerminalTarget? {
-    switch selectedTargetID {
+  var selectedTarget: TerminalTarget? { selectedTargetID.flatMap(target(for:)) }
+
+  /// Resolve any `SidebarID` to its live `TerminalTarget` against the current project list (nil for
+  /// `.project` or a since-removed target). Backs `selectedTarget` and the history `isLive` check.
+  func target(for sid: SidebarID) -> TerminalTarget? {
+    switch sid {
     case .root(let path):
       return projects.first { $0.id == path }?.rootTarget
     case .workroom(let path, let name):
@@ -113,7 +143,7 @@ final class AppStore: ObservableObject {
         let workroom = project.workrooms.first(where: { $0.id == name })
       else { return nil }
       return workroom.target(inProject: path)
-    case .project, .none:
+    case .project:
       return nil
     }
   }
@@ -487,6 +517,68 @@ final class AppStore: ObservableObject {
     return terminals.focusAdjacentPane(direction, for: target)
   }
 
+  // MARK: Navigation history (issue #26)
+
+  /// Whether back/forward can move. Cursor-based (D2): liveness is validated when stepping, so a
+  /// button can be enabled yet no-op in the rare case where every entry that way is dead.
+  var canGoBack: Bool { history.canGoBack }
+  var canGoForward: Bool { history.canGoForward }
+
+  /// Record the on-screen location (selected target + its focused tab) into history. No-op while
+  /// replaying (guarded at the call sites) and when there's no focused terminal yet — so a switch to
+  /// a never-visited target records nothing until its first terminal exists, and the later
+  /// `addTab`→`onFocusChange` records the real first entry (no `(target, nil)` ghost).
+  private func recordCurrentLocation() {
+    guard let sid = selectedTargetID, let target = selectedTarget, !target.isMissing,
+      let tab = terminals.focusedTab(for: target)
+    else { return }
+    history.record(NavLocation(target: sid, tab: tab.id))
+  }
+
+  /// Go back one step, skipping entries whose target/tab no longer exist (D2). No-op when there's no
+  /// live earlier location.
+  func navigateBack() {
+    if let loc = history.step(-1, isLive: isLive) {
+      applyLocation(target: loc.target, tab: loc.tab, recordHistory: false)
+    }
+  }
+
+  /// Go forward one step (mirrors `navigateBack`).
+  func navigateForward() {
+    if let loc = history.step(+1, isLive: isLive) {
+      applyLocation(target: loc.target, tab: loc.tab, recordHistory: false)
+    }
+  }
+
+  /// The single primitive for "go to (target, tab)": used by back/forward replay and by
+  /// `openTerminal` (notification / ⇧⌘N). Sets the selection + focuses the tab with history recording
+  /// suppressed (the `didSet`/`onFocusChange` seams no-op via `isNavigatingHistory`), then records
+  /// exactly one entry when `recordHistory` is true — so a jump never leaves a phantom intermediate
+  /// entry. `tab` is optional (an old notification may carry none / a stale id); it resolves to the
+  /// requested tab when it still exists, else the target's current focused tab.
+  private func applyLocation(target sid: SidebarID, tab tabID: TerminalTab.ID?, recordHistory: Bool)
+  {
+    isNavigatingHistory = true
+    defer { isNavigatingHistory = false }
+    selectedProjectID = Self.projectPath(of: sid)
+    selectedTargetID = sid
+    guard let target = selectedTarget, !target.isMissing else { return }
+    let resolved =
+      tabID.flatMap { id in terminals.tabs(for: target).contains { $0.id == id } ? id : nil }
+      ?? terminals.focusedTab(for: target)?.id
+    guard let resolved else { return }
+    terminals.focus(resolved, for: target)
+    if recordHistory { history.record(NavLocation(target: sid, tab: resolved)) }
+  }
+
+  /// Whether a recorded location is still reachable: its target resolves to a live, non-missing
+  /// target and the recorded tab still exists there. Skips dead entries (closed tab / deleted
+  /// workroom) on back/forward.
+  private func isLive(_ loc: NavLocation) -> Bool {
+    guard let target = target(for: loc.target), !target.isMissing else { return false }
+    return terminals.tabs(for: target).contains { $0.id == loc.tab }
+  }
+
   // MARK: Notifications
 
   /// Record a terminal's activity, then post a native banner only if the app is backgrounded
@@ -540,19 +632,10 @@ final class AppStore: ObservableObject {
       if let tabID { systemNotifier.withdraw(tabIDs: [tabID]) }
       return
     }
-    switch sid {
-    case .root(let path), .workroom(let path, _): selectedProjectID = path
-    case .project: break
-    }
-    selectedTargetID = sid
-    // Only re-activate the tab if it still exists — it may have been closed/reaped between the
-    // notification being posted and the user clicking the banner; selecting a dangling id would
-    // leave activeByTarget pointing at a non-existent tab.
-    if let tabID, let target = selectedTarget,
-      terminals.tabs(for: target).contains(where: { $0.id == tabID })
-    {
-      terminals.select(tabID, for: target)
-    }
+    // Jump to (target, tab) through the shared primitive: it selects the target, re-activates the
+    // tab only if it still exists (it may have been closed/reaped since the banner was posted), and
+    // records exactly one history entry — no phantom intermediate (issue #26).
+    applyLocation(target: sid, tab: tabID, recordHistory: true)
     if let notifID {
       notifications.dismiss(notifID: notifID)
     } else if let tabID {

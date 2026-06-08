@@ -66,6 +66,14 @@ final class TerminalSessions: ObservableObject {
   /// Set once by `AppStore`: forwards each terminal's notification-worthy activity (OSC) up to the
   /// notification spine. A closure (not a store reference) so sessions stay ignorant of `AppStore`.
   var activityHandler: ((TerminalTarget.ID, TerminalTab.ID, TerminalActivity) -> Void)?
+  /// Set once by `AppStore`: fired whenever the focused tab of a target actually changes, so
+  /// navigation history (issue #26) can record the new location. A closure (not a store reference),
+  /// mirroring `activityHandler`, so sessions stay ignorant of `AppStore`. `tabID` is nil when the
+  /// target's focus was cleared (a `reap` passes `notify: false`, so that case never reaches here).
+  var onFocusChange: ((TerminalTarget.ID, TerminalTab.ID?) -> Void)?
+  /// Set once by `AppStore`: the tabs just removed by a `closeTab` or `reap`, so navigation history
+  /// can prune their now-dead entries (issue #26 — honest back/forward enablement).
+  var onTabsRemoved: ((TerminalTarget.ID, [TerminalTab.ID]) -> Void)?
 
   /// Factory seam (plan T1): how a surface view is created for a target at a working directory.
   /// Overridable in tests so the lifecycle can be exercised without a real window/shell. The cwd
@@ -174,7 +182,7 @@ final class TerminalSessions: ObservableObject {
   func addTab(for target: TerminalTarget) -> TerminalTab {
     let tab = makeTab(for: target, cwd: target.path)
     insert(tab, for: target)
-    focusedTabByTarget[target.id] = tab.id
+    setFocused(tab.id, for: target.id)
     reconcileOcclusion(for: target)
     return tab
   }
@@ -212,7 +220,7 @@ final class TerminalSessions: ObservableObject {
     }
     // Place the new tab right after the focused one in the loose order (display normalises anyway).
     insertID(newTab.id, after: focused.id, for: target)
-    focusedTabByTarget[target.id] = newTab.id
+    setFocused(newTab.id, for: target.id)
     reconcileOcclusion(for: target)
   }
 
@@ -252,7 +260,7 @@ final class TerminalSessions: ObservableObject {
         second: edge.placesDroppedFirst ? anchor : dropped)
     }
     insertID(movedID, after: destID, for: target)  // display normalises the contiguous run
-    focusedTabByTarget[target.id] = movedID
+    setFocused(movedID, for: target.id)
     reconcileOcclusion(for: target)
   }
 
@@ -265,7 +273,7 @@ final class TerminalSessions: ObservableObject {
     } else {
       splitByTarget[target.id] = nil
     }
-    focusedTabByTarget[target.id] = tabID  // show the extracted tab on its own
+    setFocused(tabID, for: target.id)  // show the extracted tab on its own
     reconcileOcclusion(for: target)
   }
 
@@ -274,11 +282,24 @@ final class TerminalSessions: ObservableObject {
   func focus(_ tabID: TerminalTab.ID, for target: TerminalTarget) {
     guard tabsByTarget[target.id]?[tabID] != nil else { return }
     guard focusedTabByTarget[target.id] != tabID else { return }
-    focusedTabByTarget[target.id] = tabID
+    setFocused(tabID, for: target.id)
     reconcileOcclusion(for: target)
   }
 
   func select(_ tabID: TerminalTab.ID, for target: TerminalTarget) { focus(tabID, for: target) }
+
+  /// The single write-point for a target's focused tab (issue #26). Centralising the seven former
+  /// direct writes means every focus change — `addTab`, splits, drag-into-split, `focus`, and the
+  /// close-successor — fires `onFocusChange` so navigation history can record the new location.
+  /// `notify: false` is used only by `reap` (the target is being torn down; nothing is focused
+  /// afterward, and its history entries are skipped at replay instead). No-op when unchanged.
+  private func setFocused(
+    _ tabID: TerminalTab.ID?, for targetID: TerminalTarget.ID, notify: Bool = true
+  ) {
+    guard focusedTabByTarget[targetID] != tabID else { return }
+    focusedTabByTarget[targetID] = tabID
+    if notify { onFocusChange?(targetID, tabID) }
+  }
 
   /// Move focus to the adjacent pane in `direction` within the visible split (⌥⌘arrows, issue #3).
   /// Returns whether focus actually moved, so the key monitor only swallows the event when it acts.
@@ -331,12 +352,14 @@ final class TerminalSessions: ObservableObject {
       }
     }
 
-    if wasFocused { focusedTabByTarget[target.id] = successor }
+    if wasFocused { setFocused(successor, for: target.id) }
     reconcileOcclusion(for: target)
+    onTabsRemoved?(target.id, [tabID])
   }
 
   /// Terminate and forget every terminal for a target (on delete / when its directory disappears).
   func reap(_ id: TerminalTarget.ID) {
+    let removedIDs = Array((tabsByTarget[id] ?? [:]).keys)
     for tab in (tabsByTarget[id] ?? [:]).values {
       teardown(tab)
       activityPulses[tab.id] = nil
@@ -344,8 +367,9 @@ final class TerminalSessions: ObservableObject {
     tabsByTarget[id] = nil
     orderByTarget[id] = nil
     splitByTarget[id] = nil
-    focusedTabByTarget[id] = nil
+    setFocused(nil, for: id, notify: false)
     counts[id] = nil
+    if !removedIDs.isEmpty { onTabsRemoved?(id, removedIDs) }
   }
 
   func reapAll() {

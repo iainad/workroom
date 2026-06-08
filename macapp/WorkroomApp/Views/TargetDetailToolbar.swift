@@ -7,6 +7,10 @@ import SwiftUI
 /// `RootView.targetDetail` so the scene root stays focused on layout.
 struct TargetDetailToolbar: ToolbarContent {
   let path: String
+  /// Unread count + inspector toggle for the notifications bell, which sits on the right after the
+  /// document actions. Passed in from `RootView` (which owns the notification store + the toggle).
+  let notificationsTotal: Int
+  @Binding var showNotifications: Bool
 
   /// Bundle id of the last editor picked from the "Open in…" menu — the toolbar button's
   /// primary action reopens in it.
@@ -63,6 +67,19 @@ struct TargetDetailToolbar: ToolbarContent {
         Label("Copy Path", systemImage: "doc.on.doc")
       }
       .help("Copy path")
+
+      // Notifications bell, right side after the document actions.
+      Button {
+        showNotifications.toggle()
+      } label: {
+        HStack(spacing: 3) {
+          Image(systemName: "bell")
+          UnreadBadge(count: notificationsTotal)
+        }
+      }
+      .help("Notifications")
+      .accessibilityLabel(
+        notificationsTotal > 0 ? "Notifications, \(notificationsTotal) unread" : "Notifications")
     }
   }
 }

@@ -614,10 +614,11 @@ final class GhosttySurfaceView: NSView {
     if flags == [.command, .shift], Character(ch.lowercased()) == "d" { return true }
     guard flags == .command else { return false }
     if ("1"..."9").contains(ch) { return true }  // focus tab N
-    // ⌘T/⌘W/⌘O/⌘D are real menu commands; ⌘Q/⌘H/⌘M/⌘, are system standards. NOT ⌘N — Workroom's only
-    // N command is ⌥⌘N (which fails the `flags == .command` guard above), so plain ⌘N must pass
-    // through to the terminal rather than being swallowed.
-    return ["t", "w", "o", "d", "q", "h", "m", ","].contains(Character(ch.lowercased()))
+    // ⌘T/⌘W/⌘O/⌘D are real menu commands; ⌘Q/⌘H/⌘M/⌘, are system standards; ⌘[ / ⌘] are Back/Forward
+    // navigation (issue #26) — all reserved so the menu key-equivalent fires instead of the terminal.
+    // NOT ⌘N — Workroom's only N command is ⌥⌘N (which fails the `flags == .command` guard above), so
+    // plain ⌘N must pass through to the terminal rather than being swallowed.
+    return ["t", "w", "o", "d", "q", "h", "m", ",", "[", "]"].contains(Character(ch.lowercased()))
   }
 
   private func buildKeyEvent(from event: NSEvent, action: ghostty_input_action_e)

@@ -48,22 +48,30 @@ struct RootView: View {
     } message: {
       Text(store.errorMessage ?? "")
     }
-    // The notifications inspector + its toolbar toggle live at the split-view level so they're
-    // available even when nothing is selected (a backgrounded terminal can fire any time).
+    // Top toolbar (issue #26): the back/forward chevrons (snug, one item) pinned to the leading
+    // `.navigation` area beside the sidebar toggle. The notifications bell lives on the right, in the
+    // detail toolbar (TargetDetailToolbar, after Copy Path). Split-view level so back/forward are
+    // present even in the empty state.
     .toolbar {
-      ToolbarItem {
-        Button {
-          showNotifications.toggle()
-        } label: {
-          HStack(spacing: 3) {
-            Image(systemName: "bell")
-            UnreadBadge(count: notifications.total)
+      ToolbarItem(placement: .navigation) {
+        HStack(spacing: 0) {
+          Button {
+            store.navigateBack()
+          } label: {
+            Image(systemName: "chevron.left")
           }
+          .help("Back")
+          .accessibilityLabel("Back")
+          .disabled(!store.canGoBack)
+          Button {
+            store.navigateForward()
+          } label: {
+            Image(systemName: "chevron.right")
+          }
+          .help("Forward")
+          .accessibilityLabel("Forward")
+          .disabled(!store.canGoForward)
         }
-        .help("Notifications")
-        .accessibilityLabel(
-          notifications.total > 0
-            ? "Notifications, \(notifications.total) unread" : "Notifications")
       }
     }
     .inspector(isPresented: $showNotifications) {
@@ -86,6 +94,9 @@ struct RootView: View {
     .focusedSceneValue(\.workroomSelected, terminalInteractionAvailable)
     // Drive the "Go to Next Notification" menu command's enabled state.
     .focusedSceneValue(\.hasNotifications, !notifications.items.isEmpty)
+    // Drive the Go-menu Back/Forward commands' enabled state (issue #26).
+    .focusedSceneValue(\.canNavigateBack, store.canGoBack)
+    .focusedSceneValue(\.canNavigateForward, store.canGoForward)
   }
 
   /// Pushes the chosen appearance onto the running app. nil (System) tells AppKit to
@@ -163,7 +174,9 @@ struct RootView: View {
     .navigationTitle(target.title)
     .navigationSubtitle(target.path)
     .toolbar {
-      TargetDetailToolbar(path: target.path)
+      TargetDetailToolbar(
+        path: target.path, notificationsTotal: notifications.total,
+        showNotifications: $showNotifications)
     }
   }
 }

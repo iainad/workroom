@@ -196,6 +196,16 @@ struct HasNotificationsKey: FocusedValueKey {
   typealias Value = Bool
 }
 
+/// Whether back/forward navigation can move (issue #26) — published by RootView, so the Go-menu
+/// Back/Forward commands disable at the ends of history.
+struct CanNavigateBackKey: FocusedValueKey {
+  typealias Value = Bool
+}
+
+struct CanNavigateForwardKey: FocusedValueKey {
+  typealias Value = Bool
+}
+
 extension FocusedValues {
   var workroomSelected: Bool? {
     get { self[WorkroomSelectedKey.self] }
@@ -209,6 +219,14 @@ extension FocusedValues {
     get { self[HasNotificationsKey.self] }
     set { self[HasNotificationsKey.self] = newValue }
   }
+  var canNavigateBack: Bool? {
+    get { self[CanNavigateBackKey.self] }
+    set { self[CanNavigateBackKey.self] = newValue }
+  }
+  var canNavigateForward: Bool? {
+    get { self[CanNavigateForwardKey.self] }
+    set { self[CanNavigateForwardKey.self] = newValue }
+  }
 }
 
 /// Menu-bar commands + keyboard shortcuts. They act on the shared store so they work
@@ -218,6 +236,8 @@ struct WorkroomCommands: Commands {
   @FocusedValue(\.workroomSelected) private var workroomSelected
   @FocusedValue(\.hasTerminal) private var hasTerminal
   @FocusedValue(\.hasNotifications) private var hasNotifications
+  @FocusedValue(\.canNavigateBack) private var canNavigateBack
+  @FocusedValue(\.canNavigateForward) private var canNavigateForward
   // Shared with RootView's inspector + toolbar toggle (same key) so all three stay in sync.
   @Default(.showNotifications) private var showNotifications
   // Same key as the Settings checkbox so the two stay in sync; GhosttySurfaceView reads it
@@ -310,6 +330,17 @@ struct WorkroomCommands: Commands {
         AppStore.shared.requestAddProject = true
       }
       .keyboardShortcut("o", modifiers: .command)
+    }
+
+    // Browser/Finder-style back/forward over the workroom + terminal history (issue #26). ⌘[ / ⌘]
+    // are reserved from the terminal in GhosttySurfaceView.isAppShortcut so these key equivalents fire.
+    CommandMenu("Go") {
+      Button("Back") { AppStore.shared.navigateBack() }
+        .keyboardShortcut("[", modifiers: .command)
+        .disabled(canNavigateBack != true)
+      Button("Forward") { AppStore.shared.navigateForward() }
+        .keyboardShortcut("]", modifiers: .command)
+        .disabled(canNavigateForward != true)
     }
   }
 }

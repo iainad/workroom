@@ -441,4 +441,66 @@ final class TerminalSessionsTests: XCTestCase {
     XCTAssertEqual(split.tabIDs.last, a)  // original is now on the right
     XCTAssertEqual(split.tabIDs.first, s.activeTab(for: target)?.id)  // new pane: leading + focused
   }
+
+  // MARK: onFocusChange seam (issue #26)
+
+  /// The seam fires for add and the close-successor (D6) but not for `reap` (notify: false).
+  func testOnFocusChangeFiresForAddAndCloseSuccessorButNotReap() {
+    let s = makeSessions()
+    var events: [TerminalTab.ID?] = []
+    s.onFocusChange = { _, tabID in events.append(tabID) }
+
+    s.addTab(for: target)
+    let t1 = s.tabs(for: target)[0].id
+    s.addTab(for: target)
+    let t2 = s.tabs(for: target)[1].id
+    XCTAssertEqual(events, [t1, t2])
+
+    events.removeAll()
+    s.closeTab(t2, for: target)  // successor t1 becomes focused → fires (D6)
+    XCTAssertEqual(events, [t1])
+
+    events.removeAll()
+    s.reap(target.id)  // teardown → notify: false → must NOT fire
+    XCTAssertTrue(events.isEmpty)
+  }
+
+  /// Splitting the focused pane fires the seam for the new pane.
+  func testOnFocusChangeFiresForSplit() {
+    let s = makeSessions()
+    s.addTab(for: target)
+    var events: [TerminalTab.ID?] = []
+    s.onFocusChange = { _, tabID in events.append(tabID) }
+    s.splitFocusedPane(for: target, edge: .right)
+    XCTAssertEqual(events, [s.activeTab(for: target)?.id])
+  }
+
+  /// Re-focusing the already-focused tab is a no-op and does not fire the seam.
+  func testOnFocusChangeDoesNotFireWhenUnchanged() {
+    let s = makeSessions()
+    s.addTab(for: target)
+    let only = s.activeTab(for: target)!.id
+    var fired = 0
+    s.onFocusChange = { _, _ in fired += 1 }
+    s.focus(only, for: target)  // already focused → guarded no-op
+    XCTAssertEqual(fired, 0)
+  }
+
+  /// onTabsRemoved fires for closeTab and reap, so history can prune dead entries (issue #26).
+  func testOnTabsRemovedFiresForCloseAndReap() {
+    let s = makeSessions()
+    var removed: [TerminalTab.ID] = []
+    s.onTabsRemoved = { _, ids in removed.append(contentsOf: ids) }
+    s.addTab(for: target)
+    let t1 = s.tabs(for: target)[0].id
+    s.addTab(for: target)
+    let t2 = s.tabs(for: target)[1].id
+
+    s.closeTab(t2, for: target)
+    XCTAssertEqual(removed, [t2])
+
+    removed.removeAll()
+    s.reap(target.id)  // remaining tab reaped
+    XCTAssertEqual(removed, [t1])
+  }
 }
