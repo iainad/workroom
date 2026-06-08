@@ -20,6 +20,13 @@ final class GhosttySurfaceView: NSView {
 
   private let workingDirectory: String
 
+  /// Test seam (view-layer unit tests): when `false`, `createSurface()` is a no-op, so the view still
+  /// mounts as a real `NSView` in the window — letting `PaneRenderingTests` assert on the AppKit
+  /// hierarchy (which panes are window-mounted, and at what size) — but without spawning libghostty's
+  /// Metal renderer + a login shell, which is unsafe to tear down in the headless CI test host. Always
+  /// `true` in the app: a real terminal spawns its surface exactly as before.
+  private let spawnsSurface: Bool
+
   // Callbacks set by the host (TerminalSessions / TerminalContainerView). Value-type captures only.
   var onActivity: ((TerminalActivity) -> Void)?
   var onOpenURL: ((URL) -> Bool)?
@@ -88,8 +95,9 @@ final class GhosttySurfaceView: NSView {
   private var progressTimeoutTimer: Timer?
   private static let progressTimeout: TimeInterval = 15
 
-  init(workingDirectory: String) {
+  init(workingDirectory: String, spawnsSurface: Bool = true) {
     self.workingDirectory = workingDirectory
+    self.spawnsSurface = spawnsSurface
     super.init(frame: .zero)
     wantsLayer = true
     setupTrackingArea()
@@ -109,6 +117,8 @@ final class GhosttySurfaceView: NSView {
   // MARK: Surface lifecycle (A1)
 
   private func createSurface() {
+    // Test seam: mount the view without a live libghostty surface (see `spawnsSurface`).
+    guard spawnsSurface else { return }
     guard surface == nil, let app = GhosttyApp.shared.app else { return }
     guard let backingSize = backingPixelSize() else {
       pendingSurfaceCreation = true

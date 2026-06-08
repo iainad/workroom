@@ -20,7 +20,11 @@ final class PaneRenderingTests: XCTestCase {
 
   private func makeSessions() -> TerminalSessions {
     let s = TerminalSessions()
-    s.makeView = { _, cwd in GhosttySurfaceView(workingDirectory: cwd) }
+    // Mount real `GhosttySurfaceView`s (so the AppKit hierarchy assertions below are meaningful) but
+    // with `spawnsSurface: false` — no libghostty Metal renderer / login shell. Hosting live surfaces
+    // in the headless CI unit-test host crashed XCTest's post-test memory checker on teardown; the
+    // view-mount/layout path this suite verifies needs no live surface.
+    s.makeView = { _, cwd in GhosttySurfaceView(workingDirectory: cwd, spawnsSurface: false) }
     return s
   }
 
@@ -31,6 +35,10 @@ final class PaneRenderingTests: XCTestCase {
     hosting.frame = NSRect(x: 0, y: 0, width: 900, height: 600)
     let window = NSWindow(
       contentRect: hosting.frame, styleMask: [.titled], backing: .buffered, defer: false)
+    // ARC owns `window`; a programmatic NSWindow defaults `isReleasedWhenClosed` to true, so the
+    // `window.close()` in each test's `defer` would send a second release on top of ARC's — an
+    // over-release that corrupts the heap. Opt out so ARC is the sole owner.
+    window.isReleasedWhenClosed = false
     window.contentView = hosting
     window.makeKeyAndOrderFront(nil)
     return (window, hosting)
