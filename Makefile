@@ -57,13 +57,13 @@ app-run: app-build ## Build (Debug) and launch the app, replacing any running in
 	open "$(APP_BUNDLE)"
 
 app-build: ## Build the app (Debug)
-	cd macapp && { [ -d $(APP_PROJECT) ] || xcodegen generate; } && $(APP_XCODEBUILD) build $(APP_SIGN_FLAGS)
+	cd macapp && xcodegen generate && $(APP_XCODEBUILD) build $(APP_SIGN_FLAGS)
 
 app-test: ## Run the app's unit tests
-	cd macapp && { [ -d $(APP_PROJECT) ] || xcodegen generate; } && $(APP_XCODEBUILD) -destination 'platform=macOS' test $(APP_SIGN_FLAGS)
+	cd macapp && xcodegen generate && $(APP_XCODEBUILD) -destination 'platform=macOS' test $(APP_SIGN_FLAGS)
 
 app-uitest: ## Run the app's UI tests (XCUITest — needs a real GUI login session, not headless)
-	cd macapp && { [ -d $(APP_PROJECT) ] || xcodegen generate; } && xcodebuild -project $(APP_PROJECT) -scheme WorkroomAppUITests -configuration Debug -derivedDataPath DerivedData -clonedSourcePackagesDirPath DerivedData/SourcePackages -destination 'platform=macOS' test $(APP_SIGN_FLAGS)
+	cd macapp && xcodegen generate && xcodebuild -project $(APP_PROJECT) -scheme WorkroomAppUITests -configuration Debug -derivedDataPath DerivedData -clonedSourcePackagesDirPath DerivedData/SourcePackages -destination 'platform=macOS' test $(APP_SIGN_FLAGS)
 
 app-generate: ## Force-regenerate the (gitignored) .xcodeproj from project.yml
 	cd macapp && xcodegen generate

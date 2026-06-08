@@ -10,8 +10,8 @@ Every dev task runs through the **repo-root `Makefile`**, namespaced `app-*` (ru
 root, not `macapp/`):
 
 ```bash
-make app-run        # canonical local loop: xcodegen (if needed) → xcodebuild (Debug) → relaunch
-make app-build      # xcodegen (if needed) → xcodebuild (Debug)
+make app-run        # canonical local loop: xcodegen → xcodebuild (Debug) → relaunch
+make app-build      # xcodegen → xcodebuild (Debug)
 make app-test       # xcodebuild test (WorkroomAppTests)
 make app-generate   # force-regenerate the (gitignored) .xcodeproj from project.yml
 make app-format     # swift-format, rewrite sources in place
@@ -40,9 +40,12 @@ that surfaces violations as **warnings** (non-fatal — `make app-lint` is the h
   `PRODUCT_NAME`/module is `Workroom`). Tests use `@testable import Workroom`, and a test
   target's `TEST_HOST` must point at `Workroom.app/Contents/MacOS/Workroom` — XcodeGen's
   auto-derived (target-name-based) host is wrong and fails with "Could not find test host".
-- **New `.swift` file → run `xcodegen generate` first.** XcodeGen expands the source
-  glob into explicit file refs in the (gitignored) `.xcodeproj`, so a new file is
-  invisible to `xcodebuild`/Xcode until the project is regenerated.
+- **Adding/removing/renaming a `.swift` file needs an `xcodegen generate`.** XcodeGen
+  expands the source glob into explicit file refs in the (gitignored) `.xcodeproj`, so
+  the change is invisible (or, for a deleted/renamed file, a hard "Build input file
+  cannot be found" error) until the project is regenerated. The `make app-*` build
+  targets now run `xcodegen generate` every time, so this is handled automatically —
+  it only bites when building from Xcode directly (regenerate, or run `make app-generate`).
 - **SourceKit "Cannot find type X in scope" is usually noise.** The single-file indexer
   doesn't see sibling files; a clean `xcodebuild` is authoritative.
 - **The terminal is libghostty** (`libghostty-spm`'s `GhosttyKit` xcframework, pinned
