@@ -120,6 +120,22 @@ final class TerminalSessionsTests: XCTestCase {
     XCTAssertFalse(s.isRunning(forTargetID: target.id))
   }
 
+  /// Regression for the stuck sidebar spinner: the shipped zsh integration abbreviates a deep cwd to
+  /// "…/dir/dir/dir" (`%(4~|…/%3~|%~)`). That truncated prompt title must be read as a directory, not a
+  /// phantom running command — otherwise nothing ever clears it (no `command_finished`) and the spinner
+  /// never stops. (Workrooms live in nested paths, so this fired "sometimes" — whenever the dir was deep.)
+  func testTruncatedDirectoryTitleDoesNotCountAsRunning() {
+    let s = makeSessions()
+    s.addTab(for: target)
+    let view = s.tabs(for: target).first!.view
+    view.handlePwd("/var/data/dev/workroom/macapp/WorkroomApp")  // ≥4 deep → zsh truncates
+
+    view.onTitleChange?("…/workroom/macapp/WorkroomApp")
+    XCTAssertFalse(s.isRunning(forTargetID: target.id))
+    // …and it's an idle title, so the tab keeps its default name rather than showing the path.
+    XCTAssertEqual(s.tabs(for: target).first?.title, "Terminal 1")
+  }
+
   func testIsRunningAggregatesAcrossTabs() {
     let s = makeSessions()
     s.addTab(for: target)
@@ -200,6 +216,26 @@ final class TerminalSessionsTests: XCTestCase {
     XCTAssertFalse(TerminalSessions.isDirectoryTitle("make: build failed", cwd: cwd, home: home))
     // No cwd yet → can't classify, so nothing is treated as a directory.
     XCTAssertFalse(TerminalSessions.isDirectoryTitle("~/dev/codaset", cwd: nil, home: home))
+  }
+
+  func testIsDirectoryTitleRecognizesTruncatedPromptTitles() {
+    let home = "/Users/me"
+    // zsh `%(4~|…/%3~|%~)` truncates a deep path under $HOME to "…/" + the trailing 3 components.
+    let deep = "/Users/me/dev/workroom/macapp/WorkroomApp"
+    XCTAssertTrue(
+      TerminalSessions.isDirectoryTitle("…/workroom/macapp/WorkroomApp", cwd: deep, home: home))
+    // A path outside $HOME truncates the same way (absolute trailing components).
+    let abs = "/var/data/dev/workroom/macapp"
+    XCTAssertTrue(TerminalSessions.isDirectoryTitle("…/dev/workroom/macapp", cwd: abs, home: home))
+    // bash's PROMPT_DIRTRIM uses a "..." marker — also a directory title.
+    XCTAssertTrue(
+      TerminalSessions.isDirectoryTitle(".../dev/workroom/macapp", cwd: abs, home: home))
+    // A dot-prefixed first kept component is preserved (only the marker is stripped, not real dots).
+    let hidden = "/Users/me/dev/.worktrees/bar/baz"
+    XCTAssertTrue(
+      TerminalSessions.isDirectoryTitle("…/.worktrees/bar/baz", cwd: hidden, home: home))
+    // A command that merely starts with "…/" but isn't a suffix of the cwd is still a command.
+    XCTAssertFalse(TerminalSessions.isDirectoryTitle("…/other/path", cwd: deep, home: home))
   }
 
   // MARK: Splits (issue #3)

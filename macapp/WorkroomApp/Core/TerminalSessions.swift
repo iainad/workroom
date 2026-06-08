@@ -397,6 +397,12 @@ final class TerminalSessions: ObservableObject {
 
   /// Whether `title` is just the working directory (the idle title the shell/prompt sets) rather than a
   /// running command — so the tab strip can ignore it (issue #2). Pure for testability.
+  ///
+  /// This MUST recognise every form a prompt emits for the cwd: a directory title that slips through is
+  /// latched as a `liveTitle` and read as a running command (issue #28), but — being no real command — it
+  /// never gets the `command_finished` that would clear it, so the sidebar spinner spins forever. The
+  /// shipped zsh integration abbreviates deep paths (`%(4~|…/%3~|%~)` → "…/dir/dir/dir"), and bash's
+  /// `PROMPT_DIRTRIM` truncates with ".../", so the full-path match alone isn't enough.
   static func isDirectoryTitle(_ title: String, cwd: String?, home: String = NSHomeDirectory())
     -> Bool
   {
@@ -409,7 +415,19 @@ final class TerminalSessions: ObservableObject {
       }
     }
     let tilde = cwd.hasPrefix(home) ? "~" + cwd.dropFirst(home.count) : cwd
-    return path == cwd || path == tilde
+
+    // Full directory title (bash `\w`, zsh `%~` when the path is shallow enough to fit untruncated).
+    if path == cwd || path == tilde { return true }
+
+    // Truncated directory title: a shell abbreviates a deep path to an ellipsis marker plus a trailing
+    // run of the path's own components (zsh "…/macapp/WorkroomApp", bash PROMPT_DIRTRIM ".../a/b"). It's
+    // a directory title when, after the marker, it's a path-component suffix of the cwd (or its ~-form).
+    for marker in ["…/", ".../"] where path.hasPrefix(marker) {
+      let tail = path.dropFirst(marker.count)
+      guard !tail.isEmpty else { return false }
+      return cwd.hasSuffix("/" + tail) || tilde.hasSuffix("/" + tail)
+    }
+    return false
   }
 
   // MARK: Internals
