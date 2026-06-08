@@ -10,10 +10,8 @@ struct ProjectSidebar: View {
   @EnvironmentObject var store: AppStore
   @EnvironmentObject var notifications: NotificationCenterStore
   @EnvironmentObject var terminals: TerminalSessions
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @State private var showImporter = false
-  /// Project paths the user has collapsed. Absence means expanded (the default). Persisted
-  /// across launches (issue #14) as a native string set via `Defaults`.
-  @Default(.collapsedProjects) private var collapsed
   @State private var hovered: SidebarID?
   @State private var themeHovering = false
   @State private var addProjectHovering = false
@@ -115,6 +113,7 @@ struct ProjectSidebar: View {
         }
       }
     }
+    .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: store.collapsedProjects)
   }
 
   // MARK: Rows
@@ -140,6 +139,7 @@ struct ProjectSidebar: View {
         .contentShape(Rectangle())
       }
       .buttonStyle(.plain)
+      .accessibilityHint(isExpanded(project.path) ? "Collapse project" : "Expand project")
 
       // Aggregate dot so notifications are visible even when the project is collapsed.
       UnreadDot(count: unread)
@@ -286,10 +286,18 @@ struct ProjectSidebar: View {
 
   // MARK: Expansion
 
-  private func isExpanded(_ path: String) -> Bool { !collapsed.contains(path) }
+  private func isExpanded(_ path: String) -> Bool { !store.collapsedProjects.contains(path) }
 
+  /// Expand or collapse a project. Mutating `store.collapsedProjects` (a `@Published` on the observed
+  /// store) re-evaluates the sidebar synchronously, so the tree commits on the click — see the
+  /// property's note for why a `@Default` here only updated after the pointer moved. The reveal is
+  /// animated by the `List`'s `.animation(value: store.collapsedProjects)`.
   private func toggle(_ path: String) {
-    if collapsed.contains(path) { collapsed.remove(path) } else { collapsed.insert(path) }
+    if store.collapsedProjects.contains(path) {
+      store.collapsedProjects.remove(path)
+    } else {
+      store.collapsedProjects.insert(path)
+    }
   }
 
   // MARK: Chrome

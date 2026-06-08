@@ -35,6 +35,14 @@ final class AppStore: ObservableObject {
   @Published var selectedTargetID: SidebarID? {
     didSet { Defaults[.sidebarSelection] = Self.targetIDString(for: selectedTargetID) }
   }
+  /// Project paths the user has collapsed in the sidebar (issue #14). Held here as `@Published`
+  /// rather than read via `@Default` in the view: a `@Default` change does not reliably re-evaluate
+  /// the sidebar's `List` until some *other* state changes (e.g. the pointer moving over a row), so
+  /// expand/collapse appeared to "stick" until you moved the mouse. `@Published` fires
+  /// `objectWillChange` synchronously, so the tree updates on the click itself. Persisted via `didSet`.
+  @Published var collapsedProjects: Set<String> = Defaults[.collapsedProjects] {
+    didSet { Defaults[.collapsedProjects] = collapsedProjects }
+  }
   /// Per-project resolved root branch/bookmark labels, hydrated asynchronously after each
   /// load (see `resolveBranches`). Absent ⇒ the root row shows a dim "root" until resolved.
   @Published var rootRefs: [Project.ID: RootRef] = [:]
@@ -161,11 +169,15 @@ final class AppStore: ObservableObject {
   /// (the temp-dir paths aren't real repos), so no git/jj process is ever spawned. Idempotent: a
   /// later reload re-injects the same projects but preserves whatever the test has since selected.
   private func loadFixture() {
-    projects = UITestFixture.projects()
+    let fixtures = UITestFixture.projects()
+    projects = fixtures
     // The real persisted selection won't resolve against the fixture paths; don't try to restore it.
     pendingRestoreSelection = nil
-    if selectedProjectID == nil { selectedProjectID = projects.first?.id }
-    if selectedTargetID == nil, let project = projects.first,
+    // Start every fixture project expanded so the sidebar tree is deterministic regardless of any
+    // collapse state a prior UI-test run persisted to the shared defaults (real projects untouched).
+    collapsedProjects.subtract(fixtures.map(\.id))
+    if selectedProjectID == nil { selectedProjectID = fixtures.first?.id }
+    if selectedTargetID == nil, let project = fixtures.first,
       let workroom = project.workrooms.first
     {
       selectedTargetID = .workroom(project: project.path, name: workroom.name)

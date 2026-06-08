@@ -41,6 +41,43 @@ final class WorkroomWorkflowUITests: XCTestCase {
       "element count did not reach \(expected) within \(timeout)s")
   }
 
+  /// Regression: expanding/collapsing a project must commit on the click itself, not only after the
+  /// pointer leaves the row. The collapse state lived in a `@Default`, which didn't re-evaluate the
+  /// sidebar until some other state changed (e.g. `hovered` on mouse-move) — so the tree appeared to
+  /// "stick" until you moved the mouse. Moving it to the store's `@Published` fixed it. This test
+  /// keeps the cursor parked on the project row across the toggle (never moving it) and asserts the
+  /// child rows appear/disappear anyway.
+  func testExpandCollapseCommitsWithoutMouseMove() throws {
+    let app = launchedApp()
+    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
+    let project = app.descendants(matching: .any)
+      .matching(identifier: "sidebar.project.UITestProject").firstMatch
+    let workroom = app.descendants(matching: .any)
+      .matching(identifier: "sidebar.workroom.uitest-room").firstMatch
+    XCTAssertTrue(workroom.waitForExistence(timeout: 10), "fixture project starts expanded")
+
+    // Wait for an existence state by re-snapshotting (which never moves the cursor), so the assertion
+    // tolerates the reveal animation while still failing if the change waits for a pointer move.
+    func waitExists(_ want: Bool) -> Bool {
+      let p = NSPredicate(format: "exists == %@", NSNumber(value: want))
+      return XCTWaiter().wait(
+        for: [XCTNSPredicateExpectation(predicate: p, object: workroom)], timeout: 3) == .completed
+    }
+
+    // Collapse: clicking parks the cursor on the row and leaves it there. The child must vanish
+    // without any further pointer movement.
+    project.click()
+    XCTAssertTrue(
+      waitExists(false),
+      "collapse should commit on click, not wait for the pointer to leave the row")
+
+    // Expand: same — the child must reappear with the cursor still parked on the row.
+    project.click()
+    XCTAssertTrue(
+      waitExists(true),
+      "expand should commit on click, not wait for the pointer to leave the row")
+  }
+
   /// Deterministic smoke: the *real* bootstrap path (no fixture) launches and the shell chrome is
   /// present. The Add Project control lives in the sidebar's bottom bar regardless of config, so this
   /// has no dependency on the developer's projects.
