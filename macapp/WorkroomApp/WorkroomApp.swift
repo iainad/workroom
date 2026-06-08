@@ -148,7 +148,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
   /// this on the main thread. Closing a window doesn't quit the app, so this fires only on a quit.
   @MainActor
   func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-    guard Defaults[.confirmOnQuit] else { return .terminateNow }
+    // UI-test fixture runs quit cleanly (no modal) so XCUITest teardown never blocks on the dialog.
+    guard Defaults[.confirmOnQuit], !UITestFixture.isActive else { return .terminateNow }
     let alert = NSAlert()
     alert.messageText = "Quit Workroom?"
     alert.informativeText = "Quitting closes all terminals and stops any running processes."

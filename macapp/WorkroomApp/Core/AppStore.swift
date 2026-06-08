@@ -117,6 +117,10 @@ final class AppStore: ObservableObject {
   /// Initial launch: render config-only (instant, no VCS calls), then refresh warnings.
   /// Branch labels hydrate asynchronously off both passes (see `resolveBranches`).
   func bootstrap() async {
+    if UITestFixture.isActive {
+      loadFixture()
+      return
+    }
     await load(warnings: "none")
     await load(warnings: "fast")
   }
@@ -133,6 +137,12 @@ final class AppStore: ObservableObject {
   }
 
   private func load(warnings: String) async {
+    // In UI-test fixture mode every load resolves to the same fake projects — never shell out to
+    // the CLI (so an on-focus `reloadIfStale` can't replace the fixture with the real config).
+    if UITestFixture.isActive {
+      loadFixture()
+      return
+    }
     isLoading = true
     defer { isLoading = false }
     do {
@@ -143,6 +153,24 @@ final class AppStore: ObservableObject {
     } catch {
       present(error)
     }
+  }
+
+  /// Load the deterministic UI-test fixture (see `UITestFixture`): inject the fake projects and, on
+  /// the first load, auto-select the fixture workroom so a terminal renders immediately — the tests
+  /// then drive splits/closes without any fragile sidebar navigation. Branch resolution is skipped
+  /// (the temp-dir paths aren't real repos), so no git/jj process is ever spawned. Idempotent: a
+  /// later reload re-injects the same projects but preserves whatever the test has since selected.
+  private func loadFixture() {
+    projects = UITestFixture.projects()
+    // The real persisted selection won't resolve against the fixture paths; don't try to restore it.
+    pendingRestoreSelection = nil
+    if selectedProjectID == nil { selectedProjectID = projects.first?.id }
+    if selectedTargetID == nil, let project = projects.first,
+      let workroom = project.workrooms.first
+    {
+      selectedTargetID = .workroom(project: project.path, name: workroom.name)
+    }
+    lastLoadAt = Date()
   }
 
   private func apply(_ fresh: [Project]) {
@@ -379,7 +407,9 @@ final class AppStore: ObservableObject {
   /// running in it with no undo, so the alert mirrors the quit confirmation (same destruction class).
   func requestCloseTerminalTab(_ tabID: TerminalTab.ID, for target: TerminalTarget) {
     guard let tab = terminals.tabs(for: target).first(where: { $0.id == tabID }) else { return }
-    guard Defaults[.confirmOnCloseTerminal] else {
+    // UI-test fixture mode closes without the modal so ⌘W / right-click Close are synchronous and
+    // teardown never blocks on an alert (the launch-arg override can't reliably reach a Defaults Bool).
+    guard Defaults[.confirmOnCloseTerminal], !UITestFixture.isActive else {
       terminals.closeTab(tabID, for: target)
       return
     }

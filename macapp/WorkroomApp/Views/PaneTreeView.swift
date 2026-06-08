@@ -18,6 +18,7 @@ struct PaneTreeView: View {
   /// coords — rendered with the same edge preview + ghost as an in-tree pane-handle drag.
   var externalDrag: PaneDragState?
 
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @State private var drag: PaneDragState?
   private static let space = "paneContent"
 
@@ -30,12 +31,13 @@ struct PaneTreeView: View {
     GeometryReader { geo in
       let plan = PaneTreeLayout.plan(layout, in: CGRect(origin: .zero, size: geo.size))
       ZStack(alignment: .topLeading) {
-        ForEach(layout.tabIDs, id: \.self) { tabID in
+        ForEach(Array(layout.tabIDs.enumerated()), id: \.element) { index, tabID in
           if let tab = sessions.tab(tabID, for: target), let rect = plan.panes[tabID] {
             PaneLeafView(
-              tabID: tabID, view: tab.view, sessions: sessions,
-              focused: tabID == focusedID, multiPane: multiPane, coordinateSpace: Self.space,
-              onDragChanged: { drag = PaneDragState(tabID: tabID, location: $0) },
+              tabID: tabID, view: tab.view, sessions: sessions, title: tab.title,
+              focused: tabID == focusedID, multiPane: multiPane,
+              paneIndex: index + 1, paneCount: layout.tabIDs.count, coordinateSpace: Self.space,
+              onDragChanged: { beginOrUpdateDrag(tabID: tabID, at: $0) },
               onDragEnded: { commitDrag(plan: plan) }
             )
             .frame(width: rect.width, height: rect.height)
@@ -93,6 +95,20 @@ struct PaneTreeView: View {
       .fixedSize()
       .position(x: drag.location.x, y: drag.location.y - 14)  // float just above the cursor
       .allowsHitTesting(false)
+    }
+  }
+
+  /// Track a pane-handle drag. The first point (drag begin) fades the drop preview in; subsequent
+  /// points update instantly so the highlight tracks the cursor with no lag. The end is left
+  /// un-animated so the result snaps into place — and crucially never animates pane *frames* (which
+  /// would flood the surface with resize calls).
+  private func beginOrUpdateDrag(tabID: TerminalTab.ID, at location: CGPoint) {
+    if drag == nil {
+      withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.12)) {
+        drag = PaneDragState(tabID: tabID, location: location)
+      }
+    } else {
+      drag = PaneDragState(tabID: tabID, location: location)
     }
   }
 
@@ -208,9 +224,9 @@ enum PaneTreeLayout {
   /// The pane nearest `tabID` in `direction` within `layout`: the closest pane that lies that way and
   /// overlaps on the perpendicular axis (so ⌥⌘→ from a tall left pane lands on whichever right pane
   /// shares the most rows). Pure geometry over a reference rect — `nil` if there's nothing that way.
-  static func adjacentPane(to tabID: TerminalTab.ID, direction: PaneDirection, in layout: PaneLayout)
-    -> TerminalTab.ID?
-  {
+  static func adjacentPane(
+    to tabID: TerminalTab.ID, direction: PaneDirection, in layout: PaneLayout
+  ) -> TerminalTab.ID? {
     let panes = plan(layout, in: CGRect(x: 0, y: 0, width: 1000, height: 1000)).panes
     guard let from = panes[tabID] else { return nil }
     let horizontal = direction == .left || direction == .right
@@ -261,8 +277,11 @@ private struct PaneLeafView: View {
   let tabID: TerminalTab.ID
   let view: GhosttySurfaceView
   @ObservedObject var sessions: TerminalSessions
+  let title: String
   let focused: Bool
   let multiPane: Bool
+  let paneIndex: Int
+  let paneCount: Int
   let coordinateSpace: String
   let onDragChanged: (CGPoint) -> Void
   let onDragEnded: () -> Void
@@ -286,6 +305,19 @@ private struct PaneLeafView: View {
         flashing = true
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { flashing = false }
       }
+      // The Metal surface contributes nothing to the a11y tree, so expose the pane itself as one
+      // accessibility element: a stable per-pane signal UI tests count to verify how many panes
+      // render (issue #3), and a clear VoiceOver target. The focused pane carries the selected trait.
+      .accessibilityElement(children: .contain)
+      .accessibilityIdentifier("terminal.pane")
+      .accessibilityLabel(Text(accessibilityLabel))
+      .accessibilityAddTraits(focused && multiPane ? .isSelected : [])
+  }
+
+  /// "Terminal <title>" solo; "Terminal <title>, pane N of M" in a split — so VoiceOver announces
+  /// both which terminal it is and where it sits in the group.
+  private var accessibilityLabel: String {
+    multiPane ? "Terminal \(title), pane \(paneIndex) of \(paneCount)" : "Terminal \(title)"
   }
 
   /// A small semi-transparent grip chip at the pane's top-center — drag it to move the pane (onto
@@ -308,6 +340,9 @@ private struct PaneLeafView: View {
             .onEnded { _ in onDragEnded() }
         )
         .help("Drag to move this pane")
+        .accessibilityIdentifier("pane.grip")
+        .accessibilityLabel("Move pane")
+        .accessibilityHint("Drag onto a pane edge to rearrange, or to the tab strip to pop out")
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.15), value: hovering)
     }
   }
@@ -358,6 +393,21 @@ private struct SplitDivider: View {
           (orientation == .horizontal ? NSCursor.resizeLeftRight : NSCursor.resizeUpDown).push()
         } else {
           NSCursor.pop()
+        }
+      }
+      // Adjustable so VoiceOver users can resize without a drag: ⌃⌥→/← nudge the split by 5%.
+      .accessibilityElement()
+      .accessibilityIdentifier("pane.divider")
+      .accessibilityLabel(
+        orientation == .horizontal ? "Vertical pane divider" : "Horizontal pane divider"
+      )
+      .accessibilityValue("\(Int((ratio * 100).rounded()))%")
+      .accessibilityAdjustableAction { direction in
+        let step: CGFloat = 0.05
+        switch direction {
+        case .increment: onRatio(PaneTreeLayout.clampRatio(ratio + step, total: total))
+        case .decrement: onRatio(PaneTreeLayout.clampRatio(ratio - step, total: total))
+        @unknown default: break
         }
       }
   }

@@ -8,28 +8,27 @@ import XCTest
 /// Run with `make app-uitest` on a real GUI login session — XCUITest can't drive a headless run,
 /// so these are intentionally excluded from `make app-test` (the unit gate) via a separate scheme.
 ///
-/// Determinism caveat: the app loads the developer's real `~/.config/workroom`, so workflow tests
-/// that need a project/workroom are **opportunistic** — they `XCTSkip` when none is present. Making
-/// them deterministic (and CI-able) needs a UI-testing fixture seam in the app (a launch argument
-/// that loads fake projects). See the "UI-testing fixture seam" TODO.
+/// Workflow tests that need a project/workroom launch in **UI-test fixture mode**
+/// (`-WorkroomUITestFixture 1`, see `UITestFixture`): the app loads fake projects/workrooms rooted at
+/// a temp directory instead of the developer's real `~/.config/workroom`, and auto-selects the
+/// fixture workroom — so they're deterministic and never depend on local config. The chrome smoke
+/// test deliberately launches *without* the fixture, to prove the real bootstrap path renders chrome.
 ///
-/// Still to add once the fixture seam exists: notification badge + click-to-navigate
-/// (type `printf '\e]9;…\a'` → assert sidebar/tab badge → click → navigates) and
-/// delete-workroom-clears-badges.
+/// Still to add: notification badge + click-to-navigate (type `printf '\e]9;…\a'` → assert
+/// sidebar/tab badge → click → navigates) and delete-workroom-clears-badges.
 final class WorkroomWorkflowUITests: XCTestCase {
   override func setUpWithError() throws {
     continueAfterFailure = false
   }
 
-  private func launchedApp() -> XCUIApplication {
+  /// Launch with the deterministic UI-test fixture (fake projects, auto-selected workroom). Fixture
+  /// mode also suppresses the close/quit confirmations in-app, so ⌘W closes synchronously and teardown
+  /// never blocks. Pass `fixture: false` to exercise the real bootstrap path (no fake projects).
+  private func launchedApp(fixture: Bool = true) -> XCUIApplication {
     let app = XCUIApplication()
+    if fixture { app.launchArguments += ["-WorkroomUITestFixture", "1"] }
     app.launch()
     return app
-  }
-
-  private func descendants(_ app: XCUIApplication, idPrefix: String) -> XCUIElementQuery {
-    app.descendants(matching: .any)
-      .matching(NSPredicate(format: "identifier BEGINSWITH %@", idPrefix))
   }
 
   private func assertCount(
@@ -42,10 +41,11 @@ final class WorkroomWorkflowUITests: XCTestCase {
       "element count did not reach \(expected) within \(timeout)s")
   }
 
-  /// Deterministic smoke: the app launches and the shell chrome is present. No dependency on the
-  /// developer's project config, so this always runs.
+  /// Deterministic smoke: the *real* bootstrap path (no fixture) launches and the shell chrome is
+  /// present. The Add Project control lives in the sidebar's bottom bar regardless of config, so this
+  /// has no dependency on the developer's projects.
   func testAppLaunchesWithChrome() {
-    let app = launchedApp()
+    let app = launchedApp(fixture: false)
     XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10), "app did not reach foreground")
     XCTAssertGreaterThan(app.windows.count, 0, "expected a main window")
     XCTAssertTrue(
@@ -53,31 +53,19 @@ final class WorkroomWorkflowUITests: XCTestCase {
       "the Add Project control should always be present in the sidebar")
   }
 
-  /// Opportunistic: if a project + workroom exist, selecting the workroom opens a terminal tab and
-  /// ⌘T / ⌘W add and close tabs. Skips when the environment has none.
+  /// The fixture workroom is auto-selected on launch, so a terminal tab is already open; ⌘T / ⌘W add
+  /// and close tabs. Deterministic via the fixture — no sidebar navigation, no skip.
   func testAddAndCloseTerminalTabs() throws {
     let app = launchedApp()
     XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
 
-    // Workrooms are hidden until their project is expanded; expand the first project.
-    let projects = descendants(app, idPrefix: "sidebar.project.")
-    guard projects.firstMatch.waitForExistence(timeout: 5) else {
-      throw XCTSkip(
-        "No projects configured — add a UI-testing fixture seam for deterministic runs.")
-    }
-    projects.element(boundBy: 0).click()
-
-    let workrooms = descendants(app, idPrefix: "sidebar.workroom.")
-    guard workrooms.firstMatch.waitForExistence(timeout: 3) else {
-      throw XCTSkip(
-        "No workrooms configured — add a UI-testing fixture seam for deterministic runs.")
-    }
-    workrooms.element(boundBy: 0).click()
-
-    let tabs = descendants(app, idPrefix: "terminal.tab.")
+    // Count title StaticTexts only — a chip's title and its close button both carry the
+    // `terminal.tab.<title>` identifier, so matching `.any` would double-count each tab.
+    let tabs = app.staticTexts.matching(
+      NSPredicate(format: "identifier BEGINSWITH %@", "terminal.tab."))
     XCTAssertTrue(
-      tabs.firstMatch.waitForExistence(timeout: 5),
-      "selecting a workroom should open a terminal tab")
+      tabs.firstMatch.waitForExistence(timeout: 10),
+      "the fixture workroom should open a terminal tab on launch")
     let initial = tabs.count
 
     app.typeKey("t", modifierFlags: .command)  // ⌘T → New Terminal
