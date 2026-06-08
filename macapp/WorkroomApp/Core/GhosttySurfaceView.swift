@@ -31,6 +31,11 @@ final class GhosttySurfaceView: NSView {
   /// The shell returned to its prompt (OSC 133 D / `GHOSTTY_ACTION_COMMAND_FINISHED`) — the tab
   /// strip uses this to drop the finished command's title back to the default (issue #2).
   var onCommandFinished: (() -> Void)?
+  /// OSC 9;4 progress (`GHOSTTY_ACTION_PROGRESS_REPORT`): `true` while the running program reports it's
+  /// working, `false` when idle/done (the REMOVE state). The host drives the sidebar/underline spinner
+  /// solely from this (issue #28 follow-up). The adapter calls `handleProgressReport(_:)`, which forwards
+  /// here and arms a safety timer; this closure just relays the value to the host.
+  var onProgressReport: ((Bool) -> Void)?
   /// This pane became first responder (mouse click or programmatic focus) — the host makes it the
   /// selection (issue #3, splits). `becomeFirstResponder` is the single chokepoint for every focus
   /// path, so one hook covers them all. Value-type captures only.
@@ -76,6 +81,12 @@ final class GhosttySurfaceView: NSView {
   private let scrollbarThumb = ScrollbarThumbView()
   private var scrollbarMetrics: (total: UInt64, offset: UInt64, len: UInt64)?
   private var scrollbarFadeWork: DispatchWorkItem?
+
+  // OSC 9;4 progress safety timer (issue #28 follow-up): a program that reports it's working but never
+  // sends REMOVE — or a long-idle TUI — would otherwise pin the busy indicator on forever. Mirrors
+  // Ghostty's 15s auto-clear.
+  private var progressTimeoutTimer: Timer?
+  private static let progressTimeout: TimeInterval = 15
 
   init(workingDirectory: String) {
     self.workingDirectory = workingDirectory
@@ -171,6 +182,8 @@ final class GhosttySurfaceView: NSView {
     onCmdClickFile = nil
     resolveCmdHoverFile = nil
     onFocused = nil
+    progressTimeoutTimer?.invalidate()
+    progressTimeoutTimer = nil
     if let occlusionObserver {
       NotificationCenter.default.removeObserver(occlusionObserver)
       self.occlusionObserver = nil
@@ -180,6 +193,7 @@ final class GhosttySurfaceView: NSView {
   }
 
   deinit {
+    progressTimeoutTimer?.invalidate()
     if let occlusionObserver { NotificationCenter.default.removeObserver(occlusionObserver) }
     if let surface { ghostty_surface_free(surface) }
     freeSurfaceCStrings()
@@ -408,6 +422,25 @@ final class GhosttySurfaceView: NSView {
 
   /// Called by `GhosttyRuntimeAdapter` on `GHOSTTY_ACTION_PWD`.
   func handlePwd(_ pwd: String) { lastKnownCwd = pwd }
+
+  // MARK: Progress (OSC 9;4)
+
+  /// Called by `GhosttyRuntimeAdapter` on `GHOSTTY_ACTION_PROGRESS_REPORT`. Forwards the busy state to
+  /// the host and arms a safety timer: a fresh "working" report (re)starts the countdown; an idle report
+  /// cancels it. If the countdown elapses with no further report we synthesise an idle state, so a
+  /// program that sets progress but never clears it can't pin the spinner on (as Ghostty does, 15s).
+  func handleProgressReport(_ active: Bool) {
+    progressTimeoutTimer?.invalidate()
+    progressTimeoutTimer = nil
+    onProgressReport?(active)
+    guard active else { return }
+    progressTimeoutTimer = Timer.scheduledTimer(
+      withTimeInterval: Self.progressTimeout, repeats: false
+    ) { [weak self] _ in
+      self?.progressTimeoutTimer = nil
+      self?.onProgressReport?(false)
+    }
+  }
 
   // MARK: Selection
 

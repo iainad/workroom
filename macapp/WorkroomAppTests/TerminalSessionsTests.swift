@@ -89,51 +89,58 @@ final class TerminalSessionsTests: XCTestCase {
 
   // MARK: Running state (issue #28)
 
-  func testIsRunningTracksCommandLifecycle() {
-    let s = makeSessions()
-    s.addTab(for: target)
-    let tab = s.tabs(for: target).first!
-
-    // A fresh tab sits at the prompt — nothing running.
-    XCTAssertFalse(s.tabs(for: target).first!.isRunning)
-    XCTAssertFalse(s.isRunning(forTargetID: target.id))
-
-    // A command's title (preexec) marks it running…
-    tab.view.onTitleChange?("npm run dev")
-    XCTAssertTrue(s.tabs(for: target).first!.isRunning)
-    XCTAssertTrue(s.isRunning(forTargetID: target.id))
-
-    // …and command_finished returns it to idle.
-    tab.view.onCommandFinished?()
-    XCTAssertFalse(s.tabs(for: target).first!.isRunning)
-    XCTAssertFalse(s.isRunning(forTargetID: target.id))
-  }
-
-  func testDirectoryTitlesDoNotCountAsRunning() {
+  /// The spinner is driven solely by OSC 9;4 progress, never the command title (matching Ghostty/Muxy).
+  /// A long-lived foreground program (claude, codex) keeps a command title set the whole session, so
+  /// tying "busy" to the title would spin forever — the regression this fixes.
+  func testIsRunningDrivenByProgressNotTitle() {
     let s = makeSessions()
     s.addTab(for: target)
     let view = s.tabs(for: target).first!.view
-    view.handlePwd("/var/data/proj")  // cwd outside $HOME, so its `~` form is itself
 
-    // The directory title the shell sets at the prompt isn't a command — still idle.
-    view.onTitleChange?("/var/data/proj")
+    // A fresh tab sits at the prompt — nothing running.
+    XCTAssertFalse(s.isRunning(forTargetID: target.id))
+
+    // Launching claude sets a command title — but the title alone must NOT mark it running.
+    view.onTitleChange?("claude")
+    XCTAssertFalse(s.isRunning(forTargetID: target.id))
+    XCTAssertEqual(s.tabs(for: target).first?.title, "claude")  // title still names the tab
+
+    // Only an OSC 9;4 progress report drives the spinner: working → running…
+    view.handleProgressReport(true)
+    XCTAssertTrue(s.isRunning(forTargetID: target.id))
+    // …and the busy state doesn't change the title text.
+    XCTAssertEqual(s.tabs(for: target).first?.title, "claude")
+
+    // …and idle (REMOVE) → not running, even though "claude" is still the title.
+    view.handleProgressReport(false)
     XCTAssertFalse(s.isRunning(forTargetID: target.id))
   }
 
-  /// Regression for the stuck sidebar spinner: the shipped zsh integration abbreviates a deep cwd to
-  /// "…/dir/dir/dir" (`%(4~|…/%3~|%~)`). That truncated prompt title must be read as a directory, not a
-  /// phantom running command — otherwise nothing ever clears it (no `command_finished`) and the spinner
-  /// never stops. (Workrooms live in nested paths, so this fired "sometimes" — whenever the dir was deep.)
-  func testTruncatedDirectoryTitleDoesNotCountAsRunning() {
+  func testCommandFinishedClearsProgress() {
+    let s = makeSessions()
+    s.addTab(for: target)
+    let view = s.tabs(for: target).first!.view
+
+    view.handleProgressReport(true)
+    XCTAssertTrue(s.isRunning(forTargetID: target.id))
+
+    // The shell returning to the prompt stops the indicator even if the program never sent REMOVE.
+    view.onCommandFinished?()
+    XCTAssertFalse(s.isRunning(forTargetID: target.id))
+  }
+
+  /// The shipped zsh integration abbreviates a deep cwd to "…/dir/dir/dir" (`%(4~|…/%3~|%~)`). That
+  /// truncated prompt title must still be recognised as a directory so it names the tab "Terminal N"
+  /// rather than replacing it (issue #2 / the deep-cwd fix) — and it must never mark the tab busy.
+  func testTruncatedDirectoryTitleIsTreatedAsDirectory() {
     let s = makeSessions()
     s.addTab(for: target)
     let view = s.tabs(for: target).first!.view
     view.handlePwd("/var/data/dev/workroom/macapp/WorkroomApp")  // ≥4 deep → zsh truncates
 
     view.onTitleChange?("…/workroom/macapp/WorkroomApp")
-    XCTAssertFalse(s.isRunning(forTargetID: target.id))
-    // …and it's an idle title, so the tab keeps its default name rather than showing the path.
-    XCTAssertEqual(s.tabs(for: target).first?.title, "Terminal 1")
+    XCTAssertEqual(s.tabs(for: target).first?.title, "Terminal 1")  // not shown as the tab name
+    XCTAssertFalse(s.isRunning(forTargetID: target.id))  // and never marks the tab busy
   }
 
   func testIsRunningAggregatesAcrossTabs() {
@@ -141,12 +148,12 @@ final class TerminalSessionsTests: XCTestCase {
     s.addTab(for: target)
     s.addTab(for: target)
 
-    // A command in the second tab makes the whole target "running".
-    s.tabs(for: target)[1].view.onTitleChange?("make build")
+    // Progress reported in the second tab makes the whole target "running".
+    s.tabs(for: target)[1].view.handleProgressReport(true)
     XCTAssertTrue(s.isRunning(forTargetID: target.id))
 
-    // It clears once that tab finishes (the first never ran).
-    s.tabs(for: target)[1].view.onCommandFinished?()
+    // It clears once that tab goes idle (the first never reported progress).
+    s.tabs(for: target)[1].view.handleProgressReport(false)
     XCTAssertFalse(s.isRunning(forTargetID: target.id))
   }
 

@@ -15,12 +15,21 @@ struct TerminalTab: Identifiable {
   /// busy, the working directory when idle. Nil until the first report (issue #2).
   var liveTitle: String?
 
+  /// OSC 9;4 progress — the *only* signal that drives `isRunning`, matching how Ghostty and Muxy work
+  /// (neither ties "busy" to the title). `true` while the running program reports it's working,
+  /// `false`/`nil` when it's idle, done, or never reported any. Reset at `command_finished`; the surface
+  /// also clears it via a 15s safety timer, so a program that sets progress but never sends REMOVE (or a
+  /// long-idle TUI) can't pin the spinner on (issue #28 follow-up).
+  var progressActive: Bool?
+
   /// What the tab strip displays.
   var title: String { liveTitle ?? defaultTitle }
 
-  /// Whether a command is currently running in this terminal (issue #28) — a live command title is set
-  /// while busy and cleared at the prompt. Drives the chip underline and the sidebar spinner.
-  var isRunning: Bool { liveTitle != nil }
+  /// Whether a command is actively *working* in this terminal (issue #28) — drives the chip underline
+  /// and the sidebar spinner. Driven solely by OSC 9;4 progress, like Ghostty/Muxy: a long-lived
+  /// foreground program (claude, codex, a dev server) idling at its own prompt reports no progress, so
+  /// it no longer spins forever. The command title (`liveTitle`) names the tab only — never "busy".
+  var isRunning: Bool { progressActive == true }
 }
 
 /// Owns the live terminals for each target (a workroom or a project root) for the app session, so
@@ -389,9 +398,24 @@ final class TerminalSessions: ObservableObject {
     tabsByTarget[target]?[tabID] = tab
   }
 
-  private func clearLiveTitle(forTab tabID: TerminalTab.ID, target: TerminalTarget.ID) {
-    guard var tab = tabsByTarget[target]?[tabID], tab.liveTitle != nil else { return }
+  /// The shell returned to its prompt (OSC 133 D): drop the finished command's title back to the default
+  /// (issue #2) and clear any OSC 9;4 progress, so the indicator stops the moment the command exits.
+  private func handleCommandFinished(forTab tabID: TerminalTab.ID, target: TerminalTarget.ID) {
+    guard var tab = tabsByTarget[target]?[tabID], tab.liveTitle != nil || tab.progressActive != nil
+    else { return }
     tab.liveTitle = nil
+    tab.progressActive = nil
+    tabsByTarget[target]?[tabID] = tab
+  }
+
+  /// Apply an OSC 9;4 progress report (issue #28 follow-up). `active` is false only for the REMOVE state
+  /// (the program declared itself idle/done) and true for any live progress (SET / INDETERMINATE / PAUSE
+  /// / ERROR). This is the sole driver of `isRunning` — the spinner follows the program's own signal.
+  private func updateProgress(
+    _ active: Bool, forTab tabID: TerminalTab.ID, target: TerminalTarget.ID
+  ) {
+    guard var tab = tabsByTarget[target]?[tabID], tab.progressActive != active else { return }
+    tab.progressActive = active
     tabsByTarget[target]?[tabID] = tab
   }
 
@@ -484,7 +508,10 @@ final class TerminalSessions: ObservableObject {
       self?.updateTitle(title, forTab: tabID, target: targetID)
     }
     view.onCommandFinished = { [weak self] in
-      self?.clearLiveTitle(forTab: tabID, target: targetID)
+      self?.handleCommandFinished(forTab: tabID, target: targetID)
+    }
+    view.onProgressReport = { [weak self] active in
+      self?.updateProgress(active, forTab: tabID, target: targetID)
     }
     // A pane became first responder (click / programmatic focus): make it the selection (issue #3).
     view.onFocused = { [weak self] in

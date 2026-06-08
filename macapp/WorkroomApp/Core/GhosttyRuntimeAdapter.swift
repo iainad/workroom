@@ -47,6 +47,16 @@ final class GhosttyRuntimeAdapter {
       view.onCommandFinished?()
       return true
 
+    case GHOSTTY_ACTION_PROGRESS_REPORT:
+      // OSC 9;4 — a running program's own busy/idle signal (claude, dev servers, build tools emit it).
+      // REMOVE means "idle/done"; every other state (SET/INDETERMINATE/PAUSE/ERROR) means "working".
+      // The tab strip trusts this over the command title so a long-lived foreground program stops
+      // spinning the sidebar the moment it's idle (issue #28 follow-up).
+      guard let view = surfaceView(from: target) else { return false }
+      let working = action.action.progress_report.state != GHOSTTY_PROGRESS_STATE_REMOVE
+      view.handleProgressReport(working)
+      return true
+
     case GHOSTTY_ACTION_DESKTOP_NOTIFICATION:
       guard let view = surfaceView(from: target) else { return false }
       let note = action.action.desktop_notification
