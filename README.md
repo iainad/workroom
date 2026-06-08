@@ -9,6 +9,12 @@ Spin up a workroom, get a terminal, get notified.
     alt="The Workroom macOS app: a sidebar tree of projects and their workrooms with current branches and unread badges, a split terminal running a test suite and a dev server, and a notifications inspector.">
 </p>
 
+<p align="center">
+  <a href="https://github.com/joelmoss/workroom/releases"><strong>⬇&nbsp;&nbsp;Download for macOS (beta)</strong></a>
+  &nbsp;·&nbsp;
+  <a href="#install">Install</a>
+</p>
+
 **Workroom is a native [macOS app](#the-macos-app) for running many copies of a project at once.**
 Every project gets a sidebar; every workroom inside it gets its own persistent terminal. Spin a new
 workroom up in one click, jump between their terminals freely without losing a running build or dev
@@ -39,7 +45,8 @@ into it, and run whatever you like — Workroom keeps each one alive and out of 
 ### Install
 
 Download the latest `workroom-macos-app_<version>.dmg` from the
-[Releases page](https://github.com/joelmoss/workroom/releases/latest), open it, and drag
+[Releases page](https://github.com/joelmoss/workroom/releases) — the newest build is at the top
+(the app currently ships as a `v2.0.0-beta` prerelease) — open it, and drag
 **Workroom** into Applications. The app is Developer ID-signed and notarized, so it launches with
 no Gatekeeper warning — and it **updates itself** in the background (or on demand via
 *Workroom ▸ Check for Updates…*).
