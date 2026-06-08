@@ -89,6 +89,8 @@ struct RootView: View {
     // setup script blocks the selected workroom's terminal, report false so ⌘T can't open
     // a (hidden) terminal behind the setup pane; the toolbar's Open/Reveal still work.
     .focusedSceneValue(\.workroomSelected, terminalInteractionAvailable)
+    // Drive the "Go to Next Notification" menu command's enabled state.
+    .focusedSceneValue(\.hasNotifications, !notifications.items.isEmpty)
   }
 
   /// Pushes the chosen appearance onto the running app. nil (System) tells AppKit to

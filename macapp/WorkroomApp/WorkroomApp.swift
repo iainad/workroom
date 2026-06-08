@@ -190,6 +190,12 @@ struct HasTerminalKey: FocusedValueKey {
   typealias Value = Bool
 }
 
+/// Whether there are any pending notifications — published by RootView (which observes the
+/// store), so "Go to Next Notification" can disable when the history is empty.
+struct HasNotificationsKey: FocusedValueKey {
+  typealias Value = Bool
+}
+
 extension FocusedValues {
   var workroomSelected: Bool? {
     get { self[WorkroomSelectedKey.self] }
@@ -199,6 +205,10 @@ extension FocusedValues {
     get { self[HasTerminalKey.self] }
     set { self[HasTerminalKey.self] = newValue }
   }
+  var hasNotifications: Bool? {
+    get { self[HasNotificationsKey.self] }
+    set { self[HasNotificationsKey.self] = newValue }
+  }
 }
 
 /// Menu-bar commands + keyboard shortcuts. They act on the shared store so they work
@@ -207,6 +217,7 @@ struct WorkroomCommands: Commands {
   @ObservedObject var updater: Updater
   @FocusedValue(\.workroomSelected) private var workroomSelected
   @FocusedValue(\.hasTerminal) private var hasTerminal
+  @FocusedValue(\.hasNotifications) private var hasNotifications
   // Shared with RootView's inspector + toolbar toggle (same key) so all three stay in sync.
   @Default(.showNotifications) private var showNotifications
   // Same key as the Settings checkbox so the two stay in sync; GhosttySurfaceView reads it
@@ -242,6 +253,14 @@ struct WorkroomCommands: Commands {
       // View menu: toggle the notifications inspector (checkmark reflects open/closed).
       Toggle("Show Notifications", isOn: $showNotifications)
         .keyboardShortcut("n", modifiers: [.command, .option])
+
+      // ⇧⌘N: jump to the oldest pending notification (bottom of the panel). Opening dismisses it,
+      // so repeated presses walk the backlog oldest→newest. Disabled when there are none.
+      Button("Go to Next Notification") {
+        AppStore.shared.openOldestNotification()
+      }
+      .keyboardShortcut("n", modifiers: [.command, .shift])
+      .disabled(hasNotifications != true)
     }
 
     CommandGroup(after: .pasteboard) {

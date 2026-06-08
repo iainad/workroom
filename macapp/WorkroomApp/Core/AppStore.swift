@@ -553,6 +553,14 @@ final class AppStore: ObservableObject {
     }
   }
 
+  /// Jump to the oldest pending notification's terminal and dismiss it (reusing the banner/panel
+  /// `openTerminal` path). Since opening dismisses, repeated calls walk the backlog oldest→newest —
+  /// the bottom of the inspector panel upward. No-op when there are none.
+  func openOldestNotification() {
+    guard let oldest = notifications.items.first else { return }
+    openTerminal(targetID: oldest.targetID, tabID: oldest.tabID, notifID: oldest.id)
+  }
+
   /// On app refocus, dismiss the notifications for the now-visible terminal (the selected target's
   /// active tab) — you're looking at it. Called from `RootView`'s `didBecomeActive` hook.
   func dismissFocusedTerminalNotifications() {
