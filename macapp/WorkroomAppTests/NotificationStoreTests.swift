@@ -1,3 +1,4 @@
+import AppKit
 import XCTest
 
 @testable import Workroom
@@ -96,5 +97,48 @@ final class NotificationStoreTests: XCTestCase {
     }
     XCTAssertEqual(s.items.count, 3)
     XCTAssertEqual(s.items.first?.title, "2")  // "0" and "1" evicted
+  }
+
+  // onTotalChange — the Dock-badge seam: fires with the new aggregate total on every history change
+  // (issue #32), so the badge tracks the count from the model rather than a (suspendable) view.
+
+  func testOnTotalChangeFiresWithNewTotalOnRecordAndDismiss() {
+    let s = makeStore()
+    var totals: [Int] = []
+    s.onTotalChange = { totals.append($0) }
+    let tab = UUID()
+    let one = s.record(targetID: target, tabID: tab, activity: osc("one"), focused: false)
+    s.record(targetID: target, tabID: tab, activity: osc("two"), focused: false)
+    s.dismiss(notifID: one!.id)
+    s.clear()
+    XCTAssertEqual(totals, [1, 2, 1, 0])  // append, append, dismiss-one, clear-to-empty
+  }
+
+  func testOnTotalChangeDoesNotFireForADroppedFocusedEvent() {
+    let s = makeStore()
+    var fired = false
+    s.onTotalChange = { _ in fired = true }
+    // Focused ⇒ not recorded ⇒ items unchanged ⇒ no badge update.
+    s.record(targetID: target, tabID: UUID(), activity: osc("x"), focused: true)
+    XCTAssertFalse(fired)
+  }
+
+  // DockBadge.label — nil clears the badge; the count caps at "99+" to match the in-app pill.
+
+  func testDockBadgeLabel() {
+    XCTAssertNil(DockBadge.label(for: 0))
+    XCTAssertNil(DockBadge.label(for: -1))
+    XCTAssertEqual(DockBadge.label(for: 1), "1")
+    XCTAssertEqual(DockBadge.label(for: 99), "99")
+    XCTAssertEqual(DockBadge.label(for: 100), "99+")
+  }
+
+  // DockBadge.apply — a non-zero count installs a custom tile contentView (we draw the badge there
+  // because `badgeLabel` is suppressed in this app — issue #32); zero restores the plain icon.
+  func testDockBadgeApplySetsAndClearsContentView() {
+    DockBadge.apply(3)
+    XCTAssertNotNil(NSApp.dockTile.contentView)
+    DockBadge.apply(0)
+    XCTAssertNil(NSApp.dockTile.contentView)
   }
 }

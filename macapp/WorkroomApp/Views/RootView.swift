@@ -70,13 +70,8 @@ struct RootView: View {
       NotificationsPanel(isOpen: showNotifications)
         .inspectorColumnWidth(min: 260, ideal: 300, max: 420)
     }
-    .onAppear {
-      applyAppearance()
-      updateDockBadge(notifications.total)
-    }
+    .onAppear { applyAppearance() }
     .onChange(of: theme) { _ in applyAppearance() }
-    // Mirror the aggregate notification count onto the Dock icon badge.
-    .onChange(of: notifications.total) { updateDockBadge($0) }
     // Keep the root branch labels reasonably current: refresh when the app regains
     // focus (throttled, so rapid alt-tabbing doesn't fork a git/jj process per project).
     // Regaining focus also dismisses the now-visible terminal's notifications (you're looking at it).
@@ -100,11 +95,6 @@ struct RootView: View {
   private func applyAppearance() {
     NSApp.appearance = theme.nsAppearance
     store.terminals.applyThemeToAll()
-  }
-
-  /// Show the unread count on the Dock icon, clearing the badge at zero (HIG 7.4).
-  private func updateDockBadge(_ count: Int) {
-    NSApp.dockTile.badgeLabel = count > 0 ? "\(count)" : nil
   }
 
   @ViewBuilder

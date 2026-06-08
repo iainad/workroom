@@ -49,7 +49,17 @@ struct WorkroomNotification: Identifiable, Equatable {
 /// ```
 @MainActor
 final class NotificationCenterStore: ObservableObject {
-  @Published private(set) var items: [WorkroomNotification] = []
+  @Published private(set) var items: [WorkroomNotification] = [] {
+    didSet { onTotalChange?(total) }
+  }
+
+  /// Fired with the new aggregate `total` whenever the history changes, so a coordinator can mirror
+  /// the count onto an AppKit surface (the Dock icon badge) WITHOUT coupling this store to AppKit —
+  /// the same seam as `TerminalSessions.activityHandler`. Driving the Dock badge from here (the
+  /// model), not a SwiftUI view, is deliberate: SwiftUI suspends a hidden/occluded window's body
+  /// updates — exactly when a backgrounded terminal posts a notification and the badge must change —
+  /// so a view-driven `.onChange` misses it until the app is next foregrounded (issue #32).
+  var onTotalChange: ((Int) -> Void)?
 
   /// Bounds memory and keeps the panel list snappy under a chatty emitter (decision 4.1).
   private let cap: Int

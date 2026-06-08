@@ -89,6 +89,13 @@ final class AppStore: ObservableObject {
     terminals.activityHandler = { [weak self] targetID, tabID, activity in
       self?.handleActivity(targetID: targetID, tabID: tabID, activity: activity)
     }
+    // Mirror the aggregate unread count onto the Dock icon badge (issue #32). Owned here, not in a
+    // view: see `NotificationCenterStore.onTotalChange` for why a view-driven badge misses
+    // background notifications. `DockBadge` draws into the tile's `contentView` (not `badgeLabel`,
+    // which a linked framework suppresses here). Captures no `self`, so there's no retain cycle.
+    notifications.onTotalChange = { count in
+      DockBadge.apply(count)
+    }
   }
 
   var selectedProject: Project? {
