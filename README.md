@@ -4,6 +4,11 @@
 
 Spin up a workroom, get a terminal, get notified.
 
+<p align="center">
+  <img src="docs/workroom-app.png" width="900"
+    alt="The Workroom macOS app: a sidebar tree of projects and their workrooms with current branches and unread badges, a split terminal running a test suite and a dev server, and a notifications inspector.">
+</p>
+
 **Workroom is a native [macOS app](#the-macos-app) for running many copies of a project at once.**
 Every project gets a sidebar; every workroom inside it gets its own persistent terminal. Spin a new
 workroom up in one click, jump between their terminals freely without losing a running build or dev
