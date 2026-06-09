@@ -1,66 +1,17 @@
 # TODOs
 
-## Live branch-label refresh (macapp)
-
-**What:** Update each sidebar root row's branch/bookmark the moment it changes, rather
-than on the throttled app-reactivate refresh.
-
-**Why:** Today the root label resolves on load and refreshes (throttled) when the app
-regains focus. If you switch branches in the root terminal and stay in the app, the label
-is stale until you alt-tab away and back.
-
-**How to start:** Per-project watcher — FSEvents on `<repo>/.git/HEAD` (git) and a `jj op
-log` / `.jj/` watch (jj), debounced, re-running `BranchResolver` for that one project and
-writing `AppStore.rootRefs[project.id]`. Tie the watchers' lifecycle to the project list.
-
-**Depends on:** the `BranchResolver` + `rootRefs` machinery already in place
-(`macapp/WorkroomApp/Core/BranchResolver.swift`, `Core/AppStore.swift`).
-
-**Priority:** P3 (nicety — the throttled focus refresh covers the common case).
-
-## Auto-emit OSC notifications on command completion (macapp)
-
-**What:** An opt-in shell hook (zsh `precmd`/`preexec`, or OSC 133 prompt markers) that emits
-`printf '\e]9;<cmd> finished\a'` after a command that ran longer than N seconds, so notifications
-fire automatically without the user wrapping commands.
-
-**Why:** Notification detection is explicit-only (issue #10 review, decision 1.1b): we notify on
-OSC 9/99/777 + bell, not raw output. That's precise but silent for a bare `make test` that emits
-nothing. A shell hook closes that gap so the common "my build finished" case just works.
-
-**How to start:** Source a hook into the login shell launched by
-`TerminalSessions.makeTerminal` (`-l`), or document it for the user to add. Decide OSC 133 vs a
-`precmd` that emits OSC 9. Keep it opt-in (injecting into the user's shell is invasive).
-
-**Depends on:** the notifications feature (issue #10) landing — the OSC 9 handler must exist to
-receive it (`macapp/WorkroomApp/Core/ActivityTerminalView.swift`).
-
-**Priority:** P3 (amplifies the shipped feature; the feature is useful without it for tools that
-already emit OSC/bell).
-
-## Notification preferences (macapp)
-
-**What:** Per-workroom (or per-terminal) mute, a notification-sound toggle, and respecting macOS
-Focus / Do-Not-Disturb.
-
-**Why:** Once notifications exist, a noisy cooperating tool (a watcher firing OSC on every rebuild)
-will need silencing without losing notifications from other terminals. Focus/DND respect is largely
-automatic via `UNUserNotificationCenter`; per-workroom mute is app logic.
-
-**How to start:** A mute set keyed on `TerminalTarget.ID`, checked in
-`NotificationCenterStore.record(...)` before creating an item / posting. Persist with `@AppStorage`
-(consistent with theme / copy-on-select). A sound toggle gates `content.sound` in `SystemNotifier`.
-
-**Depends on:** the notifications feature (issue #10) landing
-(`macapp/WorkroomApp/Core/NotificationCenterStore.swift`, `Core/SystemNotifier.swift`).
-
-**Priority:** P3 (the feature is usable without it; add when a real terminal proves too chatty).
+> Status note (2026-06-09): the **splits** feature (A5) and the **UI-test fixture seam** have
+> shipped, and the **terminal notifications** feature (#10) has landed — so its dependent items
+> below (auto-emit OSC, notification preferences) are now unblocked. Items are ordered
+> roughly by priority: the before-GA work (CMT-2, CMT-3) first, then the P3 niceties.
 
 ## Own the GhosttyKit xcframework (macapp) — CMT-2
 
 **What:** Stop depending on the third-party `libghostty-spm` (Lakr233) package as the source of
 truth. Build our own universal `GhosttyKit.xcframework` (`macos-arm64_x86_64`) + version-matched
 resources from a ghostty ref *we* pin, and point `project.yml` at it.
+
+**Current state:** `macapp/project.yml` still pins `libghostty-spm` at `exactVersion: 1.2.3`.
 
 **When (trigger-based, lean sooner than "vague pre-GA"):** Not needed for the beta — `1.2.3` works
 with our fixes (see the keyboard-input + terminal-input commits). Do it when the **first concrete
@@ -114,37 +65,21 @@ trigger** hits, and treat it as the **next infra task after the beta stabilizes*
 third-party pin), but it's the next infra task once the beta is stable — and the observed packager
 lag (1.2.3 vs ghostty 1.3.1) means leaning sooner beats waiting on the packager.
 
-## Splits feature (macapp) — A5
+## Terminal *content* accessibility (macapp) — CMT-3
 
-**What:** The actual split UI: keybindings to split a pane horizontally/vertically, focus
-navigation between panes, drag-to-resize the divider, and close-pane.
+**What:** VoiceOver support for the terminal's *rendered text* on `GhosttySurfaceView` — accessible
+value (screen text), selected text, and change notifications — so the terminal content is navigable
+with assistive tech.
 
-**Why:** The migration built the model split-ready (A5) — `TerminalTab` already holds a `PaneNode`
-tree (leaf = one `GhosttySurfaceView`; node = split + orientation), and the host renders it (today
-always a single leaf, so behaviour == pre-splits). Only the interaction layer is missing.
-
-**How to start:** Extend `PaneNode` construction in `TerminalSessions` (split the focused leaf into
-a node); render the node recursively with a divider in `Views/TerminalContainerView.swift`; per-leaf
-occlusion is already wired (A4). Add commands/keybindings in `WorkroomApp.swift`. Crib Muxy's
-`SplitNode` interaction as inspiration only (D1 — no Muxy extras).
-
-**Depends on:** the pane-tree model already in place
-(`macapp/WorkroomApp/Models/TerminalPane.swift`, `Core/TerminalSessions.swift`,
-`Views/TerminalContainerView.swift`).
-
-**Priority:** P2 (the user wants splits "in the very near future"; the groundwork is done).
-
-## Terminal accessibility (macapp) — CMT-3
-
-**What:** VoiceOver support on `GhosttySurfaceView` — accessible value (screen text), selected
-text, and focus reporting, so the terminal is navigable with assistive tech.
-
-**Why:** SwiftTerm (an NSView text control) provided some a11y for free; the libghostty surface is
-Metal-rendered, so its content is pixels — invisible to the accessibility system. Today the view
-only sets `role=.textArea` + a label ("Terminal — <dir>"); it exposes **no value and no selection**,
-so VoiceOver reads nothing. Accepted regression for the beta (CMT-3). Doubles as the **enabler for
-content-level UI tests**: once terminal text is in the a11y tree, XCUITest can assert on rendered
-output (backspace deleted, TUI drew, scrollback) — see `macapp/QA-libghostty.md` (Bucket 2).
+**Done so far:** the **UI-tree** a11y has landed (commit `f3859f9`) — `PaneTreeView` exposes each
+leaf as `terminal.pane` with a label ("Terminal <title>, pane N of M"), a focused/selected trait, and
+an adjustable split divider (`pane.grip`). What's still missing is the *content* layer: the
+libghostty surface is Metal-rendered, so its text is pixels — invisible to the accessibility system.
+Today the surface view sets `role=.textArea` + a label only; it exposes **no value and no selection**,
+so VoiceOver reads nothing inside the terminal. Accepted regression for the beta (CMT-3). This is also
+the **enabler for content-level UI tests**: once terminal text is in the a11y tree, XCUITest can
+assert on rendered output (backspace deleted, TUI drew, scrollback) on top of the now-landed fixture
+seam — see `macapp/QA-libghostty.md` (Bucket 2).
 
 **When:** **sequence with the xcframework upgrade** (CMT-2), not now. Feasible on 1.2.3 today (read
 APIs exist), but ghostty upstream has merged a11y plumbing we'd want to ride — e.g.
@@ -173,6 +108,70 @@ best done after CMT-2 to use ghostty's `selection_changed` hook.
 
 **Priority:** P2 (accessibility regression — address before GA, not blocking the beta).
 
+## Live branch-label refresh (macapp)
+
+**What:** Update each sidebar root row's branch/bookmark the moment it changes, rather
+than on the throttled app-reactivate refresh.
+
+**Why:** Today the root label resolves on load and refreshes (throttled, ~3s min interval) when the
+app regains focus. If you switch branches in the root terminal and stay in the app, the label is
+stale until you alt-tab away and back.
+
+**How to start:** Per-project watcher — FSEvents on `<repo>/.git/HEAD` (git) and a `jj op
+log` / `.jj/` watch (jj), debounced, re-running `BranchResolver` for that one project and
+writing `AppStore.rootRefs[project.id]`. Tie the watchers' lifecycle to the project list.
+
+**Depends on:** the `BranchResolver` + `rootRefs` machinery already in place
+(`macapp/WorkroomApp/Core/BranchResolver.swift`, `Core/AppStore.swift`) — there's no file watcher
+yet; resolution is only triggered by the throttled focus refresh.
+
+**Priority:** P3 (nicety — the throttled focus refresh covers the common case).
+
+## Auto-emit OSC notifications on command completion (macapp)
+
+**What:** An opt-in shell hook (zsh `precmd`/`preexec`, or OSC 133 prompt markers) that emits
+`printf '\e]9;<cmd> finished\a'` after a command that ran longer than N seconds, so notifications
+fire automatically without the user wrapping commands.
+
+**Why:** Notification detection is explicit-only (issue #10 review, decision 1.1b): we notify on
+OSC 9/99/777 + bell, not raw output. That's precise but silent for a bare `make test` that emits
+nothing. A shell hook closes that gap so the common "my build finished" case just works.
+
+**How to start:** Source a hook into the login shell launched by
+`TerminalSessions.makeTerminal` (`-l`), or document it for the user to add. Decide OSC 133 vs a
+`precmd` that emits OSC 9. Keep it opt-in (injecting into the user's shell is invasive). Note the
+OSC 133 *command-finished* marker is already parsed app-side
+(`GhosttyRuntimeAdapter` handles `GHOSTTY_ACTION_COMMAND_FINISHED`, used today to clear the
+running-command title) — so this task is about *emitting* OSC 9 on completion, not parsing it.
+
+**Depends on:** the notifications feature (#10) — **now landed**; the OSC 9 desktop-notification
+handler exists to receive it (`GhosttyRuntimeAdapter` `GHOSTTY_ACTION_DESKTOP_NOTIFICATION` →
+`AppStore.handleActivity`).
+
+**Priority:** P3 (amplifies the shipped feature; the feature is useful without it for tools that
+already emit OSC/bell).
+
+## Notification preferences (macapp)
+
+**What:** Per-workroom (or per-terminal) mute, a notification-sound toggle, and respecting macOS
+Focus / Do-Not-Disturb.
+
+**Why:** Now that notifications exist, a noisy cooperating tool (a watcher firing OSC on every
+rebuild) will need silencing without losing notifications from other terminals. Focus/DND respect is
+largely automatic via `UNUserNotificationCenter` (the system honors Focus at delivery time);
+per-workroom mute is app logic.
+
+**How to start:** A mute set keyed on `TerminalTarget.ID`, checked in
+`NotificationCenterStore.record(...)` before creating an item / posting. Persist with a
+`Defaults.Keys` entry in `Core/DefaultsKeys.swift` (the app uses `sindresorhus/Defaults` now —
+consistent with `theme` / `copyOnSelect`, not `@AppStorage`). A sound toggle gates `content.sound`
+in `SystemNotifier.post()` (today hardcoded to `.default`).
+
+**Depends on:** the notifications feature (#10) — **now landed**
+(`macapp/WorkroomApp/Core/NotificationCenterStore.swift`, `Core/SystemNotifier.swift`).
+
+**Priority:** P3 (the feature is usable without it; add when a real terminal proves too chatty).
+
 ## Memory / live-surface diagnostics (macapp)
 
 **What:** Lightweight instrumentation of live `ghostty_surface_t` count and process memory, to
@@ -184,7 +183,8 @@ Workroom's tab counts is unverified. Muxy ships a 458-line `MemoryDiagnostics` f
 
 **How to start:** A periodic sampler logging `tabsByTarget` leaf count + `mach_task_basic_info`
 resident size via `os.Logger`; optionally a debug overlay. Keep it far lighter than Muxy's — a
-counter + a memory read, not crash-crumb recovery (D1).
+counter + a memory read, not crash-crumb recovery (D1). (None of this exists yet — no
+`mach_task_basic_info` read, no surface-count logging.)
 
 **Depends on:** `TerminalSessions` (surface inventory), `GhosttyApp` (`os.Logger` already set up).
 
@@ -194,14 +194,15 @@ counter + a memory read, not crash-crumb recovery (D1).
 
 **What:** A real policy/UI for terminal-app clipboard access (OSC 52) — the runtime's
 `read_clipboard_cb` / `write_clipboard_cb`. Today writes are gated to `text/*` mime and reads use
-Ghostty's permissive default (auto-allow); a deliberate prompt/allowlist is deferred.
+Ghostty's permissive default (auto-allow); `confirmReadClipboard` is a stub, so a deliberate
+prompt/allowlist is deferred.
 
 **Why:** Code-review finding #7. OSC 52 lets a remote program read/write the system pasteboard;
 the permissive default is fine for a beta (it matches Ghostty's own default) but a security-minded
 user should be able to require confirmation.
 
-**How to start:** Implement `confirm_read_clipboard_cb` to surface a prompt (or consult an
-`@AppStorage` policy: allow / prompt / deny); gate `write_clipboard_cb` similarly. Decide the
+**How to start:** Implement `confirm_read_clipboard_cb` to surface a prompt (or consult a
+`Defaults.Keys` policy: allow / prompt / deny); gate `write_clipboard_cb` similarly. Decide the
 default (Ghostty = allow).
 
 **Depends on:** the clipboard callbacks already wired
@@ -209,26 +210,25 @@ default (Ghostty = allow).
 
 **Priority:** P3 (permissive default is acceptable for the beta).
 
-## UI-testing fixture seam (macapp)
+## Deferred UI workflow tests (macapp)
 
-**What:** A launch-argument-driven fixture mode so XCUITest gets deterministic app state — e.g.
-`-uitesting` (or `WORKROOM_UITEST_FIXTURE=…`) makes `AppStore.bootstrap` load fake projects /
-workrooms instead of the developer's real `~/.config/workroom`.
+**What:** The two workflow UI tests left to write on top of the now-landed fixture seam:
+1. **Notification badge + click-to-navigate** — drive a terminal to `printf '\e]9;…\a'`, assert the
+   sidebar/tab badge appears, click it, assert it navigates to (and clears on) the right terminal.
+2. **Delete-workroom-clears-badges** — assert deleting a workroom withdraws its notifications/badges.
 
-**Why:** The starter UI suite (`macapp/WorkroomAppUITests`, run via `make app-uitest`) currently has
-a deterministic smoke test plus **opportunistic** workflow tests that `XCTSkip` when no project /
-workroom is configured — because the app loads real config, so tab/notification/delete flows can't
-assert deterministically (and aren't CI-able). A fixture seam makes those flows reliable and lets us
-add the deferred tests (notification badge + click-to-navigate, delete-clears-badges).
+**Why:** The fixture seam itself is done (`Core/UITestFixture.swift` + `-WorkroomUITestFixture 1`
+gives deterministic, CI-able state — see `AppStore.loadFixture()`), and the split-pane + basic
+workflow suites pass deterministically (no `XCTSkip`). These two notification/delete flows are the
+remaining gap, called out explicitly in `WorkroomWorkflowUITests.swift` ("Still to add: …").
 
-**How to start:** Read a launch arg in `WorkroomApp`/`AppStore` (only when present) and inject a
-fixture list through the existing CLI-`--json` boundary (or a test-only store seam) so no real `git`/
-`jj` runs. Then flesh out the skipped tests in `WorkroomWorkflowUITests` and drop the skips. Pairs
-with **CMT-3** (terminal accessibility) which unlocks terminal-*content* assertions on top of this.
+**How to start:** Add the tests to `macapp/WorkroomAppUITests/WorkroomWorkflowUITests.swift` using
+the existing fixture launch arg and the `sidebar.*` / `terminal.tab.*` accessibility identifiers. The
+badge assertions need the notification a11y identifiers to be queryable — add them if missing.
 
-**Depends on:** the UI test target + accessibility identifiers already in place
-(`macapp/project.yml`, `WorkroomAppUITests/`, identifiers in `Views/ProjectSidebar.swift` +
-`Views/WorkroomTerminalsView.swift`).
+**Depends on:** the fixture seam + accessibility identifiers already in place
+(`macapp/WorkroomApp/Core/UITestFixture.swift`, `Views/ProjectSidebar.swift`,
+`Views/TerminalTabStrip.swift`).
 
-**Priority:** P3 (the smoke test + opportunistic suite are useful now; deterministic/CI runs want
-this).
+**Priority:** P3 (the smoke + opportunistic suites cover the basics; these harden the notification
+flows).
