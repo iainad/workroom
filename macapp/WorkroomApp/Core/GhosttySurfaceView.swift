@@ -609,16 +609,19 @@ final class GhosttySurfaceView: NSView {
   private func isAppShortcut(_ event: NSEvent) -> Bool {
     let flags = event.modifierFlags.intersection([.command, .shift, .option, .control])
     guard let chars = event.charactersIgnoringModifiers, let ch = chars.first else { return false }
-    // ⇧⌘D (Split Down) is a real menu command; it has Shift so it fails the command-only guard below,
-    // so catch it explicitly to keep it from the terminal and let the menu key-equivalent fire.
-    if flags == [.command, .shift], Character(ch.lowercased()) == "d" { return true }
+    let key = Character(ch.lowercased())
+    // Menu commands that pair Command with Shift or Option fail the command-only guard below, so
+    // reserve them explicitly. Without this they reach the terminal, and a TUI in an enhanced
+    // keyboard mode (Claude/Codex) consumes the keystroke so the menu key-equivalent never fires.
+    // ⇧⌘D = Split Down; ⇧⌘N = Next Notification; ⌥⌘N = the Notifications toggle.
+    if flags == [.command, .shift] { return key == "d" || key == "n" }
+    if flags == [.command, .option] { return key == "n" }
     guard flags == .command else { return false }
     if ("1"..."9").contains(ch) { return true }  // focus tab N
     // ⌘T/⌘W/⌘O/⌘D are real menu commands; ⌘Q/⌘H/⌘M/⌘, are system standards; ⌘[ / ⌘] are Back/Forward
     // navigation (issue #26) — all reserved so the menu key-equivalent fires instead of the terminal.
-    // NOT ⌘N — Workroom's only N command is ⌥⌘N (which fails the `flags == .command` guard above), so
-    // plain ⌘N must pass through to the terminal rather than being swallowed.
-    return ["t", "w", "o", "d", "q", "h", "m", ",", "[", "]"].contains(Character(ch.lowercased()))
+    // Plain ⌘N has no Workroom command, so it passes through to the terminal.
+    return ["t", "w", "o", "d", "q", "h", "m", ",", "[", "]"].contains(key)
   }
 
   private func buildKeyEvent(from event: NSEvent, action: ghostty_input_action_e)
