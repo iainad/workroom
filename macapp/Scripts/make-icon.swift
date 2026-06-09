@@ -3,13 +3,20 @@
 // make-icon.swift — generates the Workroom app icon.
 //
 // Draws three cascading rounded "room" cards (a workroom = an isolated copy) on a
-// teal→blue rounded-square tile, with a terminal prompt — a blue chevron and a pink
-// block cursor — on the front card. Exports every PNG the macOS AppIcon set needs.
-// Pure CoreGraphics/AppKit, no assets.
+// rounded-square tile, with a terminal prompt — a blue chevron and a pink block cursor —
+// on the front card. Exports every PNG the macOS AppIcon set needs. Pure CoreGraphics/AppKit,
+// no assets.
+//
+// Two variants are rendered (only the background gradient differs):
+//   • AppIcon       — the release tile (teal→blue), used by the shipped "Workroom" app.
+//   • AppIcon-Dev   — a warm amber→red tile so the Debug "Workroom Dev" build is obvious at a
+//                     glance when both run side by side (see project.yml: Debug sets
+//                     ASSETCATALOG_COMPILER_APPICON_NAME=AppIcon-Dev).
 //
 // Usage:
-//   swift Scripts/make-icon.swift [output-dir]
-// Defaults to WorkroomApp/Assets.xcassets/AppIcon.appiconset relative to macapp/.
+//   swift Scripts/make-icon.swift [assets-dir]
+// `assets-dir` defaults to WorkroomApp/Assets.xcassets relative to macapp/; each variant is
+// written to its own <name>.appiconset under it.
 //
 
 import AppKit
@@ -22,8 +29,19 @@ func rgb(_ r: Int, _ g: Int, _ b: Int, _ a: CGFloat = 1) -> CGColor {
     CGColor(srgbRed: CGFloat(r) / 255, green: CGFloat(g) / 255, blue: CGFloat(b) / 255, alpha: a)
 }
 
-let bgTop = rgb(0x18, 0xE0, 0xC8)     // teal, top-left
-let bgBottom = rgb(0x2E, 0x7D, 0xFF)  // blue, bottom-right
+// Per-variant background gradient (the only thing that differs between release and dev).
+struct Variant {
+    let dirName: String   // <name>.appiconset under the assets dir
+    let bgTop: CGColor    // top-left
+    let bgBottom: CGColor // bottom-right
+}
+let variants = [
+    Variant(dirName: "AppIcon.appiconset",
+            bgTop: rgb(0x18, 0xE0, 0xC8), bgBottom: rgb(0x2E, 0x7D, 0xFF)),   // teal→blue (release)
+    Variant(dirName: "AppIcon-Dev.appiconset",
+            bgTop: rgb(0xFF, 0xB0, 0x2E), bgBottom: rgb(0xFF, 0x3D, 0x55)),   // amber→red (dev)
+]
+
 let cardBack = rgb(0xFF, 0xD2, 0x3F)  // yellow (deepest card)
 let cardMid = rgb(0xFF, 0x6F, 0xB5)   // pink (middle card)
 let cardFront = rgb(0xFF, 0xFF, 0xFF) // white (front card)
@@ -37,7 +55,7 @@ let offset: CGFloat = 0.055  // each card's diagonal step from the tile centre
 
 // MARK: - Render
 
-func render(_ pixels: Int, to url: URL) {
+func render(_ pixels: Int, to url: URL, bgTop: CGColor, bgBottom: CGColor) {
     let S = CGFloat(pixels)
     let cs = CGColorSpace(name: CGColorSpace.sRGB)!
     guard let ctx = CGContext(
@@ -144,10 +162,8 @@ func render(_ pixels: Int, to url: URL) {
 
 // MARK: - Drive
 
-let defaultDir = "WorkroomApp/Assets.xcassets/AppIcon.appiconset"
-let outDir = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : defaultDir
-let dir = URL(fileURLWithPath: outDir, isDirectory: true)
-try! FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+let assetsDir = CommandLine.arguments.count > 1
+    ? CommandLine.arguments[1] : "WorkroomApp/Assets.xcassets"
 
 // filename -> pixel size, covering the full macOS AppIcon set.
 let outputs: [(String, Int)] = [
@@ -158,8 +174,33 @@ let outputs: [(String, Int)] = [
     ("icon_512x512.png", 512),  ("icon_512x512@2x.png", 1024),
 ]
 
-print("Rendering AppIcon set → \(dir.path)")
-for (name, px) in outputs {
-    render(px, to: dir.appendingPathComponent(name))
+// Contents.json maps the PNGs above into the AppIcon set; identical for every variant.
+let contentsJSON = """
+{
+  "images" : [
+    { "idiom" : "mac", "scale" : "1x", "size" : "16x16", "filename" : "icon_16x16.png" },
+    { "idiom" : "mac", "scale" : "2x", "size" : "16x16", "filename" : "icon_16x16@2x.png" },
+    { "idiom" : "mac", "scale" : "1x", "size" : "32x32", "filename" : "icon_32x32.png" },
+    { "idiom" : "mac", "scale" : "2x", "size" : "32x32", "filename" : "icon_32x32@2x.png" },
+    { "idiom" : "mac", "scale" : "1x", "size" : "128x128", "filename" : "icon_128x128.png" },
+    { "idiom" : "mac", "scale" : "2x", "size" : "128x128", "filename" : "icon_128x128@2x.png" },
+    { "idiom" : "mac", "scale" : "1x", "size" : "256x256", "filename" : "icon_256x256.png" },
+    { "idiom" : "mac", "scale" : "2x", "size" : "256x256", "filename" : "icon_256x256@2x.png" },
+    { "idiom" : "mac", "scale" : "1x", "size" : "512x512", "filename" : "icon_512x512.png" },
+    { "idiom" : "mac", "scale" : "2x", "size" : "512x512", "filename" : "icon_512x512@2x.png" }
+  ],
+  "info" : { "author" : "xcode", "version" : 1 }
+}
+"""
+
+for variant in variants {
+    let dir = URL(fileURLWithPath: assetsDir, isDirectory: true)
+        .appendingPathComponent(variant.dirName, isDirectory: true)
+    try! FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    print("Rendering \(variant.dirName) → \(dir.path)")
+    for (name, px) in outputs {
+        render(px, to: dir.appendingPathComponent(name), bgTop: variant.bgTop, bgBottom: variant.bgBottom)
+    }
+    try! contentsJSON.write(to: dir.appendingPathComponent("Contents.json"), atomically: false, encoding: .utf8)
 }
 print("Done.")

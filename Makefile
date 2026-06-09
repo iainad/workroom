@@ -35,8 +35,11 @@ cli-clean: ## Remove the built binary
 
 # --- macOS app (macapp/) ---
 
+# The Debug product is "Workroom Dev" (distinct bundle id + name) so it runs alongside the
+# installed release "Workroom" without conflict — see macapp/project.yml.
 APP_PROJECT := WorkroomApp.xcodeproj
-APP_BUNDLE  := DerivedData/Build/Products/Debug/Workroom.app
+APP_NAME    := Workroom Dev
+APP_BUNDLE  := DerivedData/Build/Products/Debug/$(APP_NAME).app
 APP_XCODEBUILD := xcodebuild -project $(APP_PROJECT) -scheme WorkroomApp -configuration Debug \
   -derivedDataPath DerivedData -clonedSourcePackagesDirPath DerivedData/SourcePackages
 
@@ -46,11 +49,11 @@ APP_XCODEBUILD := xcodebuild -project $(APP_PROJECT) -scheme WorkroomApp -config
 # `make app-test APP_SIGN_FLAGS="CODE_SIGN_IDENTITY=- CODE_SIGNING_REQUIRED=NO DEVELOPMENT_TEAM="`).
 APP_SIGN_FLAGS ?=
 
-app-run: app-build ## Build (Debug) and launch the app, replacing any running instance
+app-run: app-build ## Build (Debug) and launch the dev app, replacing any running dev instance
 	cd macapp || exit 1; \
-	pkill -x Workroom 2>/dev/null || true; \
+	pkill -x "$(APP_NAME)" 2>/dev/null || true; \
 	for _ in 1 2 3 4 5 6 7 8 9 10; do \
-	  pgrep -x Workroom >/dev/null 2>&1 || break; \
+	  pgrep -x "$(APP_NAME)" >/dev/null 2>&1 || break; \
 	  sleep 0.2; \
 	done; \
 	echo "Launching $(APP_BUNDLE)"; \
@@ -77,7 +80,7 @@ app-lint: ## Lint Swift with swift-format (--strict)
 app-release: ## Build, notarize, staple + package a DMG installer (macapp/Scripts/release.sh)
 	cd macapp && Scripts/release.sh
 
-app-icon: ## Regenerate the AppIcon PNGs (macapp/Scripts/make-icon.swift)
+app-icon: ## Regenerate the release + dev AppIcon PNGs (macapp/Scripts/make-icon.swift)
 	cd macapp && swift Scripts/make-icon.swift
 
 app-clean: ## Remove the app's DerivedData + .xcodeproj

@@ -72,9 +72,12 @@ targets:
     info:
       path: WorkroomApp/Info.plist
       properties:
-        CFBundleDisplayName: Workroom
-        CFBundleName: Workroom
-        CFBundleIconName: AppIcon
+        # Track PRODUCT_NAME so the Debug build shows as "Workroom Dev" everywhere (Dock, ⌘-Tab,
+        # the bold app menu) while Release stays "Workroom". CFBundleIconName tracks the asset
+        # name so Debug picks up the amber AppIcon-Dev set and Release the teal AppIcon set.
+        CFBundleDisplayName: "$(PRODUCT_NAME)"
+        CFBundleName: "$(PRODUCT_NAME)"
+        CFBundleIconName: "$(ASSETCATALOG_COMPILER_APPICON_NAME)"
         LSMinimumSystemVersion: "14.0"
         NSHighResolutionCapable: true
         LSApplicationCategoryType: public.app-category.developer-tools
@@ -92,8 +95,12 @@ targets:
         SUScheduledCheckInterval: 86400
     settings:
       base:
+        # Release identity (Debug overrides bundle id + name below to run side by side). The Swift
+        # module is pinned to "Workroom" regardless of PRODUCT_NAME, so `@testable import Workroom`,
+        # the Logger subsystems, and TEST_HOST keep working when the Debug product is "Workroom Dev".
         PRODUCT_BUNDLE_IDENTIFIER: com.developwithstyle.workroom
         PRODUCT_NAME: Workroom
+        PRODUCT_MODULE_NAME: Workroom
         MARKETING_VERSION: "0.1.0"
         CURRENT_PROJECT_VERSION: "1"
         ENABLE_HARDENED_RUNTIME: YES
@@ -106,6 +113,14 @@ targets:
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
       configs:
         Debug:
+          # Distinct identity so a local Debug build runs alongside the installed release build
+          # instead of fighting it for activation, the key window, preferences, and the global
+          # ⌘§ hotkey (issue: "isolated builds"). A different bundle id makes LaunchServices treat
+          # them as separate apps and gives the Debug build its own UserDefaults domain for free;
+          # the "Workroom Dev" name + amber AppIcon-Dev make it obvious which window is which.
+          PRODUCT_BUNDLE_IDENTIFIER: com.developwithstyle.workroom.dev
+          PRODUCT_NAME: "Workroom Dev"
+          ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon-Dev
           # Local runs (⌘R): automatic signing with the Apple Development cert.
           CODE_SIGN_STYLE: Automatic
           CODE_SIGN_IDENTITY: "Apple Development"
@@ -159,10 +174,11 @@ targets:
         SWIFT_VERSION: "5.0"
         DEVELOPMENT_TEAM: B898J443L9
         CODE_SIGN_STYLE: Automatic
-        # The host app's PRODUCT_NAME is "Workroom" (not the target name "WorkroomApp"), so
-        # XcodeGen's auto-derived TEST_HOST points at the wrong bundle. Set it to the real
-        # product so the unit tests load into the app via @testable import.
-        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Workroom.app/Contents/MacOS/Workroom"
+        # XcodeGen derives TEST_HOST from the target name (WorkroomApp), but the Debug product is
+        # "Workroom Dev" (the side-by-side identity above), so point at that bundle explicitly.
+        # Tests only ever run in Debug (the WorkroomApp scheme's test action + `make app-test`), so
+        # the Debug name is correct here; the module stays "Workroom" so @testable import is fine.
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Workroom Dev.app/Contents/MacOS/Workroom Dev"
         BUNDLE_LOADER: "$(TEST_HOST)"
 
   # macOS UI tests (XCUITest). Deliberately kept OUT of the WorkroomApp scheme's test action (see

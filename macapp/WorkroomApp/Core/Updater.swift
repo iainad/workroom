@@ -17,6 +17,13 @@ final class Updater: ObservableObject {
       startingUpdater: true, updaterDelegate: nil, userDriverDelegate: nil)
     controller.updater.publisher(for: \.canCheckForUpdates)
       .assign(to: &$canCheckForUpdates)
+    #if DEBUG
+      // The "Workroom Dev" build shares the release appcast feed but carries a dev version, so a
+      // scheduled check would offer to "update" it to the release DMG and replace the running dev
+      // build. Force scheduled checks off for Debug (the manual "Check for Updates…" menu item
+      // still works if you explicitly want it). Release is unaffected.
+      controller.updater.automaticallyChecksForUpdates = false
+    #endif
   }
 
   /// Show the updater UI now — the user-initiated "Check for Updates…" path.

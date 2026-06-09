@@ -36,10 +36,24 @@ that surfaces violations as **warnings** (non-fatal — `make app-lint` is the h
 
 ## Gotchas
 
-- **The Swift module is `Workroom`, not `WorkroomApp`** (the target is `WorkroomApp`, but
-  `PRODUCT_NAME`/module is `Workroom`). Tests use `@testable import Workroom`, and a test
-  target's `TEST_HOST` must point at `Workroom.app/Contents/MacOS/Workroom` — XcodeGen's
-  auto-derived (target-name-based) host is wrong and fails with "Could not find test host".
+- **The Swift module is `Workroom`** (the target is `WorkroomApp`; `PRODUCT_MODULE_NAME` is pinned
+  to `Workroom` in `project.yml`). Tests use `@testable import Workroom`. The pin matters because
+  `PRODUCT_NAME` is **per-config**: `Workroom` for Release, `Workroom Dev` for Debug (see below) —
+  without the pin the Debug module would become `Workroom_Dev` and break the import. A test
+  target's `TEST_HOST` must point at the Debug product (`Workroom Dev.app/Contents/MacOS/Workroom
+  Dev`); XcodeGen's auto-derived (target-name-based) host is wrong and fails with "Could not find
+  test host".
+- **Debug builds run side by side with the release build.** The Debug config has a distinct
+  identity — bundle id `com.developwithstyle.workroom.dev`, product/display name `Workroom Dev`,
+  and the amber `AppIcon-Dev` icon set — so a local build doesn't fight the installed release
+  `Workroom` for activation, the key window, preferences (separate UserDefaults domain via the
+  bundle id), or the system-wide ⌘§ hotkey. The Debug build deliberately **doesn't register ⌘§**
+  and **doesn't run Sparkle scheduled checks** (`#if DEBUG` in `WorkroomApp.swift` / `Updater.swift`)
+  so it can't grab the global hotkey or try to "update" itself to the release DMG. Both builds
+  still share the CLI config at `~/.config/workroom/config.json` (the bundled CLI has no
+  config-path override), so they show the same projects/workrooms. `make app-run` only kills the
+  `Workroom Dev` instance, never your release build. The two app icons (`make app-icon` renders
+  both) are identical except for the tile gradient.
 - **Adding/removing/renaming a `.swift` file needs an `xcodegen generate`.** XcodeGen
   expands the source glob into explicit file refs in the (gitignored) `.xcodeproj`, so
   the change is invisible (or, for a deleted/renamed file, a hard "Build input file

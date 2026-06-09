@@ -104,13 +104,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
   /// safe to call on launch and on every change. Carbon's RegisterEventHotKey is system-wide and
   /// needs no permission; the key/modifier live in `GlobalHotkey.commandSection`.
   private func updateGlobalHotkey() {
-    if Defaults[.globalHotkey] {
-      if showHideHotkey == nil {
-        showHideHotkey = GlobalHotkey.commandSection { AppDelegate.toggleAppVisibility() }
+    // The "Workroom Dev" build runs alongside the release build, and a Carbon hotkey is
+    // system-wide — two instances registering ⌘§ would fight over it. The release build owns the
+    // global show/hide; the Debug build never claims it. Compiling the body out (rather than an
+    // early `return`) keeps both configs warning-clean and covers launch + the Settings toggle +
+    // the `globalHotkey` observer, which all route through this method.
+    #if !DEBUG
+      if Defaults[.globalHotkey] {
+        if showHideHotkey == nil {
+          showHideHotkey = GlobalHotkey.commandSection { AppDelegate.toggleAppVisibility() }
+        }
+      } else {
+        showHideHotkey = nil  // GlobalHotkey.deinit unregisters
       }
-    } else {
-      showHideHotkey = nil  // GlobalHotkey.deinit unregisters
-    }
+    #endif
   }
 
   /// Show/hide Workroom for the global hotkey: hide when we're frontmost, otherwise unhide and pull
