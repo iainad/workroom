@@ -49,9 +49,10 @@ struct RootView: View {
       Text(store.errorMessage ?? "")
     }
     // Top toolbar (issue #26): the back/forward chevrons (snug, one item) pinned to the leading
-    // `.navigation` area beside the sidebar toggle. The notifications bell lives on the right, in the
-    // detail toolbar (TargetDetailToolbar, after Copy Path). Split-view level so back/forward are
-    // present even in the empty state.
+    // `.navigation` area beside the sidebar toggle; the notifications bell pinned to the trailing
+    // `.primaryAction` area (where it opens the right-hand inspector). Both split-view level so
+    // they're present even in the empty state — the detail toolbar's document actions (Open in…/
+    // Reveal/Copy Path) only attach when a target is selected, and slot in before the bell.
     .toolbar {
       ToolbarItem(placement: .navigation) {
         HStack(spacing: 0) {
@@ -72,6 +73,20 @@ struct RootView: View {
           .accessibilityLabel("Forward")
           .disabled(!store.canGoForward)
         }
+      }
+      ToolbarItem(placement: .primaryAction) {
+        Button {
+          showNotifications.toggle()
+        } label: {
+          HStack(spacing: 3) {
+            Image(systemName: "bell")
+            UnreadBadge(count: notifications.total)
+          }
+        }
+        .help("Notifications")
+        .accessibilityLabel(
+          notifications.total > 0
+            ? "Notifications, \(notifications.total) unread" : "Notifications")
       }
     }
     .inspector(isPresented: $showNotifications) {
@@ -174,9 +189,7 @@ struct RootView: View {
     .navigationTitle(target.title)
     .navigationSubtitle(target.path)
     .toolbar {
-      TargetDetailToolbar(
-        path: target.path, notificationsTotal: notifications.total,
-        showNotifications: $showNotifications)
+      TargetDetailToolbar(path: target.path)
     }
   }
 }

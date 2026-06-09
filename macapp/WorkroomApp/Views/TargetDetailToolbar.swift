@@ -4,13 +4,10 @@ import SwiftUI
 
 /// The detail pane's toolbar for a selected target: an "Open in…" editor menu (whose primary
 /// action reopens in the last-picked editor), Reveal in Finder, and Copy Path. Lifted out of
-/// `RootView.targetDetail` so the scene root stays focused on layout.
+/// `RootView.targetDetail` so the scene root stays focused on layout. (The notifications bell
+/// lives beside back/forward in `RootView`'s split-view toolbar so it shows even with no target.)
 struct TargetDetailToolbar: ToolbarContent {
   let path: String
-  /// Unread count + inspector toggle for the notifications bell, which sits on the right after the
-  /// document actions. Passed in from `RootView` (which owns the notification store + the toggle).
-  let notificationsTotal: Int
-  @Binding var showNotifications: Bool
 
   /// Bundle id of the last editor picked from the "Open in…" menu — the toolbar button's
   /// primary action reopens in it.
@@ -67,19 +64,6 @@ struct TargetDetailToolbar: ToolbarContent {
         Label("Copy Path", systemImage: "doc.on.doc")
       }
       .help("Copy path")
-
-      // Notifications bell, right side after the document actions.
-      Button {
-        showNotifications.toggle()
-      } label: {
-        HStack(spacing: 3) {
-          Image(systemName: "bell")
-          UnreadBadge(count: notificationsTotal)
-        }
-      }
-      .help("Notifications")
-      .accessibilityLabel(
-        notificationsTotal > 0 ? "Notifications, \(notificationsTotal) unread" : "Notifications")
     }
   }
 }
