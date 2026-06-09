@@ -92,7 +92,7 @@ struct RootView: View {
     // setup script blocks the selected workroom's terminal, report false so ⌘T can't open
     // a (hidden) terminal behind the setup pane; the toolbar's Open/Reveal still work.
     .focusedSceneValue(\.workroomSelected, terminalInteractionAvailable)
-    // Drive the "Go to Next Notification" menu command's enabled state.
+    // Drive the "Next Notification" menu command's enabled state.
     .focusedSceneValue(\.hasNotifications, !notifications.items.isEmpty)
     // Drive the Go-menu Back/Forward commands' enabled state (issue #26).
     .focusedSceneValue(\.canNavigateBack, store.canGoBack)

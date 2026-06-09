@@ -191,7 +191,7 @@ struct HasTerminalKey: FocusedValueKey {
 }
 
 /// Whether there are any pending notifications — published by RootView (which observes the
-/// store), so "Go to Next Notification" can disable when the history is empty.
+/// store), so "Next Notification" can disable when the history is empty.
 struct HasNotificationsKey: FocusedValueKey {
   typealias Value = Bool
 }
@@ -271,16 +271,8 @@ struct WorkroomCommands: Commands {
 
     CommandGroup(after: .sidebar) {
       // View menu: toggle the notifications inspector (checkmark reflects open/closed).
-      Toggle("Show Notifications", isOn: $showNotifications)
+      Toggle("Notifications", isOn: $showNotifications)
         .keyboardShortcut("n", modifiers: [.command, .option])
-
-      // ⇧⌘N: jump to the oldest pending notification (bottom of the panel). Opening dismisses it,
-      // so repeated presses walk the backlog oldest→newest. Disabled when there are none.
-      Button("Go to Next Notification") {
-        AppStore.shared.openOldestNotification()
-      }
-      .keyboardShortcut("n", modifiers: [.command, .shift])
-      .disabled(hasNotifications != true)
     }
 
     CommandGroup(after: .pasteboard) {
@@ -332,8 +324,9 @@ struct WorkroomCommands: Commands {
       .keyboardShortcut("o", modifiers: .command)
     }
 
-    // Browser/Finder-style back/forward over the workroom + terminal history (issue #26). ⌘[ / ⌘]
-    // are reserved from the terminal in GhosttySurfaceView.isAppShortcut so these key equivalents fire.
+    // Browser/Finder-style back/forward over the workroom + terminal history (issue #26), plus
+    // the ⇧⌘N jump to the oldest pending notification. ⌘[ / ⌘] are reserved from the terminal in
+    // GhosttySurfaceView.isAppShortcut so these key equivalents fire.
     CommandMenu("Go") {
       Button("Back") { AppStore.shared.navigateBack() }
         .keyboardShortcut("[", modifiers: .command)
@@ -341,6 +334,16 @@ struct WorkroomCommands: Commands {
       Button("Forward") { AppStore.shared.navigateForward() }
         .keyboardShortcut("]", modifiers: .command)
         .disabled(canNavigateForward != true)
+
+      Divider()
+
+      // ⇧⌘N: jump to the oldest pending notification (bottom of the panel). Opening dismisses it,
+      // so repeated presses walk the backlog oldest→newest. Disabled when there are none.
+      Button("Next Notification") {
+        AppStore.shared.openOldestNotification()
+      }
+      .keyboardShortcut("n", modifiers: [.command, .shift])
+      .disabled(hasNotifications != true)
     }
   }
 }
