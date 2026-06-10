@@ -400,7 +400,10 @@ struct ProjectSidebar: View {
   /// tab's UUID via `hoveredTerminal`, since terminal rows live outside the `SidebarID` selection.
   @ViewBuilder
   private func terminalHighlight(_ tabID: TerminalTab.ID, selected: Bool) -> some View {
-    let opacity = selected ? 0.13 : (hoveredTerminal == tabID ? 0.07 : 0)
+    // Lighter than the root/workroom selection fill (0.13): the selected workroom is the primary
+    // selection, the focused terminal a secondary "active within" cue — so the two don't read as two
+    // equal selections when a subtree is open (issue #30 design pass).
+    let opacity = selected ? 0.07 : (hoveredTerminal == tabID ? 0.04 : 0)
     RoundedRectangle(cornerRadius: 6)
       .fill(Color.primary.opacity(opacity))
       .padding(.horizontal, 8)
