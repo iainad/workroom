@@ -293,7 +293,7 @@ private struct PaneLeafView: View {
     TerminalContainerView(view: view, isFocusedPane: focused)
       .overlay(
         RoundedRectangle(cornerRadius: 12)
-          .strokeBorder(borderColor, lineWidth: 2)
+          .strokeBorder(borderColor, lineWidth: 1.5)
           .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: flashing)
           .animation(reduceMotion ? nil : .easeInOut(duration: 0.15), value: focused)
       )
@@ -349,8 +349,12 @@ private struct PaneLeafView: View {
 
   private var borderColor: Color {
     guard multiPane else { return .clear }
-    if focused { return Color.accentColor.opacity(0.85) }
-    return flashing ? Color.accentColor.opacity(0.7) : .clear
+    // A toned accent for the focused pane (and the activity flash), with a faint neutral hairline
+    // on the others — so focus reads as "the accent one" against bordered siblings rather than as a
+    // loud blue ring against nothing. (Solo panes get no border at all — handled by the guard.)
+    if focused { return Color.accentColor.opacity(0.6) }
+    if flashing { return Color.accentColor.opacity(0.6) }
+    return Color.primary.opacity(0.08)
   }
 }
 
