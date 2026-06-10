@@ -243,6 +243,10 @@ private struct TerminalTabChip: View {
   let onClose: () -> Void
 
   var body: some View {
+    // The ✕ reveals on hover or when the tab is active — matching the sidebar's terminal rows, and
+    // sparing the strip a close glyph on every idle tab. It stays *laid out* (opacity, not removed)
+    // so the chip's measured width — which the drag-gap math reads — is stable whether or not it shows.
+    let showClose = isActive || isHovered
     // Title and close button laid out side by side: a compact gap keeps the ✕ visibly tied to its
     // tab (a wide gap reads as detached) while still clearing the title so they never crowd.
     HStack(spacing: 6) {
@@ -253,6 +257,8 @@ private struct TerminalTabChip: View {
       TabCloseButton(action: onClose)
         .help("Close \(tab.title)")
         .accessibilityLabel("Close \(tab.title)")
+        .opacity(showClose ? 1 : 0)
+        .allowsHitTesting(showClose)
     }
     .padding(.leading, 10)
     .padding(.trailing, 4)  // tighter than the leading inset — the ✕ sits near the chip's edge

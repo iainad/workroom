@@ -321,7 +321,8 @@ private struct PaneLeafView: View {
   }
 
   /// A small semi-transparent grip chip at the pane's top-center — drag it to move the pane (onto
-  /// another pane's edge, or up to the strip to pop it out). Only in a split; faint until hovered.
+  /// another pane's edge, or up to the strip to pop it out). Only in a split; hidden until the pane
+  /// is hovered, so it isn't a permanent mark over the terminal's top line.
   @ViewBuilder private var handle: some View {
     if multiPane {
       Image(systemName: "line.3.horizontal")
@@ -331,7 +332,7 @@ private struct PaneLeafView: View {
         .padding(.vertical, 3)
         .background(.regularMaterial, in: Capsule())
         .overlay(Capsule().strokeBorder(Color.primary.opacity(0.12), lineWidth: 0.5))
-        .opacity(hovering ? 0.95 : 0.3)
+        .opacity(hovering ? 0.95 : 0)
         .padding(.top, 5)
         .contentShape(Capsule())
         .gesture(
