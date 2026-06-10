@@ -323,11 +323,11 @@ struct ProjectSidebar: View {
     -> some View
   {
     HStack(spacing: 6) {
-      // Lay the glyph in a clear slot identical to the root row's empty caret column, drawing the
-      // symbol as a non-layout overlay — so the title lands in exactly the same column as the
-      // root/workroom labels regardless of the `terminal` symbol's (wider) intrinsic width.
+      // Terminal glyph centered in the shared caret slot, same size/weight as the root house and the
+      // workroom chevron so the leading-icon column reads as one set. The fixed-width frame keeps the
+      // title in the same column as the root/workroom labels regardless of the symbol's intrinsic width.
       Image(systemName: "terminal")
-        .font(.system(size: 9))
+        .font(.system(size: 10))
         .foregroundStyle(.secondary)
         .frame(width: caretWidth, alignment: .center)
       Text(tab.title)
@@ -558,7 +558,7 @@ private struct TerminalDisclosureButton: View {
       // centered on the slot) sits symmetrically around it. The terminal-row glyph centers in the same
       // slot, so the two share one vertical axis.
       Image(systemName: expanded ? "chevron.down" : "chevron.right")
-        .font(.system(size: 10, weight: .semibold))
+        .font(.system(size: 10))
         .foregroundStyle(.secondary)
         .frame(width: width, height: 18, alignment: .center)
         .background {
