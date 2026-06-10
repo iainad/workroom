@@ -11,7 +11,7 @@ final class TerminalSessionsTests: XCTestCase {
 
   private func makeSessions() -> TerminalSessions {
     let sessions = TerminalSessions()
-    sessions.makeView = { _, cwd in GhosttySurfaceView(workingDirectory: cwd) }
+    sessions.makeView = { _, cwd, _ in GhosttySurfaceView(workingDirectory: cwd) }
     return sessions
   }
 
@@ -264,7 +264,7 @@ final class TerminalSessionsTests: XCTestCase {
   func testSplitInheritsFocusedPaneCwd() {
     var cwds: [String] = []
     let s = TerminalSessions()
-    s.makeView = { _, cwd in
+    s.makeView = { _, cwd, _ in
       cwds.append(cwd)
       return GhosttySurfaceView(workingDirectory: cwd)
     }

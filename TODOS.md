@@ -232,3 +232,25 @@ badge assertions need the notification a11y identifiers to be queryable — add 
 
 **Priority:** P3 (the smoke + opportunistic suites cover the basics; these harden the notification
 flows).
+
+## Run-terminal persistence / auto-restart across relaunch (macapp) — #7 follow-up
+
+**What:** Restore (or auto-restart) a workroom's run command when the app relaunches, rather than
+losing it. Optionally remember which workroom had a running run command and offer/auto-run it on next
+launch.
+
+**Why:** The run-command feature (#7) keeps run terminals in-memory (consistent with all terminals —
+`TerminalSessions` is session-only), and auto-run fires only at workroom *creation*. So quitting the
+app with a dev server running loses it, and there's no auto-restart on launch. For a long-lived
+"always have my dev server up" workflow that's a gap.
+
+**How to start:** Persist a small per-target marker (e.g. `Defaults` set of target ids that had a
+running run command), and on launch — after the project list loads and a workroom is selected — offer
+or auto-start its run command. Decide the policy (auto vs prompt) and how it interacts with the
+existing creation-time auto-run. Reuse `AppStore.startRunCommand(for:)` and the run-state model
+(`runTabIDByTarget` / `runningTargets`).
+
+**Depends on:** the #7 run-command feature shipping first (`macapp/WorkroomApp/Core/AppStore.swift`
+run-command actions, `Core/TerminalSessions.swift` `addRunTab`).
+
+**Priority:** P3 (deferred from #7 — the feature is useful without it; surfaced by the eng-review).

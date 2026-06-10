@@ -82,6 +82,15 @@ final class GhosttyRuntimeAdapter {
       view.updateScrollbar(total: bar.total, offset: bar.offset, len: bar.len)
       return true
 
+    case GHOSTTY_ACTION_SHOW_CHILD_EXITED:
+      // The surface's child process exited. The run terminal (issue #7) uses this to flip run-state
+      // back to "Run" while keeping the pane open (`wait_after_command`). We RETURN FALSE so
+      // libghostty's default still applies for ordinary tabs (which don't wire `onChildExited`) —
+      // their behaviour is unchanged. Only run tabs observe it.
+      guard let view = surfaceView(from: target) else { return false }
+      view.handleChildExited(exitCode: action.action.child_exited.exit_code)
+      return false
+
     case GHOSTTY_ACTION_RING_BELL:
       // libghostty delegates the bell to the host — it does NOT produce audio/flash itself, so
       // without this the bell would be silent. Ring the system bell. We intentionally do not record

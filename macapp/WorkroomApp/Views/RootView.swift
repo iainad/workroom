@@ -112,6 +112,27 @@ struct RootView: View {
     // Drive the Go-menu Back/Forward commands' enabled state (issue #26).
     .focusedSceneValue(\.canNavigateBack, store.canGoBack)
     .focusedSceneValue(\.canNavigateForward, store.canGoForward)
+    // Drive the Run/Stop/Restart menu items (issue #7). Run-state lives on the store (OV-A), so
+    // these stay live as the command starts/stops/exits.
+    .focusedSceneValue(\.hasRunCommand, selectedHasRunCommand)
+    .focusedSceneValue(\.runCommandActive, selectedRunCommandActive)
+    .focusedSceneValue(\.hasRunTerminal, store.hasAnyRunTerminal)
+  }
+
+  /// The project path of the selected root or workroom (nil for no selection) — the run command is
+  /// configured per project and runnable from either (issue #7).
+  private var selectedRunProjectPath: String? {
+    AppStore.projectPath(of: store.selectedTargetID)
+  }
+  /// Whether the selected workroom's project has a run command configured.
+  private var selectedHasRunCommand: Bool {
+    guard let path = selectedRunProjectPath else { return false }
+    return store.hasRunCommand(forProject: path)
+  }
+  /// Whether the selected target's run command is currently running.
+  private var selectedRunCommandActive: Bool {
+    guard let target = store.selectedTarget else { return false }
+    return store.isRunCommandRunning(for: target.id)
   }
 
   /// Pushes the chosen appearance onto the running app. nil (System) tells AppKit to
@@ -189,6 +210,13 @@ struct RootView: View {
     .navigationTitle(target.title)
     .navigationSubtitle(target.path)
     .toolbar {
+      // Run/Stop/Restart for the selected root OR workroom (issue #7): the command is configured per
+      // project and both targets have a project path + a directory to run in (the root runs it in the
+      // project directory itself). `projectPath(of:)` resolves for `.root`/`.workroom`, nil for a bare
+      // `.project` (never shown in the detail pane).
+      if let projectPath = AppStore.projectPath(of: store.selectedTargetID) {
+        RunCommandToolbar(target: target, projectPath: projectPath)
+      }
       TargetDetailToolbar(path: target.path)
     }
   }

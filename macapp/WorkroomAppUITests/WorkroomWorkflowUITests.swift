@@ -111,4 +111,40 @@ final class WorkroomWorkflowUITests: XCTestCase {
     app.typeKey("w", modifierFlags: .command)  // ⌘W → Close Terminal
     assertCount(tabs, reaches: initial)
   }
+
+  /// Run command lifecycle (issue #7): the fixture seeds a run command on its project, so the
+  /// toolbar shows Run for the auto-selected workroom. Triggering Run launches the command in a real
+  /// surface and the toolbar flips to Stop + Restart — proving end-to-end that libghostty's
+  /// `config.command` parses the shell-wrapped command and that run-state lights up through a live
+  /// surface (something the unit tests can't reach).
+  ///
+  /// The Stop→revert half is intentionally NOT asserted here: the Stop menu item is gated by a
+  /// `@FocusedValue`, and clicking it once the menu is open is flaky under XCUITest's automation
+  /// (focused-value timing) — a harness limitation, not a product bug. That path is covered
+  /// deterministically by `RunCommandTests.testChildExitFlipsToStoppedButKeepsPane` and was verified
+  /// live (the toolbar reverts and the pane stays open after Stop). Likewise the sidebar run dot is
+  /// the same state in a selectable List row (flattened a11y), verified visually not here.
+  func testRunCommandLifecycle() throws {
+    let app = launchedApp()
+    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
+
+    // Assert run-state via the toolbar buttons (existence is reliable even if a narrow window
+    // collapses them into the toolbar overflow); drive Run via the always-hittable menu item.
+    let run = app.buttons["runCommand.run"]
+    let stop = app.buttons["runCommand.stop"]
+    let restart = app.buttons["runCommand.restart"]
+
+    XCTAssertTrue(
+      run.waitForExistence(timeout: 10),
+      "Run should show for a workroom whose project has a run command")
+    XCTAssertFalse(stop.exists, "nothing running yet")
+
+    // Scope to the Run menu's Run item (not a bare menuItems["Run"], which would also match other
+    // "Run"-titled items) so this unambiguously starts the command.
+    app.menuBars.menuBarItems["Run"].menuItems["Run"].click()
+
+    XCTAssertTrue(stop.waitForExistence(timeout: 8), "Run should become Stop once the command runs")
+    XCTAssertTrue(restart.exists, "Restart should appear alongside Stop")
+    XCTAssertFalse(run.exists, "Run should be replaced while running")
+  }
 }

@@ -20,6 +20,9 @@ struct ProjectSidebar: View {
   @State private var hoveredTerminal: TerminalTab.ID?
   @State private var themeHovering = false
   @State private var addProjectHovering = false
+  /// The project whose settings sheet is open (issue #7), or nil. Owned here so the trigger (the
+  /// project-row context menu) and the presenter live together.
+  @State private var settingsProject: Project?
   @Default(.theme) private var theme
 
   /// Width of the shared leading icon column on the root/workroom/terminal rows — it holds the
@@ -68,6 +71,9 @@ struct ProjectSidebar: View {
     }
     .safeAreaInset(edge: .bottom, spacing: 0) { bottomBar }
     .navigationTitle("Projects")
+    .sheet(item: $settingsProject) { project in
+      ProjectSettingsSheet(project: project).environmentObject(store)
+    }
     .onChange(of: store.requestAddProject) { request in
       if request {
         showImporter = true
@@ -182,6 +188,13 @@ struct ProjectSidebar: View {
       if store.busyProjects.contains(project.path) {
         ProgressView().controlSize(.small)
       } else {
+        // Project settings (run command, etc.), revealed on hover to the left of the new-workroom
+        // button (issue #7). Laid out always (opacity-gated) so the row size is stable.
+        SettingsRowButton(
+          help: "Project settings for \(project.displayName)", visible: hovered == id
+        ) {
+          settingsProject = project
+        }
         CreateRowButton(help: "New workroom in \(project.displayName)") {
           Task { await store.createWorkroom(in: project) }
         }
@@ -197,6 +210,12 @@ struct ProjectSidebar: View {
         Task { await store.createWorkroom(in: project) }
       } label: {
         Label("New Workroom", systemImage: "plus")
+      }
+      Divider()
+      Button {
+        settingsProject = project
+      } label: {
+        Label("Project Settings…", systemImage: "gearshape")
       }
     }
   }
@@ -233,10 +252,15 @@ struct ProjectSidebar: View {
           .foregroundStyle(.yellow)
           .help("Project folder not found")
       }
-      // Trailing-most so it lines up with the workroom rows' spinner column. The root has no
-      // delete button to swap with, so it just shows while a command runs.
+      // OSC-9;4 spinner (any terminal's agent activity), to the LEFT of the run button — mirroring
+      // the workroom rows' spinner/delete-then-run order.
       if terminals.isRunning(forTargetID: target.id) {
         RunningSpinner()
+      }
+      // Run/stop the project's command straight from the root row (issue #7), trailing-most — the
+      // root runs it in the project directory. Shows its state (green = running).
+      if store.hasRunCommand(forProject: project.path) {
+        RowRunButton(target: target)
       }
     }.contentShape(Rectangle())
       .help(style.tooltip)
@@ -267,7 +291,7 @@ struct ProjectSidebar: View {
           .foregroundStyle(.yellow)
           .help(warning.message)
       }
-      // Trailing slot: a progress spinner while a command runs, swapped for the delete button
+      // Spinner/delete slot: a progress spinner while a command runs, swapped for the delete button
       // on hover — so a workroom stays deletable even mid-run (issue #28). The delete button is
       // always laid out (it reveals via opacity), so it fixes the slot's size and the spinner,
       // which is smaller, can't shift the row.
@@ -278,6 +302,13 @@ struct ProjectSidebar: View {
         DeleteRowButton(name: workroom.name, visible: hovered == id) {
           store.pendingDeletion = PendingWorkroomDeletion(workroom: workroom, project: project)
         }
+      }
+      // Run/stop the project's command for this workroom straight from the row (issue #7), trailing-
+      // most. Shows its state (green = running) and toggles on click; distinct from the OSC-9;4
+      // `RunningSpinner` above (any terminal's agent activity).
+      if store.hasRunCommand(forProject: project.path) {
+        RowRunButton(target: target)
+          .accessibilityIdentifier("sidebar.workroom.\(workroom.name).run")
       }
     }.contentShape(Rectangle())
       .accessibilityIdentifier("sidebar.workroom.\(workroom.name)")
@@ -509,6 +540,69 @@ private struct CreateRowButton: View {
     .onHover { hovering = $0 }
     .help(help)
     .accessibilityLabel(help)
+  }
+}
+
+/// Per-row run/stop toggle for a root or workroom whose project has a run command (issue #7). Reads
+/// the run state off the store (green = running) and toggles start/stop on click — without selecting
+/// the row. Running hovers red (the stop action); stopped hovers green (the start action).
+private struct RowRunButton: View {
+  let target: TerminalTarget
+  @EnvironmentObject var store: AppStore
+  @State private var hovering = false
+
+  var body: some View {
+    let running = store.isRunCommandRunning(for: target.id)
+    // The action's color: red to stop (like delete), green to start. Drives the hover icon tint AND
+    // the rounded hover background, matching the row's other buttons (new-workroom / delete).
+    let tint: Color = running ? .red : .green
+    Button {
+      store.toggleRunCommand(for: target)
+    } label: {
+      Image(systemName: running ? "stop.circle.fill" : "play.circle.fill")
+        .font(.system(size: 12))
+        .foregroundStyle(
+          running ? (hovering ? .red : .green) : (hovering ? .green : Color.secondary)
+        )
+        .padding(4)
+        .background(
+          RoundedRectangle(cornerRadius: 5)
+            .fill(tint.opacity(hovering ? 0.18 : 0))
+        )
+    }
+    .buttonStyle(.plain)
+    .onHover { hovering = $0 }
+    .help(running ? "Stop run command" : "Start run command")
+    .accessibilityLabel(running ? "Stop run command" : "Start run command")
+  }
+}
+
+/// The gear button on a project row, revealed on hover to the left of the new-workroom button,
+/// opening Project Settings (issue #7). Laid out always (so the row size is stable) and only made
+/// visible via `visible`; its own hover paints a subtle neutral background like the new-workroom one.
+private struct SettingsRowButton: View {
+  let help: String
+  let visible: Bool
+  let action: () -> Void
+  @State private var hovering = false
+
+  var body: some View {
+    Button(action: action) {
+      Image(systemName: "gearshape")
+        .font(.system(size: 11))
+        .foregroundStyle(.secondary)
+        .padding(4)
+        .background(
+          RoundedRectangle(cornerRadius: 5)
+            .fill(Color.primary.opacity(hovering ? 0.1 : 0))
+        )
+    }
+    .buttonStyle(.plain)
+    .onHover { hovering = $0 }
+    .help(help)
+    .accessibilityLabel(help)
+    .opacity(visible ? 1 : 0)
+    .allowsHitTesting(visible)
   }
 }
 

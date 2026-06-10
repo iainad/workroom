@@ -127,6 +127,12 @@ final class AppStore: ObservableObject {
       if self.terminals.tabCount(forTargetID: targetID) < 2 {
         self.expandedTerminalTargets.remove(targetID)
       }
+      // If the target's run terminal was closed/reaped, drop its whole run state (issue #7). One
+      // assignment clears every phase, so no stop/restart bookkeeping can be left behind to drive a
+      // later unexpected respawn or first-press hard kill (review #1).
+      if let runTab = self.runStates[targetID]?.tab, ids.contains(runTab) {
+        self.runStates[targetID] = nil
+      }
     }
     // Mirror the aggregate unread count onto the Dock icon badge (issue #32). Owned here, not in a
     // view: see `NotificationCenterStore.onTotalChange` for why a view-driven badge misses
@@ -168,6 +174,273 @@ final class AppStore: ObservableObject {
       let project = projects.first(where: { $0.id == path })
     else { return nil }
     return project.workrooms.first { $0.id == name }
+  }
+
+  // MARK: Run command (issue #7)
+
+  /// The lifecycle of a target's run command (issue #7), one value per target. A single state machine
+  /// replaces the former parallel sets/maps — every transition is explicit, so the stale-bookkeeping
+  /// family of bugs (an orphaned "pending restart" respawning a later run; a "Ctrl-C already sent"
+  /// flag hard-killing a fresh run's first Stop) is unrepresentable. Process-based (child-exit), NOT
+  /// OSC-9;4 — arbitrary run commands (npm run dev) emit no progress.
+  enum RunState: Equatable {
+    /// Auto-run queued for a just-created workroom; its pane hasn't mounted, so there's no tab yet.
+    /// While armed, `ensureInitialTerminal` suppresses the default shell so the run tab is tab #1.
+    case armed
+    /// Process alive in `tab`. `interrupted` = a Ctrl-C was already sent this stop cycle, so the next
+    /// Stop escalates to a hard kill (OV-D).
+    case running(tab: TerminalTab.ID, interrupted: Bool)
+    /// Process alive in `tab`, Ctrl-C sent, awaiting child-exit to close + respawn (graceful restart, C1).
+    case restarting(tab: TerminalTab.ID)
+    /// Process exited but the pane stays open (`wait_after_command`); `tab` is still present.
+    case stopped(tab: TerminalTab.ID)
+
+    /// The run tab id, for any state that has one (everything but `.armed`).
+    var tab: TerminalTab.ID? {
+      switch self {
+      case .running(let tab, _), .restarting(let tab), .stopped(let tab): return tab
+      case .armed: return nil
+      }
+    }
+    /// Whether the process is executing (drives the toolbar Run↔Stop/Restart toggle + sidebar dot).
+    var isRunning: Bool {
+      switch self {
+      case .running, .restarting: return true
+      case .armed, .stopped: return false
+      }
+    }
+  }
+
+  /// Run-STATE is owned here (not on `TerminalSessions`) so the toolbar, sidebar, menu, and RootView
+  /// — which all observe this store — react to start/stop/exit from one `@Published` source (OV-A).
+  /// `TerminalSessions` only creates/focuses the tab and reports its removal via `onTabsRemoved`.
+  @Published private(set) var runStates: [TerminalTarget.ID: RunState] = [:]
+
+  /// Whether the target's run command is currently running. Drives the toolbar Run↔Stop/Restart
+  /// toggle and the sidebar run dot.
+  func isRunCommandRunning(for targetID: TerminalTarget.ID) -> Bool {
+    runStates[targetID]?.isRunning ?? false
+  }
+
+  /// The target's run terminal tab id (running or stopped-but-open), if any.
+  func runTabID(for targetID: TerminalTarget.ID) -> TerminalTab.ID? { runStates[targetID]?.tab }
+
+  /// The run config for a project path (empty if none set). Single read path for the toolbar, menu,
+  /// settings sheet, and auto-run. Stored app-side in `Defaults` (GUI-only — the CLI can't hold a
+  /// long-running process, so it's deliberately out of the `--json` contract, like branch labels).
+  func runConfig(forProject projectPath: String) -> RunConfig {
+    Defaults[.runCommands][projectPath] ?? .empty
+  }
+
+  /// Whether a project has a non-blank run command configured.
+  func hasRunCommand(forProject projectPath: String) -> Bool {
+    runConfig(forProject: projectPath).hasCommand
+  }
+
+  /// Persist a project's run config. A blank command with auto-run off removes the entry so the map
+  /// doesn't accrue dead keys. `objectWillChange` fires so the toolbar/menu re-render `hasRunCommand`
+  /// the moment Save commits (those consumers observe this store — issue #7 reactivity, OV-A).
+  func setRunConfig(_ config: RunConfig, forProject projectPath: String) {
+    objectWillChange.send()
+    var map = Defaults[.runCommands]
+    if config.hasCommand || config.autoRun {
+      map[projectPath] = RunConfig(
+        command: config.command.trimmingCharacters(in: .whitespacesAndNewlines),
+        autoRun: config.autoRun)
+    } else {
+      map[projectPath] = nil
+    }
+    Defaults[.runCommands] = map
+  }
+
+  // MARK: Run command — actions (issue #7)
+
+  /// The owning project of a terminal target (root or workroom), by matching the live project list.
+  private func project(forTarget target: TerminalTarget) -> Project? {
+    projects.first { p in
+      p.rootTarget.id == target.id
+        || p.workrooms.contains { $0.target(inProject: p.path).id == target.id }
+    }
+  }
+
+  /// Build the libghostty `command` string (A3): run the user's login+interactive shell so the
+  /// command inherits their PATH/aliases/version-manager shims, then `-c` the command. POSIX shells
+  /// (zsh/bash/sh/dash/ksh) get `-lic` with POSIX single-quote escaping (shell path quoted too —
+  /// Codex #8); a non-POSIX `$SHELL` (fish/nu/csh) falls back to a login `/bin/sh -lc`, whose
+  /// interactive rc won't load — a documented limitation (issue #7, fold #7).
+  private func runCommandLine(_ raw: String) -> String {
+    let shell = ShellEnvironment.loginShell()
+    let escaped = raw.replacingOccurrences(of: "'", with: "'\\''")
+    let name = (shell as NSString).lastPathComponent
+    if ["zsh", "bash", "sh", "dash", "ksh"].contains(name) {
+      let shellEscaped = shell.replacingOccurrences(of: "'", with: "'\\''")
+      return "'\(shellEscaped)' -lic '\(escaped)'"
+    }
+    return "/bin/sh -lc '\(escaped)'"
+  }
+
+  /// Start the project's run command in `target`'s directory, in a dedicated run terminal. No-op
+  /// without a configured command or for a missing target. If a run tab already exists it's focused,
+  /// not duplicated (one run terminal per target).
+  func startRunCommand(for target: TerminalTarget) {
+    guard !target.isMissing, let project = project(forTarget: target) else { return }
+    let config = runConfig(forProject: project.path)
+    guard config.hasCommand else { return }
+    if let existing = runStates[target.id]?.tab {
+      terminals.focus(existing, for: target)
+      return
+    }
+    let line = runCommandLine(config.command.trimmingCharacters(in: .whitespacesAndNewlines))
+    let tab = terminals.addRunTab(for: target, command: line, cwd: target.path)
+    runStates[target.id] = .running(tab: tab.id, interrupted: false)
+    // Child-exit flips run-state to stopped; the pane stays open (wait_after_command). The captured
+    // `target` value is stable for the workroom's lifetime (a delete reaps everything anyway).
+    tab.view.onChildExited = { [weak self] _ in self?.markRunExited(for: target) }
+  }
+
+  /// Toggle a specific target's run command from the sidebar: running → stop; otherwise start (or
+  /// re-run a stopped-but-open tab). Acts on the given target (not the selection). On start, also
+  /// navigates the detail pane to that target so the just-started run tab is visible — it's already
+  /// the focused tab within the target, so selecting the target shows it (issue #7).
+  func toggleRunCommand(for target: TerminalTarget) {
+    if isRunCommandRunning(for: target.id) {
+      stopRunCommand(for: target)
+    } else {
+      restartRunCommand(for: target)  // no run tab → start; stopped-but-open tab → re-run
+      if let sid = Self.sidebarID(forTargetID: target.id, in: projects) {
+        selectedTargetID = sid
+        selectedProjectID = Self.projectPath(of: sid)
+      }
+    }
+  }
+
+  /// ⌘R / toolbar Run = "ensure running" (OV-B): running → focus it; stopped-but-open → re-run;
+  /// none → start. Acts on the current selection.
+  func runOrFocusRunCommand() {
+    guard let target = selectedTarget, !target.isMissing else { return }
+    switch runStates[target.id] {
+    case .running(let tab, _), .restarting(let tab):
+      terminals.focus(tab, for: target)
+    case .stopped:
+      restartRunCommand(for: target)  // re-run a stopped-but-open tab (close + respawn)
+    case .armed, .none:
+      startRunCommand(for: target)
+    }
+  }
+
+  /// ⇧⌘R / Stop menu: stop the selected target's run command if it's running. No-op otherwise.
+  func stopSelectedRunCommand() {
+    guard let target = selectedTarget, isRunCommandRunning(for: target.id) else { return }
+    stopRunCommand(for: target)
+  }
+
+  /// ⌥⌘R / Restart menu: restart the selected target's run command if it's running. No-op otherwise.
+  func restartSelectedRunCommand() {
+    guard let target = selectedTarget, isRunCommandRunning(for: target.id) else { return }
+    restartRunCommand(for: target)
+  }
+
+  /// Whether any run terminal exists (running or stopped-but-open) — gates View ▸ Go to Run Terminal.
+  var hasAnyRunTerminal: Bool { runStates.values.contains { $0.tab != nil } }
+
+  /// View ▸ Go to Run Terminal: jump to a run terminal if one exists — select its target and focus the
+  /// run tab. Prefers the selected target's run terminal, else any. Pure navigation; never starts a
+  /// command (issue #7).
+  func revealRunTerminal() {
+    let targetID =
+      selectedTarget.flatMap { runStates[$0.id]?.tab != nil ? $0.id : nil }
+      ?? runStates.first { $0.value.tab != nil }?.key
+    guard let targetID, let runTab = runStates[targetID]?.tab,
+      let sid = Self.sidebarID(forTargetID: targetID, in: projects), let target = target(for: sid)
+    else { return }
+    selectedTargetID = sid
+    selectedProjectID = Self.projectPath(of: sid)
+    terminals.focus(runTab, for: target)
+  }
+
+  /// Stop the run command. 1st press: Ctrl-C (graceful SIGINT to the foreground group), recorded on the
+  /// state. 2nd press: hard kill by closing the run tab — freeing the surface hangs up the PTY (SIGHUP),
+  /// the only reliable kill libghostty exposes (no child PID). For a process that ignores SIGINT (OV-D).
+  func stopRunCommand(for target: TerminalTarget) {
+    switch runStates[target.id] {
+    case .running(let tab, let interrupted):
+      if interrupted {
+        terminals.closeTab(tab, for: target)  // 2nd press → hard kill; onTabsRemoved clears state
+      } else if let view = terminals.tab(tab, for: target)?.view {
+        view.sendInterrupt()  // 1st press → graceful Ctrl-C
+        runStates[target.id] = .running(tab: tab, interrupted: true)
+      }
+    case .restarting(let tab):
+      // Stop during a graceful restart: drop the respawn intent. The Ctrl-C is already in flight, so
+      // on exit the pane just stops; a further Stop (now interrupted) hard-kills a wedged process — so
+      // the first Stop after a Restart stays graceful instead of an immediate kill (review #3).
+      runStates[target.id] = .running(tab: tab, interrupted: true)
+    case .armed, .stopped, .none:
+      break  // nothing executing to stop
+    }
+  }
+
+  /// Restart (C1, graceful — releases the port before the new instance binds). Running: Ctrl-C, then
+  /// respawn once the process actually exits (`markRunExited`). Stopped/open: close + start now. Armed
+  /// or none: just start.
+  func restartRunCommand(for target: TerminalTarget) {
+    switch runStates[target.id] {
+    case .running(let tab, _):
+      terminals.tab(tab, for: target)?.view.sendInterrupt()
+      runStates[target.id] = .restarting(tab: tab)  // await child-exit → close + respawn
+    case .restarting:
+      break  // already restarting → don't double-send Ctrl-C
+    case .stopped(let tab):
+      terminals.closeTab(tab, for: target)  // clears state via onTabsRemoved
+      startRunCommand(for: target)
+    case .armed, .none:
+      startRunCommand(for: target)
+    }
+  }
+
+  /// The run command's process exited (child-exit). `.running` → stopped (pane stays open). `.restarting`
+  /// → the old process is gone, so close its pane and respawn (C1).
+  ///
+  /// This runs inside libghostty's child-exit callback (the surface is mid-callback on the stack), so
+  /// the restart's close+respawn — which frees the old surface — MUST be deferred to the next runloop
+  /// tick; freeing the surface synchronously here is a re-entrant use-after-free that crashes the app.
+  /// The deferred guard re-reads the state, so a tab the user closed in between isn't double-closed.
+  private func markRunExited(for target: TerminalTarget) {
+    switch runStates[target.id] {
+    case .running(let tab, _):
+      runStates[target.id] = .stopped(tab: tab)
+    case .restarting:
+      DispatchQueue.main.async { [weak self] in
+        guard let self, case .restarting(let tab) = self.runStates[target.id] else { return }
+        self.terminals.closeTab(tab, for: target)
+        self.startRunCommand(for: target)
+      }
+    case .armed, .stopped, .none:
+      break
+    }
+  }
+
+  /// Arm a just-created workroom to auto-run its project's command as its first terminal (issue #7).
+  /// Called from `createWorkroom`; the run fires from `ensureInitialTerminal` when the pane mounts.
+  func armAutoRun(forWorkroom targetID: TerminalTarget.ID) {
+    runStates[targetID] = .armed
+  }
+
+  /// Create a target's initial terminal when its pane first appears (called by the terminals view).
+  /// Normally just `ensureTab`, but when an auto-run was armed for this just-created workroom
+  /// (issue #7) the run command becomes the first tab instead of a default shell. Because the pane
+  /// only mounts once any blocking setup dialog is dismissed, this is exactly when the command should
+  /// run (post-setup). Falls back to a normal tab if the command can't start (e.g. config cleared).
+  func ensureInitialTerminal(for target: TerminalTarget) {
+    if case .armed = runStates[target.id] {
+      // Consume the armed intent, then let startRunCommand (re-)derive the state: it becomes `.running`
+      // as the workroom's first tab, or a no-op if the config was cleared between arming and mount.
+      runStates[target.id] = nil
+      startRunCommand(for: target)
+      if terminals.tabCount(forTargetID: target.id) == 0 { terminals.ensureTab(for: target) }
+      return
+    }
+    terminals.ensureTab(for: target)
   }
 
   // MARK: Loading
@@ -221,6 +494,14 @@ final class AppStore: ObservableObject {
   private func loadFixture() {
     let fixtures = UITestFixture.projects()
     projects = fixtures
+    // Seed a deterministic run command (issue #7) so the run-command UI is exercisable in fixture
+    // mode (the lifecycle XCUITest + the manual verify-first probe). The path is a temp dir, so real
+    // projects' Defaults are untouched. Prints a marker (proves the command parsed + launched) then
+    // sleeps (stays "running" long enough to assert the Stop/Restart state deterministically).
+    if let project = fixtures.first {
+      setRunConfig(
+        RunConfig(command: "echo PROBE_OK; sleep 30", autoRun: false), forProject: project.path)
+    }
     // The real persisted selection won't resolve against the fixture paths; don't try to restore it.
     pendingRestoreSelection = nil
     // Start every fixture project expanded so the sidebar tree is deterministic regardless of any
@@ -341,6 +622,16 @@ final class AppStore: ObservableObject {
           DispatchQueue.main.async {
             hasSetup = setup
             Task { @MainActor in
+              // Pre-arm auto-run BEFORE the workroom is mounted/selected, so its terminal view runs
+              // the command as tab #1 instead of a default shell (issue #7, Codex #12). The run fires
+              // when that terminal view first mounts: immediately for a no-setup workroom, or only
+              // AFTER the user dismisses the blocking setup dialog (the terminal is withheld behind
+              // it until then) — so the command runs post-setup, as intended.
+              let cfg = self.runConfig(forProject: project.path)
+              if cfg.autoRun, cfg.hasCommand {
+                self.armAutoRun(
+                  forWorkroom: TerminalTarget.workroomID(project: project.path, name: name))
+              }
               await self.mountSetupLog(session, workroom: name, project: project, blocking: setup)
             }
           }
@@ -355,12 +646,19 @@ final class AppStore: ObservableObject {
       // A non-blocking run with no output leaves nothing to dock. A blocking session
       // stays up (even with no output) until the user dismisses it.
       if !session.blocking, session.lines.isEmpty, let id = session.targetID { logs[id] = nil }
+      // Auto-run is NOT triggered here: it fires from `ensureInitialTerminal` when the workroom's
+      // terminal pane first mounts (issue #7), which is after the setup dialog is dismissed for a
+      // blocking setup. Triggering here would also race the `onReady` arming on a fast no-setup create.
     } catch {
       // Even on (partial) failure, reload so a "created but setup failed" workroom shows up.
       await reload()
       if let id = session.targetID {
-        // The workroom exists; show the failure in its log. Keep it blocking (if a setup
-        // script ran) so the failure replaces the terminal until the user dismisses it.
+        // The workroom exists but setup failed. Disarm the auto-run armed in `onReady` (before setup
+        // ran) so dismissing the failure dialog doesn't launch the command against a half-set-up tree
+        // — auto-run is a success-path action (issue #7, review finding).
+        if case .armed = runStates[id] { runStates[id] = nil }
+        // Show the failure in its log. Keep it blocking (if a setup script ran) so the failure
+        // replaces the terminal until the user dismisses it.
         session.blocking = hasSetup
         logs[id] = session
         selectedProjectID = project.id
@@ -397,6 +695,9 @@ final class AppStore: ObservableObject {
     // Optimistic: drop it from the model now, reap its terminals/log, clear selection.
     removeWorkroomLocally(workroom, in: project)
     terminals.reap(targetID)
+    // `reap` only fires `onTabsRemoved` (which clears run state) when tabs existed; a workroom armed
+    // for auto-run but deleted before its pane mounted has none, so clear directly too (issue #7).
+    runStates[targetID] = nil
     logs[targetID] = nil
     // Drop the gone workroom's notifications and pull any banners it already delivered.
     systemNotifier.withdraw(tabIDs: notifications.removeForTarget(targetID))
@@ -471,7 +772,11 @@ final class AppStore: ObservableObject {
     guard let tab = terminals.tabs(for: target).first(where: { $0.id == tabID }) else { return }
     // UI-test fixture mode closes without the modal so ⌘W / right-click Close are synchronous and
     // teardown never blocks on an alert (the launch-arg override can't reliably reach a Defaults Bool).
-    guard Defaults[.confirmOnCloseTerminal], !UITestFixture.isActive else {
+    // Also skip the confirm when the tab's process has already exited (e.g. a stopped/finished run
+    // command sitting at "Process exited" via wait_after_command) — there's nothing running to lose
+    // (issue #7).
+    guard Defaults[.confirmOnCloseTerminal], !UITestFixture.isActive, !tab.view.processHasExited
+    else {
       terminals.closeTab(tabID, for: target)
       return
     }

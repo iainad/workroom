@@ -13,6 +13,7 @@ struct WorkroomTerminalsView: View {
   let target: TerminalTarget
   @ObservedObject var sessions: TerminalSessions
   @EnvironmentObject var notifications: NotificationCenterStore
+  @EnvironmentObject var store: AppStore
 
   // Drag a tab chip down into a pane to split (issue #3). `chipPaneDrag` is the live drop preview
   // (content-local), shown by `PaneTreeView`; `contentFrame` is the pane area's global rect, used to
@@ -74,7 +75,9 @@ struct WorkroomTerminalsView: View {
     // Create the first terminal once the pane appears (and for each new target), then reconcile
     // occlusion so the right surfaces render after a target switch (issue #3).
     .task(id: target.id) {
-      sessions.ensureTab(for: target)
+      // Through the store so a pending auto-run (issue #7) suppresses the default first tab and the
+      // run command becomes tab #1 instead of being orphaned beside a stray "Terminal 1".
+      store.ensureInitialTerminal(for: target)
       sessions.reconcileOcclusion(for: target)
     }
     // Focusing a terminal dismisses its notifications. This view only ever renders the selected

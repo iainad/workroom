@@ -78,8 +78,8 @@ final class TerminalSessions: ObservableObject {
   /// Factory seam (plan T1): how a surface view is created for a target at a working directory.
   /// Overridable in tests so the lifecycle can be exercised without a real window/shell. The cwd
   /// argument lets a ⌘D split inherit the focused pane's directory.
-  var makeView: (TerminalTarget, String) -> GhosttySurfaceView = { _, cwd in
-    GhosttySurfaceView(workingDirectory: cwd)
+  var makeView: (TerminalTarget, String, String?) -> GhosttySurfaceView = { _, cwd, command in
+    GhosttySurfaceView(workingDirectory: cwd, command: command)
   }
 
   /// Smallest usable pane edge (points). A split is refused when it would shrink a pane below this; the
@@ -185,6 +185,45 @@ final class TerminalSessions: ObservableObject {
   @discardableResult
   func addTab(for target: TerminalTarget) -> TerminalTab {
     let tab = makeTab(for: target, cwd: target.path)
+    insert(tab, for: target)
+    setFocused(tab.id, for: target.id)
+    reconcileOcclusion(for: target)
+    return tab
+  }
+
+  /// Open the dedicated "run command" terminal (issue #7): a solo tab that launches `command` in
+  /// `cwd`, titled "Run" until the program reports its own title, focused like any new tab — through
+  /// `setFocused`, so focus observers fire (it is NOT a direct dict write; see the focus-chokepoint
+  /// note on `setFocused`). The caller (`AppStore`) owns the run-state and wires `onChildExited`;
+  /// this just creates and shows the tab.
+  ///
+  /// Run-tab lifecycle — one `AppStore.RunState` per target; the pane stays open on exit via
+  /// `wait_after_command`:
+  /// ```
+  ///   armed                       auto-run queued before the workroom's pane exists; consumed on mount
+  ///   start (no state / armed) ─▶ spawn surface (command = $SHELL -lic '<cmd>', wait_after_command);
+  ///                               focus; state = running
+  ///
+  ///   running ──────── Run / ⌘R ─────────▶ focus (no respawn)
+  ///   running ──────── Stop (1st) ───────▶ Ctrl-C; state = running(interrupted)
+  ///   running ──────── Restart ──────────▶ Ctrl-C; state = restarting
+  ///   running / running(interrupted) ── child exits ─▶ stopped (pane open)
+  ///   running(interrupted) ── Stop (2nd) ─▶ closeTab → ghostty_surface_free (SIGHUP, hard kill)
+  ///   restarting ── child exits ─▶ close + respawn (graceful; frees the port); Stop ─▶ running(interrupted)
+  ///   stopped ──────── Run / ⌘R / Restart ─▶ close + respawn
+  ///   any state ────── close tab (⌘W/✕) / reap ─▶ removed (state cleared via onTabsRemoved)
+  /// ```
+  @discardableResult
+  func addRunTab(for target: TerminalTarget, command: String, cwd: String) -> TerminalTab {
+    let tab = makeTab(for: target, cwd: cwd, command: command, title: "Run")
+    // "Process exited. Press any key to close" (wait_after_command) → close this tab on the keypress,
+    // without the confirm (the process has already exited). Only run tabs wire this (issue #7).
+    let targetID = target.id
+    let tabID = tab.id
+    tab.view.onCloseRequested = { [weak self] in
+      guard let self, let target = self.target(forID: targetID) else { return }
+      self.closeTab(tabID, for: target)
+    }
     insert(tab, for: target)
     setFocused(tab.id, for: target.id)
     reconcileOcclusion(for: target)
@@ -526,11 +565,13 @@ final class TerminalSessions: ObservableObject {
     orderByTarget[target.id] = order
   }
 
-  private func makeTab(for target: TerminalTarget, cwd: String) -> TerminalTab {
+  private func makeTab(
+    for target: TerminalTarget, cwd: String, command: String? = nil, title: String? = nil
+  ) -> TerminalTab {
     let count = (counts[target.id] ?? 0) + 1
     counts[target.id] = count
-    let view = makeView(target, cwd)
-    let tab = TerminalTab(view: view, defaultTitle: "Terminal \(count)")
+    let view = makeView(target, cwd, command)
+    let tab = TerminalTab(view: view, defaultTitle: title ?? "Terminal \(count)")
 
     let targetID = target.id
     let tabID = tab.id

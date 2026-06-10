@@ -52,6 +52,12 @@ struct TerminalTabStrip: View {
             // Activity in an unfocused tab highlights the tab itself (accent title + faint accent
             // fill) instead of a count — a tab is too narrow for a number.
             let hasActivity = notifications.count(tab: tab.id) > 0
+            // Run-command state for this tab's chip icon (issue #7): only the dedicated run tab
+            // carries one — running (green) vs stopped/exited (dim). Process-based, distinct from the
+            // OSC-9;4 RunningUnderline below.
+            let runState: TerminalTabChip.RunState? =
+              store.runTabID(for: target.id) == tab.id
+              ? (store.isRunCommandRunning(for: target.id) ? .running : .stopped) : nil
             // Dragged chip tracks the cursor; the rest shift to open the gap.
             let offsetX =
               isDragging
@@ -61,7 +67,7 @@ struct TerminalTabStrip: View {
                 amount: draggedWidth + tabSpacing)
             TerminalTabChip(
               tab: tab, isActive: tab.id == activeID, isHovered: isHovered,
-              isDragging: isDragging, hasActivity: hasActivity
+              isDragging: isDragging, hasActivity: hasActivity, runState: runState
             ) {
               store.requestCloseTerminalTab(tab.id, for: target)
             }
@@ -235,11 +241,15 @@ struct TerminalTabStrip: View {
 /// activity/dragging styling. Purely presentational — the strip wraps it with the hover, tap, and
 /// drag gestures, since those drive (and read) the strip's shared drag state.
 private struct TerminalTabChip: View {
+  /// The run-command state shown as a leading chip icon — only the dedicated run tab has one (#7).
+  enum RunState { case running, stopped }
+
   let tab: TerminalTab
   let isActive: Bool
   let isHovered: Bool
   let isDragging: Bool
   let hasActivity: Bool
+  let runState: RunState?
   let onClose: () -> Void
 
   var body: some View {
@@ -250,6 +260,15 @@ private struct TerminalTabChip: View {
     // Title and close button laid out side by side: a compact gap keeps the ✕ visibly tied to its
     // tab (a wide gap reads as detached) while still clearing the title so they never crowd.
     HStack(spacing: 6) {
+      // Leading state dot for the run tab (#7): green while the command runs, dim once it has exited.
+      // Same glyph as the sidebar run dot, so the two read as one signal.
+      if let runState {
+        Image(systemName: "play.circle.fill")
+          .font(.system(size: 10))
+          .foregroundStyle(runState == .running ? Color.green : Color.secondary)
+          .help(runState == .running ? "Run command running" : "Run command stopped")
+          .accessibilityLabel(runState == .running ? "running" : "stopped")
+      }
       Text(tab.title)
         .font(.callout)
         .lineLimit(1)

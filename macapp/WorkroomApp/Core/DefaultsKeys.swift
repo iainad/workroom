@@ -1,5 +1,20 @@
 import Defaults
 
+/// A project's "Run command" config (issue #7). Configured per PROJECT (keyed by the project's
+/// absolute path in `Defaults[.runCommands]`), but executed in the SELECTED WORKROOM's directory.
+/// `Codable` → `Defaults` serialises it as JSON. The field names (`command`/`autoRun`) and the key
+/// string (`runCommands`) are a stored-data contract: changing either silently drops every user's
+/// saved config on upgrade, so keep them byte-for-byte stable once shipped.
+struct RunConfig: Codable, Hashable, Defaults.Serializable {
+  var command: String
+  var autoRun: Bool
+
+  static let empty = RunConfig(command: "", autoRun: false)
+
+  /// True when there's a non-blank command to run.
+  var hasCommand: Bool { !command.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+}
+
 /// The single source of truth for every persisted preference: each `Key` owns both the
 /// UserDefaults key string *and* the default value, so a default lives in exactly one place
 /// (no more duplicating it across an enum getter and every `@Default`/`@AppStorage` site).
@@ -43,4 +58,9 @@ extension Defaults.Keys {
   /// Project paths the user has collapsed in the sidebar; absence of a path means expanded
   /// (the default). Persisted natively as a string array (issue #14).
   static let collapsedProjects = Key<Set<String>>("sidebar.collapsedProjects", default: [])
+
+  /// Per-project "Run command" config, keyed by the project's absolute path (issue #7). Absence of a
+  /// path means no run command configured. A single path-keyed map (mirrors `collapsedProjects`):
+  /// `Defaults` keys are static, so per-project keys aren't an option.
+  static let runCommands = Key<[String: RunConfig]>("runCommands", default: [:])
 }

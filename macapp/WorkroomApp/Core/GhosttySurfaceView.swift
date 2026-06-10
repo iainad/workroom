@@ -20,6 +20,11 @@ final class GhosttySurfaceView: NSView {
 
   private let workingDirectory: String
 
+  /// When non-nil/non-empty, the surface launches this command instead of a login shell, and keeps
+  /// the pane open after it exits (`wait_after_command`). Used by the "run command" feature (issue
+  /// #7); nil for every ordinary terminal. The host passes a shell-wrapped string (`$SHELL -lic …`).
+  private let runCommand: String?
+
   /// Test seam (view-layer unit tests): when `false`, `createSurface()` is a no-op, so the view still
   /// mounts as a real `NSView` in the window — letting `PaneRenderingTests` assert on the AppKit
   /// hierarchy (which panes are window-mounted, and at what size) — but without spawning libghostty's
@@ -43,6 +48,18 @@ final class GhosttySurfaceView: NSView {
   /// solely from this (issue #28 follow-up). The adapter calls `handleProgressReport(_:)`, which forwards
   /// here and arms a safety timer; this closure just relays the value to the host.
   var onProgressReport: ((Bool) -> Void)?
+  /// The surface's child process exited (`GHOSTTY_ACTION_SHOW_CHILD_EXITED`). The run terminal uses
+  /// this to flip run-state back to "Run" while the pane stays open (`wait_after_command`). Only run
+  /// tabs wire this; ordinary tabs leave it nil so a shell `exit` is a no-op here (issue #7).
+  /// Value-type capture only.
+  var onChildExited: ((UInt32) -> Void)?
+  /// Close this surface's tab. Fired from `keyDown` when the run command's process has exited and the
+  /// pane is sitting at libghostty's "Process exited. Press any key to close" prompt
+  /// (`wait_after_command`) — libghostty shows that prompt but emits no close action in this
+  /// embedding, so we close it ourselves on the next key. Only run tabs wire this (the host closes
+  /// them without a confirm, since the process is gone); ordinary tabs leave it nil and keep
+  /// forwarding keys / staying in place after the shell exits (issue #7).
+  var onCloseRequested: (() -> Void)?
   /// This pane became first responder (mouse click or programmatic focus) — the host makes it the
   /// selection (issue #3, splits). `becomeFirstResponder` is the single chokepoint for every focus
   /// path, so one hook covers them all. Value-type captures only.
@@ -100,8 +117,9 @@ final class GhosttySurfaceView: NSView {
   private var progressActive = false
   private static let progressTimeout: TimeInterval = 30
 
-  init(workingDirectory: String, spawnsSurface: Bool = true) {
+  init(workingDirectory: String, command: String? = nil, spawnsSurface: Bool = true) {
     self.workingDirectory = workingDirectory
+    self.runCommand = command
     self.spawnsSurface = spawnsSurface
     super.init(frame: .zero)
     wantsLayer = true
@@ -162,6 +180,15 @@ final class GhosttySurfaceView: NSView {
       config.env_var_count = 1
     }
 
+    // Run-command surface (issue #7): launch a specific command instead of the login shell and KEEP
+    // the pane open after it exits (`wait_after_command`) so its output stays visible. The pointer
+    // joins `surfaceCStrings`, freed on teardown like `working_directory` / the env vars above.
+    if let runCommand, !runCommand.isEmpty, let cmd = strdup(runCommand) {
+      surfaceCStrings.append(cmd)
+      config.command = UnsafePointer(cmd)
+      config.wait_after_command = true
+    }
+
     surface = ghostty_surface_new(app, &config)
     guard let surface else {
       freeSurfaceCStrings()
@@ -197,6 +224,8 @@ final class GhosttySurfaceView: NSView {
     onCmdClickFile = nil
     resolveCmdHoverFile = nil
     onFocused = nil
+    onChildExited = nil
+    onCloseRequested = nil
     progressActive = false
     progressTimeoutTimer?.invalidate()
     progressTimeoutTimer = nil
@@ -469,6 +498,36 @@ final class GhosttySurfaceView: NSView {
     if progressActive { armProgressTimeout() }
   }
 
+  /// Called by `GhosttyRuntimeAdapter` on `GHOSTTY_ACTION_SHOW_CHILD_EXITED` — the surface's child
+  /// process exited. Forwards to the host; only run tabs act on it (issue #7).
+  func handleChildExited(exitCode: UInt32) {
+    onChildExited?(exitCode)
+  }
+
+  /// Whether the surface's child process has already exited (`wait_after_command` keeps such a pane
+  /// open). Lets the host skip the "stops any running process" close confirmation — there's nothing
+  /// left running to lose (issue #7). False before the surface exists.
+  var processHasExited: Bool {
+    surface.map { ghostty_surface_process_exited($0) } ?? false
+  }
+
+  /// Send Ctrl-C to the running program — a graceful SIGINT to the foreground process group. Drives
+  /// a synthetic ⌃C key event through the normal `keyDown` path (→ `ghostty_surface_key`), exactly as
+  /// a real keypress does, which delivers immediately. NOT `ghostty_surface_text` (bracketed paste
+  /// would make the 0x03 a literal byte) and NOT `ghostty_surface_write_buffer` (it enqueues and only
+  /// flushes on the next surface event, so a Stop click with no follow-up input wouldn't fire). Backs
+  /// the run command's Stop (issue #7). No-op until the surface exists. keyCode 8 = ANSI "C".
+  func sendInterrupt() {
+    guard surface != nil,
+      let event = NSEvent.keyEvent(
+        with: .keyDown, location: .zero, modifierFlags: .control,
+        timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window?.windowNumber ?? 0,
+        context: nil, characters: "\u{03}", charactersIgnoringModifiers: "c", isARepeat: false,
+        keyCode: 8)
+    else { return }
+    keyDown(with: event)
+  }
+
   private func armProgressTimeout() {
     progressTimeoutTimer?.invalidate()
     progressTimeoutTimer = Timer.scheduledTimer(
@@ -503,6 +562,14 @@ final class GhosttySurfaceView: NSView {
   override func keyDown(with event: NSEvent) {
     guard let surface else {
       super.keyDown(with: event)
+      return
+    }
+    // "Process exited. Press any key to close" (run command at its `wait_after_command` prompt):
+    // libghostty shows the prompt but never emits a close action here, so close the tab ourselves on
+    // the next key. Only run tabs wire `onCloseRequested`; ordinary tabs fall through and forward
+    // keys as usual (a finished login shell just keeps its pane) (issue #7).
+    if let onCloseRequested, processHasExited {
+      onCloseRequested()
       return
     }
     let action: ghostty_input_action_e =
@@ -641,15 +708,16 @@ final class GhosttySurfaceView: NSView {
     // Menu commands that pair Command with Shift or Option fail the command-only guard below, so
     // reserve them explicitly. Without this they reach the terminal, and a TUI in an enhanced
     // keyboard mode (Claude/Codex) consumes the keystroke so the menu key-equivalent never fires.
-    // ⇧⌘D = Split Down; ⇧⌘N = Next Notification; ⌥⌘N = the Notifications toggle.
-    if flags == [.command, .shift] { return key == "d" || key == "n" }
-    if flags == [.command, .option] { return key == "n" }
+    // ⇧⌘D = Split Down; ⇧⌘N = Next Notification; ⇧⌘R = Stop run; ⌥⌘N = Notifications toggle;
+    // ⌥⌘R = Restart run (issue #7).
+    if flags == [.command, .shift] { return key == "d" || key == "n" || key == "r" }
+    if flags == [.command, .option] { return key == "n" || key == "r" }
     guard flags == .command else { return false }
     if ("1"..."9").contains(ch) { return true }  // focus tab N
     // ⌘T/⌘W/⌘O/⌘D are real menu commands; ⌘Q/⌘H/⌘M/⌘, are system standards; ⌘[ / ⌘] are Back/Forward
-    // navigation (issue #26) — all reserved so the menu key-equivalent fires instead of the terminal.
-    // Plain ⌘N has no Workroom command, so it passes through to the terminal.
-    return ["t", "w", "o", "d", "q", "h", "m", ",", "[", "]"].contains(key)
+    // navigation (issue #26); ⌘R is Run (issue #7) — all reserved so the menu key-equivalent fires
+    // instead of the terminal. Plain ⌘N has no Workroom command, so it passes through to the terminal.
+    return ["t", "w", "o", "d", "q", "h", "m", ",", "[", "]", "r"].contains(key)
   }
 
   private func buildKeyEvent(from event: NSEvent, action: ghostty_input_action_e)

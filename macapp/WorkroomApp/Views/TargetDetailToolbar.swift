@@ -67,3 +67,49 @@ struct TargetDetailToolbar: ToolbarContent {
     }
   }
 }
+
+/// The run-command controls for a selected workroom (issue #7): a Run button that becomes Stop +
+/// Restart while the command is running. Renders nothing when the project has no run command
+/// configured (no disabled ghost). Reads run-state straight off `AppStore` — a `ToolbarContent` with
+/// an `@EnvironmentObject` re-evaluates on `@Published` changes (unlike a `Commands` body), so the
+/// toggle flips live (OV-A). Attached only for `.workroom` selections.
+struct RunCommandToolbar: ToolbarContent {
+  let target: TerminalTarget
+  /// The owning project's path — used to look up the configured command (`hasRunCommand`).
+  let projectPath: String
+  @EnvironmentObject var store: AppStore
+
+  var body: some ToolbarContent {
+    ToolbarItemGroup {
+      if store.hasRunCommand(forProject: projectPath) {
+        if store.isRunCommandRunning(for: target.id) {
+          Button {
+            store.stopRunCommand(for: target)
+          } label: {
+            Label("Stop", systemImage: "stop.fill")
+          }
+          .help("Stop the run command (again to force-quit)")
+          .accessibilityIdentifier("runCommand.stop")
+
+          Button {
+            store.restartRunCommand(for: target)
+          } label: {
+            Label("Restart", systemImage: "arrow.clockwise")
+          }
+          .help("Restart the run command")
+          .accessibilityIdentifier("runCommand.restart")
+        } else {
+          // Not running (no run tab, or stopped-but-open). `runOrFocusRunCommand` acts on the
+          // selection — which is this target — so it starts, or re-runs a stopped pane (OV-B).
+          Button {
+            store.runOrFocusRunCommand()
+          } label: {
+            Label("Run", systemImage: "play.fill")
+          }
+          .help("Run the project command")
+          .accessibilityIdentifier("runCommand.run")
+        }
+      }
+    }
+  }
+}

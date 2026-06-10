@@ -24,7 +24,7 @@ final class PaneRenderingTests: XCTestCase {
     // with `spawnsSurface: false` — no libghostty Metal renderer / login shell. Hosting live surfaces
     // in the headless CI unit-test host crashed XCTest's post-test memory checker on teardown; the
     // view-mount/layout path this suite verifies needs no live surface.
-    s.makeView = { _, cwd in GhosttySurfaceView(workingDirectory: cwd, spawnsSurface: false) }
+    s.makeView = { _, cwd, _ in GhosttySurfaceView(workingDirectory: cwd, spawnsSurface: false) }
     return s
   }
 

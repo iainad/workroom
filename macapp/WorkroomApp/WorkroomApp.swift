@@ -90,6 +90,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         Task { @MainActor in AppStore.shared.focusTerminalTab(at: digit - 1) }
         return nil  // consume so it doesn't reach the terminal
       }
+      // ⌘R: run-or-focus the selected workroom's run command (issue #7) — caught here so it fires
+      // before the terminal swallows it, like ⌘1–9. Consumed unconditionally (⌘R has no terminal use
+      // we want to preserve); a no-op when nothing's selected / no command is configured.
+      if flags == .command, event.charactersIgnoringModifiers?.lowercased() == "r" {
+        Task { @MainActor in AppStore.shared.runOrFocusRunCommand() }
+        return nil
+      }
+      // ⇧⌘R: stop the selected workroom's run command if it's running (issue #7). Caught here (not
+      // just the menu key-equivalent) so it fires reliably before the terminal, like ⌘R. No-op when
+      // nothing's running; consumed regardless (it's reserved in `isAppShortcut` anyway).
+      if flags == [.command, .shift], event.charactersIgnoringModifiers?.lowercased() == "r" {
+        Task { @MainActor in AppStore.shared.stopSelectedRunCommand() }
+        return nil
+      }
+      // ⌥⌘R: restart the selected workroom's run command if it's running (issue #7). Caught here for
+      // reliability, like ⌘R/⇧⌘R. No-op when nothing's running. (⌥⌘arrows are matched by keyCode
+      // above, so "r" doesn't collide with pane navigation.)
+      if flags == [.command, .option], event.charactersIgnoringModifiers?.lowercased() == "r" {
+        Task { @MainActor in AppStore.shared.restartSelectedRunCommand() }
+        return nil
+      }
       // ⌥⌘arrows: move focus between split panes — consumed only when focus actually moves, so the
       // keys still reach the terminal when there's no split to navigate. (Virtual keycodes:
       // left 123 / right 124 / down 125 / up 126.)
@@ -240,6 +261,24 @@ struct CanNavigateForwardKey: FocusedValueKey {
   typealias Value = Bool
 }
 
+/// Whether the selected workroom's project has a non-empty run command (issue #7) — published by
+/// RootView (observes the store), so the Run menu item disables when there's nothing to run.
+struct HasRunCommandKey: FocusedValueKey {
+  typealias Value = Bool
+}
+
+/// Whether the selected workroom's run command is currently running (issue #7) — published by
+/// RootView, so the menu shows Run vs Stop/Restart enablement.
+struct RunCommandActiveKey: FocusedValueKey {
+  typealias Value = Bool
+}
+
+/// Whether any run terminal exists to jump to (issue #7) — published by RootView, so the
+/// View ▸ Run Terminal item disables when there's none.
+struct HasRunTerminalKey: FocusedValueKey {
+  typealias Value = Bool
+}
+
 extension FocusedValues {
   var workroomSelected: Bool? {
     get { self[WorkroomSelectedKey.self] }
@@ -261,6 +300,18 @@ extension FocusedValues {
     get { self[CanNavigateForwardKey.self] }
     set { self[CanNavigateForwardKey.self] = newValue }
   }
+  var hasRunCommand: Bool? {
+    get { self[HasRunCommandKey.self] }
+    set { self[HasRunCommandKey.self] = newValue }
+  }
+  var runCommandActive: Bool? {
+    get { self[RunCommandActiveKey.self] }
+    set { self[RunCommandActiveKey.self] = newValue }
+  }
+  var hasRunTerminal: Bool? {
+    get { self[HasRunTerminalKey.self] }
+    set { self[HasRunTerminalKey.self] = newValue }
+  }
 }
 
 /// Menu-bar commands + keyboard shortcuts. They act on the shared store so they work
@@ -272,6 +323,9 @@ struct WorkroomCommands: Commands {
   @FocusedValue(\.hasNotifications) private var hasNotifications
   @FocusedValue(\.canNavigateBack) private var canNavigateBack
   @FocusedValue(\.canNavigateForward) private var canNavigateForward
+  @FocusedValue(\.hasRunCommand) private var hasRunCommand
+  @FocusedValue(\.runCommandActive) private var runCommandActive
+  @FocusedValue(\.hasRunTerminal) private var hasRunTerminal
   // Shared with RootView's inspector + toolbar toggle (same key) so all three stay in sync.
   @Default(.showNotifications) private var showNotifications
   // Same key as the Settings checkbox so the two stay in sync; GhosttySurfaceView reads it
@@ -303,10 +357,58 @@ struct WorkroomCommands: Commands {
       Toggle("Confirm Before Quitting", isOn: $confirmOnQuit)
     }
 
+    // Replace the default "Show/Hide Sidebar" with a clearer "Projects" label — it's the projects
+    // sidebar. Keeps the conventional ⌃⌘S toggle. `toggleSidebar(_:)` reaches the NSSplitViewController
+    // backing the NavigationSplitView via the responder chain.
+    CommandGroup(replacing: .sidebar) {
+      Button("Projects") {
+        NSApp.sendAction(#selector(NSSplitViewController.toggleSidebar(_:)), to: nil, from: nil)
+      }
+      .keyboardShortcut("s", modifiers: [.command, .control])
+    }
+
     CommandGroup(after: .sidebar) {
+      // View menu: jump to the run terminal if one exists (issue #7) — navigation only, so it's named
+      // distinctly from the Run menu's "Run" (which starts the command) to avoid two identical menu
+      // labels. Disabled when there's no run terminal to go to.
+      Button("Go to Run Terminal") { AppStore.shared.revealRunTerminal() }
+        .disabled(hasRunTerminal != true)
       // View menu: toggle the notifications inspector (checkmark reflects open/closed).
       Toggle("Notifications", isOn: $showNotifications)
         .keyboardShortcut("n", modifiers: [.command, .option])
+
+      // Split the focused pane with a new terminal beside it (issue #3): ⌘D right, ⇧⌘D down; left/up
+      // have no standard key, so they're menu-only.
+      Divider()
+      Button("Split Right") { AppStore.shared.splitFocusedRight() }
+        .keyboardShortcut("d", modifiers: .command)
+        .disabled(hasTerminal != true)
+      Button("Split Left") { AppStore.shared.splitFocusedLeft() }
+        .disabled(hasTerminal != true)
+      Button("Split Down") { AppStore.shared.splitFocusedDown() }
+        .keyboardShortcut("d", modifiers: [.command, .shift])
+        .disabled(hasTerminal != true)
+      Button("Split Up") { AppStore.shared.splitFocusedUp() }
+        .disabled(hasTerminal != true)
+
+      // Separate our View items from the system "Enter Full Screen" item that follows.
+      Divider()
+    }
+
+    // Dedicated Run menu (issue #7): the run command's lifecycle. The keys (⌘R / ⇧⌘R / ⌥⌘R) are
+    // handled by the AppDelegate monitor so they fire before the terminal; shown here for
+    // discoverability (the monitor consumes them, so no double-fire). Run is disabled when no command
+    // is configured; Restart/Stop only while it's running.
+    CommandMenu("Run") {
+      Button("Run") { AppStore.shared.runOrFocusRunCommand() }
+        .keyboardShortcut("r", modifiers: .command)
+        .disabled(hasRunCommand != true)
+      Button("Restart") { AppStore.shared.restartSelectedRunCommand() }
+        .keyboardShortcut("r", modifiers: [.command, .option])
+        .disabled(runCommandActive != true)
+      Button("Stop") { AppStore.shared.stopSelectedRunCommand() }
+        .keyboardShortcut("r", modifiers: [.command, .shift])
+        .disabled(runCommandActive != true)
     }
 
     CommandGroup(after: .pasteboard) {
@@ -337,19 +439,6 @@ struct WorkroomCommands: Commands {
         AppStore.shared.closeCurrentTerminalTab()
       }
       .keyboardShortcut("w", modifiers: .command)
-      .disabled(hasTerminal != true)
-
-      // Split the focused pane with a new terminal beside it (issue #3): ⌘D right, ⇧⌘D down.
-      Button("Split Right") {
-        AppStore.shared.splitFocusedRight()
-      }
-      .keyboardShortcut("d", modifiers: .command)
-      .disabled(hasTerminal != true)
-
-      Button("Split Down") {
-        AppStore.shared.splitFocusedDown()
-      }
-      .keyboardShortcut("d", modifiers: [.command, .shift])
       .disabled(hasTerminal != true)
 
       Button("Add Project…") {
