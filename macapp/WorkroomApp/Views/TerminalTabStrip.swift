@@ -132,14 +132,16 @@ struct TerminalTabStrip: View {
     .padding(.vertical, 4)
   }
 
-  /// A rounded "well" + accent underline behind the split's contiguous chip run, so it's easy to see
-  /// which tabs are grouped/split (issue #3). Hidden during a drag (group-aware strip drag is Phase 2),
-  /// and only shown for a real split (≥2 members).
+  /// A rounded *outline* + accent underline bracketing the split's contiguous chip run, so it's easy
+  /// to see which tabs are grouped/split (issue #3). Deliberately an outline, not a filled backing: a
+  /// fill occupies the same channel as the active-chip fill, so any visible strength made a
+  /// grouped-but-inactive chip read as focused. The border groups without competing with selection.
+  /// Hidden during a drag (group-aware strip drag is Phase 2), and only shown for a real split (≥2).
   @ViewBuilder
   private func splitWell(_ tabs: [TerminalTab]) -> some View {
     if draggingID == nil, let run = splitRunRect(tabs) {
       RoundedRectangle(cornerRadius: 7)
-        .fill(Color.primary.opacity(0.06))
+        .strokeBorder(Color.primary.opacity(0.16), lineWidth: 1)
         .overlay(alignment: .bottom) {
           RoundedRectangle(cornerRadius: 1)
             .fill(Color.accentColor.opacity(0.55))
@@ -258,7 +260,7 @@ private struct TerminalTabChip: View {
     // Subtle highlight for active/hover; a solid lifted chip while dragging.
     .background {
       RoundedRectangle(cornerRadius: 6)
-        .fill(Color.primary.opacity(isActive ? 0.1 : (isHovered ? 0.05 : 0)))
+        .fill(Color.primary.opacity(isActive ? 0.14 : (isHovered ? 0.06 : 0)))
     }
     // Unread activity tints the whole tab with the accent color (pairs with the accent title).
     .background {
