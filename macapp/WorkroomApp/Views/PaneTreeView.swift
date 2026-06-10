@@ -298,7 +298,11 @@ private struct PaneLeafView: View {
           .animation(reduceMotion ? nil : .easeInOut(duration: 0.15), value: focused)
       )
       .overlay(alignment: .top) { handle }
-      .padding(multiPane ? 3 : 0)
+      // The same 3pt inset solo and split, so a tab doesn't shift its surface when it joins or
+      // leaves a split — in a split this is the inter-pane gutter; solo, it's an invisible inset
+      // that keeps the surface in the exact same place. (The focus border draws inside the bounds,
+      // so it never moves the surface; only this padding does.)
+      .padding(3)
       .onHover { hovering = $0 }
       .onChange(of: sessions.activityPulses[tabID]) { _, _ in
         guard multiPane, !focused else { return }
