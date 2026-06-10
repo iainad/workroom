@@ -332,6 +332,7 @@ struct ProjectSidebar: View {
         .frame(width: caretWidth, alignment: .center)
       Text(tab.title)
         .font(.callout)
+        .foregroundStyle(.secondary)
         .lineLimit(1)
         .truncationMode(.middle)
       Spacer(minLength: 0)
