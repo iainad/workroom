@@ -3,9 +3,11 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 /// The sidebar: a collapsible tree with projects at the root and their workrooms nested
-/// one level below. Selecting a workroom opens its terminal in the detail pane; selecting
-/// a project makes it the target for "New Workroom". Projects expand/collapse via the
-/// leading chevron.
+/// one level below, each of which can reveal its terminals one level deeper. Selecting a
+/// workroom (or a project root) opens its terminal in the detail pane; selecting a project
+/// makes it the target for "New Workroom". Projects disclose via a chevron after their name; roots
+/// and workrooms carry their terminal-disclosure chevron in a shared leading column (shown only at
+/// ≥2 terminals) that lines up with the terminal rows' glyphs.
 struct ProjectSidebar: View {
   @EnvironmentObject var store: AppStore
   @EnvironmentObject var notifications: NotificationCenterStore
@@ -13,16 +15,23 @@ struct ProjectSidebar: View {
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @State private var showImporter = false
   @State private var hovered: SidebarID?
+  /// The terminal row currently under the cursor (issue #30). Keyed by the tab's UUID rather than a
+  /// `SidebarID` — terminal rows aren't selectable `List` rows, so they sit outside `hovered`.
+  @State private var hoveredTerminal: TerminalTab.ID?
   @State private var themeHovering = false
   @State private var addProjectHovering = false
   @Default(.theme) private var theme
 
-  /// Width of the leading icon gutter shared by every child row, so the root's house icon
-  /// and the (icon-less) workroom labels line up in one column.
-  private let gutterWidth: CGFloat = 18
-  /// Leading inset for child rows (root + workrooms) so they nest under the project. Shared
-  /// by both rows — they MUST match for the label column to align.
-  private let childLeading: CGFloat = 10
+  /// Width of the shared leading icon column on the root/workroom/terminal rows — it holds the
+  /// disclosure caret (root/workroom, only at ≥2 terminals) or the terminal glyph, and is always
+  /// reserved so the labels beside it line up whether or not a caret is shown.
+  private let caretWidth: CGFloat = 14
+  /// Every row sits flush to the sidebar edges — no leading/trailing inset and no per-level indent.
+  /// Hierarchy is carried by the rows' icons and buttons (the project's trailing chevron, the root's
+  /// house, the workroom's leading disclosure chevron, the terminal glyph) rather than by indentation.
+  /// One uniform inset for all rows also stops SwiftUI giving tagged (selectable) rows a different
+  /// inset than plain ones, so the leading-icon and label columns align to the pixel.
+  private let rowInsets = EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0)
 
   /// Both the root and the workrooms are selectable targets (clicking a *project* toggles
   /// its expansion instead). The List selection is the store's selected target id; setting
@@ -90,30 +99,54 @@ struct ProjectSidebar: View {
     }
   }
 
-  /// Flat list of tagged rows (project, then its workrooms when expanded) — the
-  /// hierarchy is conveyed by the chevron and the workroom indent. A flat structure
-  /// keeps List selection and keyboard navigation simple across both levels.
+  /// Flat list of rows (project, then its root + workrooms when expanded, then their terminals). All
+  /// rows are flush; the hierarchy is conveyed by each row's icons/buttons (project chevron, root
+  /// house, workroom caret, terminal glyph), not indentation. A flat structure also keeps List
+  /// selection and keyboard navigation simple across the levels.
   private var tree: some View {
     List(selection: selection) {
       ForEach(store.projects) { project in
         projectRow(project)
+          .listRowInsets(rowInsets)
           .listRowBackground(rowHighlight(.project(project.path), selected: false))
         if isExpanded(project.path) {
-          // The root is always the first child, before any workrooms.
+          // The root is always the first child, before any workrooms; each selectable row is
+          // followed by its terminal subtree (rendered only when expanded with ≥2 terminals).
           let rid = SidebarID.root(project: project.path)
           rootRow(project)
             .tag(rid)
+            .listRowInsets(rowInsets)
             .listRowBackground(rowHighlight(rid, selected: store.selectedTargetID == rid))
+          terminalSubtree(for: project.rootTarget, parent: rid)
           ForEach(project.workrooms) { workroom in
             let wid = SidebarID.workroom(project: project.path, name: workroom.name)
             workroomRow(workroom, in: project)
               .tag(wid)
+              .listRowInsets(rowInsets)
               .listRowBackground(rowHighlight(wid, selected: store.selectedTargetID == wid))
+            terminalSubtree(for: workroom.target(inProject: project.path), parent: wid)
           }
         }
       }
     }
     .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: store.collapsedProjects)
+    .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: store.expandedTerminalTargets)
+  }
+
+  /// The terminal rows for a target, shown only when it has ≥2 terminals and the user has expanded
+  /// its disclosure (issue #30). One row per tab, in the same display order as the detail-pane strip.
+  @ViewBuilder
+  private func terminalSubtree(for target: TerminalTarget, parent: SidebarID) -> some View {
+    let tabs = terminals.tabs(for: target)
+    if tabs.count >= 2, store.isTerminalsExpanded(target.id) {
+      ForEach(tabs) { tab in
+        let selected =
+          store.selectedTargetID == parent && terminals.focusedTab(for: target)?.id == tab.id
+        terminalRow(tab, target: target, parent: parent)
+          .listRowInsets(rowInsets)
+          .listRowBackground(terminalHighlight(tab.id, selected: selected))
+      }
+    }
   }
 
   // MARK: Rows
@@ -123,14 +156,16 @@ struct ProjectSidebar: View {
     let id = SidebarID.project(project.path)
     let unread = projectUnread(project)
     HStack(spacing: 6) {
-      // The whole name/chevron area toggles expansion; clicking anywhere on it
-      // (including the trailing empty space) collapses or expands the project.
+      // The whole caret/name area toggles expansion; clicking anywhere on it (including the
+      // trailing empty space) collapses or expands the project.
       Button {
         toggle(project.path)
       } label: {
         HStack(spacing: 6) {
+          // The project chevron sits to the right of the project name — projects keep their own
+          // disclosure idiom, distinct from the leading caret column the root/workroom/terminal rows
+          // share. Always shown (every project has at least the root as a child).
           Text(project.displayName).fontWeight(.medium)
-          // Always shown: every project has at least the root as a child.
           Image(systemName: isExpanded(project.path) ? "chevron.down" : "chevron.right")
             .font(.system(size: 10, weight: .semibold))
             .foregroundStyle(.secondary)
@@ -166,24 +201,26 @@ struct ProjectSidebar: View {
     }
   }
 
-  /// The always-present project-root row: the first child under each project. A leading
-  /// house icon in the shared gutter, then the current branch/bookmark. Selectable (opens
-  /// a terminal at the project directory); never deletable.
+  /// The always-present project-root row: the first child under each project. Reads like a workroom
+  /// (shared caret column, then the current branch/bookmark), with a small house glyph immediately
+  /// right of the label to mark it as the root — so roots and workrooms share one left edge.
+  /// Selectable (opens a terminal at the project directory); never deletable.
   @ViewBuilder
   private func rootRow(_ project: Project) -> some View {
     let id = SidebarID.root(project: project.path)
     let target = project.rootTarget
     let style = RootPresentation.make(store.rootRefs[project.id] ?? .unresolved)
     HStack(spacing: 6) {
-      Image(systemName: "house")
-        .font(.system(size: 11))
-        .foregroundStyle(.secondary)
-        .frame(width: gutterWidth, alignment: .center)
+      terminalDisclosure(for: target)
       Text(style.label)
         .font(.callout)
         .foregroundColor(style.dim ? .secondary : .primary)
         .lineLimit(1)
         .truncationMode(.tail)
+      // House marks this row as the project root, sitting right after the label (issue #30).
+      Image(systemName: "house")
+        .font(.system(size: 10))
+        .foregroundStyle(.secondary)
       if style.ahead {
         Image(systemName: "arrow.up")
           .font(.system(size: 9, weight: .semibold))
@@ -201,28 +238,27 @@ struct ProjectSidebar: View {
       if terminals.isRunning(forTargetID: target.id) {
         RunningSpinner()
       }
-    }
-    .padding(.leading, childLeading)
-    .contentShape(Rectangle())
-    .help(style.tooltip)
-    .accessibilityElement(children: .ignore)
-    .accessibilityLabel(
-      target.isMissing ? "\(style.accessibility), folder not found" : style.accessibility
-    )
-    .onHover { inside in
-      if inside { hovered = id } else if hovered == id { hovered = nil }
-    }
+    }.contentShape(Rectangle())
+      .help(style.tooltip)
+      .accessibilityElement(children: .ignore)
+      .accessibilityLabel(
+        target.isMissing ? "\(style.accessibility), folder not found" : style.accessibility
+      )
+      .onHover { inside in
+        if inside { hovered = id } else if hovered == id { hovered = nil }
+      }
   }
 
   @ViewBuilder
   private func workroomRow(_ workroom: Workroom, in project: Project) -> some View {
     let id = SidebarID.workroom(project: project.path, name: workroom.name)
-    let targetID = TerminalTarget.workroomID(project: project.path, name: workroom.name)
+    let target = workroom.target(inProject: project.path)
+    let targetID = target.id
     let unread = notifications.count(target: targetID)
     HStack(spacing: 6) {
-      // No icon gutter: the workroom label sits at the root's left (icon) edge, so the
-      // root and its workrooms read as siblings rather than nesting workrooms under the
-      // root's branch text.
+      // Shared caret column, then the name — the same left edge as the root row above (which adds
+      // its house glyph after the label), so roots and workrooms read as aligned siblings.
+      terminalDisclosure(for: target)
       Text(workroom.name).font(.callout)
       Spacer()
       UnreadDot(count: unread)
@@ -243,20 +279,96 @@ struct ProjectSidebar: View {
           store.pendingDeletion = PendingWorkroomDeletion(workroom: workroom, project: project)
         }
       }
-    }
-    .padding(.leading, childLeading)
-    .contentShape(Rectangle())
-    .accessibilityIdentifier("sidebar.workroom.\(workroom.name)")
-    .onHover { inside in
-      if inside { hovered = id } else if hovered == id { hovered = nil }
-    }
-    .contextMenu {
-      Button(role: .destructive) {
-        store.pendingDeletion = PendingWorkroomDeletion(workroom: workroom, project: project)
-      } label: {
-        Label("Delete \(workroom.name)", systemImage: "trash")
+    }.contentShape(Rectangle())
+      .accessibilityIdentifier("sidebar.workroom.\(workroom.name)")
+      .onHover { inside in
+        if inside { hovered = id } else if hovered == id { hovered = nil }
       }
+      .contextMenu {
+        Button(role: .destructive) {
+          store.pendingDeletion = PendingWorkroomDeletion(workroom: workroom, project: project)
+        } label: {
+          Label("Delete \(workroom.name)", systemImage: "trash")
+        }
+      }
+  }
+
+  /// The shared leading caret for a root/workroom row (issue #30): a chevron that expands/collapses
+  /// the target's terminal subtree, shown only once it has ≥2 terminals — below that the column is an
+  /// empty spacer so sibling rows stay aligned. Its own `Button` toggles expansion without selecting
+  /// the row (a button inside a selectable `List` row swallows the tap).
+  @ViewBuilder
+  private func terminalDisclosure(for target: TerminalTarget) -> some View {
+    if terminals.tabs(for: target).count >= 2 {
+      TerminalDisclosureButton(
+        expanded: store.isTerminalsExpanded(target.id), width: caretWidth
+      ) {
+        store.toggleTerminals(for: target.id)
+      }
+    } else {
+      Color.clear.frame(width: caretWidth, height: 1)
     }
+  }
+
+  /// One terminal in a target's expanded subtree (issue #30): a terminal glyph centered in the shared
+  /// caret column (sharing the chevron's vertical axis, and keeping the title in the same column as
+  /// the root/workroom labels above it), the tab's live
+  /// title, a per-tab unread dot, and — swapped on hover like the workroom row — a running spinner or
+  /// a close button. The row mirrors the workroom row's layout exactly (no `Button` wrapper, which
+  /// would inset the title and break the shared label column); the tap is a gesture that selects the
+  /// target and focuses this terminal — it never becomes the `List` selection, so `selectedTargetID`
+  /// stays a root/workroom.
+  @ViewBuilder
+  private func terminalRow(_ tab: TerminalTab, target: TerminalTarget, parent: SidebarID)
+    -> some View
+  {
+    HStack(spacing: 6) {
+      // Lay the glyph in a clear slot identical to the root row's empty caret column, drawing the
+      // symbol as a non-layout overlay — so the title lands in exactly the same column as the
+      // root/workroom labels regardless of the `terminal` symbol's (wider) intrinsic width.
+      Image(systemName: "terminal")
+        .font(.system(size: 9))
+        .foregroundStyle(.secondary)
+        .frame(width: caretWidth, alignment: .center)
+      Text(tab.title)
+        .font(.callout)
+        .lineLimit(1)
+        .truncationMode(.middle)
+      Spacer(minLength: 0)
+
+      UnreadDot(count: notifications.count(tab: tab.id))
+
+      // Same swapped slot as the workroom row: a spinner while a command runs, replaced by the close
+      // button on hover. The close button is always laid out (revealed via opacity) so the row size
+      // is stable and the smaller spinner can't shift it.
+      ZStack {
+        if tab.isRunning, hoveredTerminal != tab.id {
+          RunningSpinner()
+        }
+        CloseTerminalRowButton(title: tab.title, visible: hoveredTerminal == tab.id) {
+          store.requestCloseTerminalTab(tab.id, for: target)
+        }
+      }
+    }.contentShape(Rectangle())
+      .onTapGesture { store.revealTerminal(tab.id, at: parent) }
+      .accessibilityAddTraits(.isButton)
+      .accessibilityLabel(tab.title)
+      .accessibilityAction { store.revealTerminal(tab.id, at: parent) }
+      .accessibilityIdentifier("sidebar.terminal.\(tab.title)")
+      .onHover { inside in
+        if inside {
+          hoveredTerminal = tab.id
+        } else if hoveredTerminal == tab.id {
+          hoveredTerminal = nil
+        }
+      }
+      .contextMenu {
+        Button(role: .destructive) {
+          store.requestCloseTerminalTab(tab.id, for: target)
+        } label: {
+          Label("Close \(tab.title)", systemImage: "xmark")
+        }
+      }
   }
 
   /// Total notifications for a project: its root plus every workroom. Lets the (possibly
@@ -278,6 +390,17 @@ struct ProjectSidebar: View {
   @ViewBuilder
   private func rowHighlight(_ id: SidebarID, selected: Bool) -> some View {
     let opacity = selected ? 0.13 : (hovered == id ? 0.07 : 0)
+    RoundedRectangle(cornerRadius: 6)
+      .fill(Color.primary.opacity(opacity))
+      .padding(.horizontal, 8)
+      .padding(.vertical, 1)
+  }
+
+  /// Row highlight for a terminal row (issue #30) — same geometry as `rowHighlight` but keyed on the
+  /// tab's UUID via `hoveredTerminal`, since terminal rows live outside the `SidebarID` selection.
+  @ViewBuilder
+  private func terminalHighlight(_ tabID: TerminalTab.ID, selected: Bool) -> some View {
+    let opacity = selected ? 0.13 : (hoveredTerminal == tabID ? 0.07 : 0)
     RoundedRectangle(cornerRadius: 6)
       .fill(Color.primary.opacity(opacity))
       .padding(.horizontal, 8)
@@ -409,6 +532,69 @@ private struct DeleteRowButton: View {
     .onHover { hovering = $0 }
     .help("Delete \(name)")
     .accessibilityLabel("Delete \(name)")
+    .opacity(visible ? 1 : 0)
+    .allowsHitTesting(visible)
+  }
+}
+
+/// The terminal-subtree disclosure chevron on a root/workroom row (issue #30). Hover paints a subtle
+/// rounded background — the same idiom as the row's other inline buttons (new-workroom, delete). The
+/// chevron itself stays at the shared caret-column width, leading-aligned, so it keeps lining up with
+/// the terminal rows' glyphs; the hover fill is a non-layout background that can't shift it.
+private struct TerminalDisclosureButton: View {
+  let expanded: Bool
+  let width: CGFloat
+  let action: () -> Void
+  @State private var hovering = false
+
+  var body: some View {
+    Button(action: action) {
+      // Center the chevron in the caret slot. Centring pins its *center* to the slot center regardless
+      // of which chevron is shown — so the glyph doesn't jump on toggle and the hover fill (also
+      // centered on the slot) sits symmetrically around it. The terminal-row glyph centers in the same
+      // slot, so the two share one vertical axis.
+      Image(systemName: expanded ? "chevron.down" : "chevron.right")
+        .font(.system(size: 10, weight: .semibold))
+        .foregroundStyle(.secondary)
+        .frame(width: width, height: 18, alignment: .center)
+        .background {
+          RoundedRectangle(cornerRadius: 5)
+            .fill(Color.primary.opacity(hovering ? 0.12 : 0))
+            .frame(width: 18, height: 18)
+        }
+        .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .onHover { hovering = $0 }
+    .help(expanded ? "Hide terminals" : "Show terminals")
+    .accessibilityLabel(expanded ? "Hide terminals" : "Show terminals")
+  }
+}
+
+/// The ✕ revealed when a terminal row is hovered (issue #30). Mirrors `DeleteRowButton`'s
+/// reveal-on-hover layout, but neutral rather than red — closing a terminal is gated by the same
+/// confirmation as ⌘W (`requestCloseTerminalTab`), not the harder workroom deletion.
+private struct CloseTerminalRowButton: View {
+  let title: String
+  let visible: Bool
+  let action: () -> Void
+  @State private var hovering = false
+
+  var body: some View {
+    Button(action: action) {
+      Image(systemName: "xmark")
+        .font(.system(size: 10, weight: .medium))
+        .foregroundStyle(.secondary)
+        .padding(4)
+        .background(
+          RoundedRectangle(cornerRadius: 5)
+            .fill(Color.primary.opacity(hovering ? 0.12 : 0))
+        )
+    }
+    .buttonStyle(.plain)
+    .onHover { hovering = $0 }
+    .help("Close \(title)")
+    .accessibilityLabel("Close \(title)")
     .opacity(visible ? 1 : 0)
     .allowsHitTesting(visible)
   }

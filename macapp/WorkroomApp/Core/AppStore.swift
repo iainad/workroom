@@ -47,6 +47,12 @@ final class AppStore: ObservableObject {
   @Published var collapsedProjects: Set<String> = Defaults[.collapsedProjects] {
     didSet { Defaults[.collapsedProjects] = collapsedProjects }
   }
+  /// Terminal targets whose terminal subtree is *expanded* in the sidebar (issue #30). Inverse
+  /// polarity to `collapsedProjects`: terminals are collapsed by default, so the set holds only the
+  /// expanded ones (empty = all collapsed). Session-only and deliberately NOT persisted — the
+  /// terminals themselves don't survive a relaunch (`TerminalSessions` is in-memory), so a restored
+  /// expand flag would point at nothing. Pruned below 2 tabs by the `onTabsRemoved` hook in `init`.
+  @Published var expandedTerminalTargets: Set<TerminalTarget.ID> = []
   /// Per-project resolved root branch/bookmark labels, hydrated asynchronously after each
   /// load (see `resolveBranches`). Absent ⇒ the root row shows a dim "root" until resolved.
   @Published var rootRefs: [Project.ID: RootRef] = [:]
@@ -112,8 +118,15 @@ final class AppStore: ObservableObject {
       self.recordCurrentLocation()
     }
     // Prune dead entries when tabs are closed/reaped, so canGoBack/Forward stay honest (issue #26).
-    terminals.onTabsRemoved = { [weak self] _, ids in
-      self?.history.prune(removing: Set(ids))
+    // Also collapse a target's sidebar terminal subtree once a close drops it below the 2-tab
+    // disclosure threshold (issue #30), so a stale expand flag can't auto-reveal if the count climbs
+    // back later — the subtree is meant to be re-opened deliberately.
+    terminals.onTabsRemoved = { [weak self] targetID, ids in
+      guard let self else { return }
+      self.history.prune(removing: Set(ids))
+      if self.terminals.tabCount(forTargetID: targetID) < 2 {
+        self.expandedTerminalTargets.remove(targetID)
+      }
     }
     // Mirror the aggregate unread count onto the Dock icon badge (issue #32). Owned here, not in a
     // view: see `NotificationCenterStore.onTotalChange` for why a view-driven badge misses
@@ -577,6 +590,25 @@ final class AppStore: ObservableObject {
   private func isLive(_ loc: NavLocation) -> Bool {
     guard let target = target(for: loc.target), !target.isMissing else { return false }
     return terminals.tabs(for: target).contains { $0.id == loc.tab }
+  }
+
+  // MARK: Sidebar terminal subtree (issue #30)
+
+  /// Whether a target's terminal subtree is expanded in the sidebar.
+  func isTerminalsExpanded(_ id: TerminalTarget.ID) -> Bool {
+    expandedTerminalTargets.contains(id)
+  }
+
+  /// Toggle a target's terminal subtree open/closed (the disclosure chevron on its row).
+  func toggleTerminals(for id: TerminalTarget.ID) {
+    if expandedTerminalTargets.remove(id) == nil { expandedTerminalTargets.insert(id) }
+  }
+
+  /// Select a terminal's target and focus that terminal — the action behind tapping a terminal row
+  /// in the sidebar subtree. Routes through the same `applyLocation` primitive as back/forward and
+  /// notification jumps, so the selection + focus land together and record exactly one history entry.
+  func revealTerminal(_ tabID: TerminalTab.ID, at sid: SidebarID) {
+    applyLocation(target: sid, tab: tabID, recordHistory: true)
   }
 
   // MARK: Notifications

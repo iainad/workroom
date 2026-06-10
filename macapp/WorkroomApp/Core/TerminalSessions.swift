@@ -129,6 +129,10 @@ final class TerminalSessions: ObservableObject {
     return displayedTabIDs(for: target).compactMap { dict[$0] }
   }
 
+  /// Number of live tabs for a target id (issue #30 — lets `AppStore` prune the sidebar's
+  /// terminal-subtree expand flag when a close drops a target below the 2-tab disclosure threshold).
+  func tabCount(forTargetID id: TerminalTarget.ID) -> Int { (tabsByTarget[id] ?? [:]).count }
+
   /// Whether any terminal in this target is mid-command (has a live command title, issue #2) — drives
   /// the sidebar's running spinner.
   func isRunning(forTargetID id: TerminalTarget.ID) -> Bool {
