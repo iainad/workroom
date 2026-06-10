@@ -37,7 +37,7 @@ final class GhosttyRuntimeAdapter {
       guard let view = surfaceView(from: target), let title = action.action.set_title.title else {
         return false
       }
-      view.onTitleChange?(String(cString: title))
+      view.handleTitleChange(String(cString: title))
       return true
 
     case GHOSTTY_ACTION_COMMAND_FINISHED:

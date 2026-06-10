@@ -90,10 +90,15 @@ final class GhosttySurfaceView: NSView {
   private var scrollbarFadeWork: DispatchWorkItem?
 
   // OSC 9;4 progress safety timer (issue #28 follow-up): a program that reports it's working but never
-  // sends REMOVE — or a long-idle TUI — would otherwise pin the busy indicator on forever. Mirrors
-  // Ghostty's 15s auto-clear.
+  // sends REMOVE — or a long-idle TUI — would otherwise pin the busy indicator on forever. It's a
+  // "declared busy but went silent" backstop, not a fixed time-since-last-report cutoff: while the
+  // program keeps repainting (title frames — see `handleTitleChange`) the timer is refreshed, so a long
+  // task doesn't stop spinning mid-run (issue #38). OSC 9;4 is edge-triggered — Claude emits it once at
+  // the start (and once at finish), Codex never — but both animate their title ~1–10×/s the whole time
+  // they work, so the title is the liveness heartbeat the progress signal itself lacks.
   private var progressTimeoutTimer: Timer?
-  private static let progressTimeout: TimeInterval = 15
+  private var progressActive = false
+  private static let progressTimeout: TimeInterval = 30
 
   init(workingDirectory: String, spawnsSurface: Bool = true) {
     self.workingDirectory = workingDirectory
@@ -192,6 +197,7 @@ final class GhosttySurfaceView: NSView {
     onCmdClickFile = nil
     resolveCmdHoverFile = nil
     onFocused = nil
+    progressActive = false
     progressTimeoutTimer?.invalidate()
     progressTimeoutTimer = nil
     if let occlusionObserver {
@@ -436,18 +442,40 @@ final class GhosttySurfaceView: NSView {
   // MARK: Progress (OSC 9;4)
 
   /// Called by `GhosttyRuntimeAdapter` on `GHOSTTY_ACTION_PROGRESS_REPORT`. Forwards the busy state to
-  /// the host and arms a safety timer: a fresh "working" report (re)starts the countdown; an idle report
-  /// cancels it. If the countdown elapses with no further report we synthesise an idle state, so a
-  /// program that sets progress but never clears it can't pin the spinner on (as Ghostty does, 15s).
+  /// the host and arms a safety timer: a "working" report (re)starts the countdown; an idle report
+  /// cancels it. The countdown is also refreshed by title activity while busy (`handleTitleChange`), so
+  /// it only elapses when a program that declared itself working goes fully silent — synthesising an
+  /// idle state so it can't pin the spinner on (issue #28) without cutting off a long task that signals
+  /// progress only once at the start (issue #38).
   func handleProgressReport(_ active: Bool) {
-    progressTimeoutTimer?.invalidate()
-    progressTimeoutTimer = nil
+    progressActive = active
+    if active {
+      armProgressTimeout()
+    } else {
+      progressTimeoutTimer?.invalidate()
+      progressTimeoutTimer = nil
+    }
     onProgressReport?(active)
-    guard active else { return }
+  }
+
+  /// Called by `GhosttyRuntimeAdapter` on `GHOSTTY_ACTION_SET_TITLE` (OSC 0/2). Forwards to the host
+  /// and, while the program has declared itself busy via OSC 9;4, treats the title repaint as a liveness
+  /// heartbeat that refreshes the safety timer. Agents repaint an animated title the whole time they
+  /// work but emit OSC 9;4 only at the edges, so this keeps the spinner alive across a long task while
+  /// still letting a genuinely silent program time out (issue #38). The title NEVER starts the busy
+  /// state on its own — it only extends one already set by OSC 9;4 (issue #28).
+  func handleTitleChange(_ title: String) {
+    onTitleChange?(title)
+    if progressActive { armProgressTimeout() }
+  }
+
+  private func armProgressTimeout() {
+    progressTimeoutTimer?.invalidate()
     progressTimeoutTimer = Timer.scheduledTimer(
       withTimeInterval: Self.progressTimeout, repeats: false
     ) { [weak self] _ in
       self?.progressTimeoutTimer = nil
+      self?.progressActive = false
       self?.onProgressReport?(false)
     }
   }
