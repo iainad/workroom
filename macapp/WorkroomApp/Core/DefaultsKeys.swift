@@ -34,6 +34,9 @@ extension Defaults.Keys {
   /// Whether the right-hand notifications inspector is open.
   static let showNotifications = Key<Bool>("showNotificationsInspector", default: false)
 
+  /// Whether the notifications menu bar item is shown (issue #33). On by default.
+  static let showMenuBarItem = Key<Bool>("showMenuBarItem", default: true)
+
   /// The persisted selected sidebar target as a `TerminalTarget.ID` string, or nil (issue #14).
   static let sidebarSelection = Key<String?>("sidebar.selectionTargetID", default: nil)
 

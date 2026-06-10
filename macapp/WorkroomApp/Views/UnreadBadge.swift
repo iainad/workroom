@@ -1,5 +1,11 @@
 import SwiftUI
 
+/// The displayed form of an unread count, capped at `99+`. Pure so the badge and the menu bar item
+/// share one cap and can't drift (mirrors `NotificationGate`'s extract-and-test seam).
+enum UnreadCount {
+  static func label(_ count: Int) -> String { count > 99 ? "99+" : "\(count)" }
+}
+
 /// A small unread-count pill. Used by the toolbar button (a single aggregate total reads well as
 /// a number). Renders nothing when `count` is 0.
 struct UnreadBadge: View {
@@ -7,7 +13,7 @@ struct UnreadBadge: View {
 
   var body: some View {
     if count > 0 {
-      Text(count > 99 ? "99+" : "\(count)")
+      Text(UnreadCount.label(count))
         .font(.caption2)
         .fontWeight(.semibold)
         .foregroundStyle(.white)

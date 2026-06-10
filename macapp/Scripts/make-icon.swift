@@ -160,6 +160,69 @@ func render(_ pixels: Int, to url: URL, bgTop: CGColor, bgBottom: CGColor) {
     print("  \(url.lastPathComponent)  (\(pixels)px)")
 }
 
+// MARK: - Menu bar glyph
+
+// The status-bar item's icon (issue #33): a monochrome OUTLINE of the same three cascading "room"
+// cards, on a transparent background — no tile, gradient, or terminal prompt (all illegible at
+// 18px). Drawn back-to-front; each front card first knocks out (clears) the part of the card
+// behind it, so the cascade reads as overlapping cards rather than a tangle of crossing strokes.
+// Exported as a template image (see the imageset's Contents.json), so the system tints it to the
+// menu bar's appearance and dims it when the app is inactive.
+func renderMenuBarGlyph(_ pixels: Int, to url: URL) {
+    let S = CGFloat(pixels)
+    let cs = CGColorSpace(name: CGColorSpace.sRGB)!
+    guard let ctx = CGContext(
+        data: nil, width: pixels, height: pixels, bitsPerComponent: 8, bytesPerRow: 0,
+        space: cs, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+    ) else { fatalError("CGContext") }
+
+    ctx.setAllowsAntialiasing(true)
+    ctx.setShouldAntialias(true)
+    ctx.interpolationQuality = .high
+
+    let ink = rgb(0, 0, 0)  // template-rendered, so the system recolours it
+    let margin = S * 0.13
+    let content = CGRect(x: margin, y: margin, width: S - 2 * margin, height: S - 2 * margin)
+    let edge = content.width * 0.54     // card edge
+    let step = content.width * 0.17     // diagonal step between cards
+    let radius = edge * 0.26            // matches the app icon's card corner ratio
+    let stroke = max(1, S * 0.08)
+
+    func cardRect(_ dx: CGFloat, _ dy: CGFloat) -> CGRect {
+        CGRect(x: content.midX + dx - edge / 2, y: content.midY + dy - edge / 2, width: edge, height: edge)
+    }
+    // Back (up-right) → middle → front (down-left), echoing the app icon's cascade direction.
+    let cards = [cardRect(step, step), cardRect(0, 0), cardRect(-step, -step)]
+
+    ctx.setStrokeColor(ink)
+    ctx.setLineWidth(stroke)
+    ctx.setLineJoin(.round)
+
+    for (i, r) in cards.enumerated() {
+        if i > 0 {
+            // Clear a filled rounded rect (grown by ~a stroke) so this card erases the outline of
+            // the one behind where they overlap, leaving a clean "on top" edge.
+            ctx.saveGState()
+            ctx.setBlendMode(.clear)
+            let knock = r.insetBy(dx: -stroke * 0.9, dy: -stroke * 0.9)
+            ctx.addPath(CGPath(
+                roundedRect: knock, cornerWidth: radius + stroke, cornerHeight: radius + stroke,
+                transform: nil))
+            ctx.fillPath()
+            ctx.restoreGState()
+        }
+        ctx.addPath(CGPath(roundedRect: r, cornerWidth: radius, cornerHeight: radius, transform: nil))
+        ctx.strokePath()
+    }
+
+    guard let image = ctx.makeImage() else { fatalError("makeImage") }
+    let rep = NSBitmapImageRep(cgImage: image)
+    rep.size = NSSize(width: pixels, height: pixels)
+    guard let png = rep.representation(using: .png, properties: [:]) else { fatalError("png") }
+    try! png.write(to: url)
+    print("  \(url.lastPathComponent)  (\(pixels)px)")
+}
+
 // MARK: - Drive
 
 let assetsDir = CommandLine.arguments.count > 1
@@ -203,4 +266,30 @@ for variant in variants {
     }
     try! contentsJSON.write(to: dir.appendingPathComponent("Contents.json"), atomically: false, encoding: .utf8)
 }
+
+// Menu bar template glyph (issue #33). One imageset, shared by both builds — a template image has
+// no Dev/Release colour to differentiate. 18pt at @1x/@2x (macOS has no @3x).
+do {
+    let dir = URL(fileURLWithPath: assetsDir, isDirectory: true)
+        .appendingPathComponent("MenuBarIcon.imageset", isDirectory: true)
+    try! FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    print("Rendering MenuBarIcon.imageset → \(dir.path)")
+    let glyphOutputs: [(String, Int)] = [("menubar_18.png", 18), ("menubar_18@2x.png", 36)]
+    for (name, px) in glyphOutputs {
+        renderMenuBarGlyph(px, to: dir.appendingPathComponent(name))
+    }
+    let glyphContents = """
+        {
+          "images" : [
+            { "idiom" : "universal", "scale" : "1x", "filename" : "menubar_18.png" },
+            { "idiom" : "universal", "scale" : "2x", "filename" : "menubar_18@2x.png" }
+          ],
+          "info" : { "author" : "xcode", "version" : 1 },
+          "properties" : { "template-rendering-intent" : "template" }
+        }
+        """
+    try! glyphContents.write(
+        to: dir.appendingPathComponent("Contents.json"), atomically: false, encoding: .utf8)
+}
+
 print("Done.")

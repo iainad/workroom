@@ -8,6 +8,9 @@ struct WorkroomApp: App {
   @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
   @StateObject private var store = AppStore.shared
   @StateObject private var updater = Updater()
+  /// Whether to show the menu bar item (issue #33). Same key as the Settings checkbox, so toggling
+  /// it there inserts/removes the item live.
+  @Default(.showMenuBarItem) private var showMenuBarItem
 
   init() {
     // Start Sentry first, before anything else can crash — the crash handler must be
@@ -36,6 +39,21 @@ struct WorkroomApp: App {
       SettingsView()
         .environmentObject(updater)
     }
+
+    // System menu bar item (issue #33): the Workroom glyph + pending count, with a popover listing
+    // the notifications. Shown by default; the `showMenuBarItem` setting drives `isInserted` so it
+    // can be hidden. `.window` style hosts the list (a `.menu` can't). Reuses the same store +
+    // `openTerminal` routing as the in-app bell, so it's a second surface, not a second source of
+    // truth. Not gated to Release: two items when Debug + Release run side by side is harmless, and
+    // the Debug build needs it to be QA-able (unlike the singleton ⌘§ hotkey).
+    MenuBarExtra(isInserted: $showMenuBarItem) {
+      MenuBarNotificationsView()
+        .environmentObject(store)
+        .environmentObject(store.notifications)
+    } label: {
+      MenuBarLabel(notifications: store.notifications)
+    }
+    .menuBarExtraStyle(.window)
   }
 }
 
@@ -171,6 +189,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
       Defaults[.confirmOnQuit] = false
     }
     return shouldQuit ? .terminateNow : .terminateCancel
+  }
+
+  /// Re-show the main window when the app is reactivated with no visible window (e.g. the user
+  /// closed it, then clicked the Dock icon or opened a notification from the menu bar). Returning
+  /// true asks AppKit to perform its default reopen, which restores the WindowGroup's window.
+  func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool)
+    -> Bool
+  {
+    true
   }
 
   /// Ordered libghostty teardown before exit: free every surface (which clears its callbacks first),

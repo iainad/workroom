@@ -11,6 +11,7 @@ struct SettingsView: View {
   @Default(.confirmOnQuit) private var confirmOnQuit
   @Default(.confirmOnCloseTerminal) private var confirmOnCloseTerminal
   @Default(.globalHotkey) private var globalHotkey
+  @Default(.showMenuBarItem) private var showMenuBarItem
   // Bundle id of the editor for ⌘-clicked file paths; "" = the file's default app.
   @Default(.filePathEditor) private var pathEditor
   @EnvironmentObject private var updater: Updater
@@ -30,6 +31,8 @@ struct SettingsView: View {
       Toggle("Confirm before closing a terminal", isOn: $confirmOnCloseTerminal)
 
       Toggle("Global show/hide hotkey (⌘§)", isOn: $globalHotkey)
+
+      Toggle("Show notifications in the menu bar", isOn: $showMenuBarItem)
 
       Picker("Open file paths in", selection: $pathEditor) {
         Text("Default App").tag("")
