@@ -241,9 +241,9 @@ private struct TerminalTabChip: View {
   let onClose: () -> Void
 
   var body: some View {
-    // Title and close button laid out side by side: the ✕ is always visible (no hover gate) and
-    // set well clear of the title by the HStack spacing, so they never crowd or overlap.
-    HStack(spacing: 12) {
+    // Title and close button laid out side by side: a compact gap keeps the ✕ visibly tied to its
+    // tab (a wide gap reads as detached) while still clearing the title so they never crowd.
+    HStack(spacing: 6) {
       Text(tab.title)
         .font(.callout)
         .lineLimit(1)
