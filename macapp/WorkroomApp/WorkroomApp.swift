@@ -370,11 +370,6 @@ struct WorkroomCommands: Commands {
     }
 
     CommandGroup(after: .sidebar) {
-      // View menu: jump to the run terminal if one exists (issue #7) — navigation only, so it's named
-      // distinctly from the Run menu's "Run" (which starts the command) to avoid two identical menu
-      // labels. Disabled when there's no run terminal to go to.
-      Button("Go to Run Terminal") { AppStore.shared.revealRunTerminal() }
-        .disabled(hasRunTerminal != true)
       // View menu: toggle the notifications inspector (checkmark reflects open/closed).
       Toggle("Notifications", isOn: $showNotifications)
         .keyboardShortcut("n", modifiers: [.command, .option])
@@ -459,6 +454,11 @@ struct WorkroomCommands: Commands {
       Button("Forward") { AppStore.shared.navigateForward() }
         .keyboardShortcut("]", modifiers: .command)
         .disabled(canNavigateForward != true)
+
+      // Jump to the run terminal if one exists (issue #7) — navigation only, so it's named distinctly
+      // from the Run menu's "Run" (which starts the command). Disabled when there's none to go to.
+      Button("Run Terminal") { AppStore.shared.revealRunTerminal() }
+        .disabled(hasRunTerminal != true)
 
       Divider()
 

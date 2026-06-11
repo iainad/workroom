@@ -358,11 +358,11 @@ final class AppStore: ObservableObject {
     restartRunCommand(for: target)
   }
 
-  /// Whether any run terminal exists (running or stopped-but-open) — gates View ▸ Go to Run Terminal.
+  /// Whether any run terminal exists (running or stopped-but-open) — gates Go ▸ Run Terminal.
   var hasAnyRunTerminal: Bool { runStates.values.contains { $0.tab != nil } }
 
-  /// View ▸ Go to Run Terminal: jump to a run terminal if one exists — select its target and focus the
-  /// run tab. Prefers the selected target's run terminal, else any. Pure navigation; never starts a
+  /// Go ▸ Run Terminal: jump to a run terminal if one exists — select its target and focus the run
+  /// tab. Prefers the selected target's run terminal, else any. Pure navigation; never starts a
   /// command (issue #7).
   func revealRunTerminal() {
     let targetID =
