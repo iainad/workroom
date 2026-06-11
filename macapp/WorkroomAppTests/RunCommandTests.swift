@@ -197,16 +197,19 @@ final class RunCommandTests: XCTestCase {
     XCTAssertEqual(store.terminals.tabCount(forTargetID: t.id), 1, "no orphan default tab")
   }
 
-  func testInitialTerminalIsDefaultShellWhenNotArmed() {
+  func testInitialTerminalNoOpWhenNotArmed() {
     let store = makeStore([project("/a", workrooms: ["main"])])
     store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
     let t = target(store, "/a", "main")
 
-    store.ensureInitialTerminal(for: t)  // not armed → a plain terminal, no auto-run
+    // Not armed (auto-run off) → mounting the pane opens nothing: no run tab and no default shell
+    // either. Selecting a workroom no longer auto-creates a terminal (issue #23); the user opens one
+    // explicitly with ⌘T. A configured-but-not-auto run command must not change that.
+    store.ensureInitialTerminal(for: t)
 
     XCTAssertNil(store.runTabID(for: t.id))
     XCTAssertFalse(store.isRunCommandRunning(for: t.id))
-    XCTAssertEqual(store.terminals.tabCount(forTargetID: t.id), 1)
+    XCTAssertEqual(store.terminals.tabCount(forTargetID: t.id), 0, "no auto-spawned terminal")
   }
 
   func testToggleStartsWhenNotRunning() {

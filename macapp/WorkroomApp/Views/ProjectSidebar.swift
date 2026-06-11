@@ -13,7 +13,6 @@ struct ProjectSidebar: View {
   @EnvironmentObject var notifications: NotificationCenterStore
   @EnvironmentObject var terminals: TerminalSessions
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
-  @State private var showImporter = false
   @State private var hovered: SidebarID?
   /// The terminal row currently under the cursor (issue #30). Keyed by the tab's UUID rather than a
   /// `SidebarID` — terminal rows aren't selectable `List` rows, so they sit outside `hovered`.
@@ -62,7 +61,7 @@ struct ProjectSidebar: View {
         } description: {
           Text("Add a Git or Jujutsu project folder to start managing its workrooms.")
         } actions: {
-          Button("Add Project…") { showImporter = true }
+          Button("Add Project…") { store.requestAddProject = true }
             .buttonStyle(.borderedProminent)
         }
       } else {
@@ -71,38 +70,14 @@ struct ProjectSidebar: View {
     }
     .safeAreaInset(edge: .bottom, spacing: 0) { bottomBar }
     .navigationTitle("Projects")
+    // Per-project run-command settings (issue #7) stays sidebar-local — it's only ever triggered
+    // from a (visible) project row, so it needs no re-homing.
     .sheet(item: $settingsProject) { project in
       ProjectSettingsSheet(project: project).environmentObject(store)
     }
-    .onChange(of: store.requestAddProject) { request in
-      if request {
-        showImporter = true
-        store.requestAddProject = false
-      }
-    }
-    .fileImporter(isPresented: $showImporter, allowedContentTypes: [.folder]) { result in
-      if case .success(let url) = result {
-        Task { await store.addProject(url) }
-      }
-    }
-    .confirmationDialog(
-      store.pendingDeletion.map { "Delete '\($0.workroom.name)'?" } ?? "Delete workroom?",
-      isPresented: Binding(
-        get: { store.pendingDeletion != nil }, set: { if !$0 { store.pendingDeletion = nil } }),
-      titleVisibility: .visible
-    ) {
-      Button("Delete", role: .destructive) {
-        if let target = store.pendingDeletion {
-          store.deleteWorkroom(target.workroom, in: target.project)
-        }
-        store.pendingDeletion = nil
-      }
-      Button("Cancel", role: .cancel) { store.pendingDeletion = nil }
-    } message: {
-      Text(
-        "This removes the workroom's directory and runs its teardown script. For Git, the branch is left in place."
-      )
-    }
+    // The add-project importer and the delete confirmation are re-homed to RootView (issue #23 OV1)
+    // so the ⌘O / ⌘⌫ menu commands present reliably even when this sidebar is collapsed in
+    // Workrooms View. Local buttons here route through `store.requestAddProject` / `pendingDeletion`.
   }
 
   /// Flat list of rows (project, then its root + workrooms when expanded, then their terminals). All
@@ -484,9 +459,11 @@ struct ProjectSidebar: View {
 
       Spacer()
 
-      // Add Project, bottom-right. ⌘O is bound on the File-menu command (WorkroomCommands).
+      // Add Project, bottom-right. ⌘O is bound on the File-menu command (WorkroomCommands). Routes
+      // through the store's request flag so the importer (re-homed to RootView, issue #23 OV1) can
+      // present even when this sidebar is collapsed in Workrooms View.
       Button {
-        showImporter = true
+        store.requestAddProject = true
       } label: {
         Image(systemName: "plus")
           .font(.system(size: 14))

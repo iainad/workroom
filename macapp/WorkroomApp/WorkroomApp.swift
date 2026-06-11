@@ -33,11 +33,12 @@ struct WorkroomApp: App {
         .frame(minWidth: 900, minHeight: 560)
         .task { await store.bootstrap() }
     }
-    .commands { WorkroomCommands(updater: updater) }
+    .commands { WorkroomCommands(updater: updater, store: store) }
 
     Settings {
       SettingsView()
         .environmentObject(updater)
+        .environmentObject(store)
     }
 
     // System menu bar item (issue #33): the Workroom glyph + pending count, with a popover listing
@@ -89,6 +90,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
       {
         Task { @MainActor in AppStore.shared.focusTerminalTab(at: digit - 1) }
         return nil  // consume so it doesn't reach the terminal
+      }
+      // ⌥⌘1–9: switch to the Nth workroom tab (issue #23), the workroom-level counterpart to ⌘1–9.
+      // Caught here (like ⌘1–9) so it fires before the terminal. Consumed only when there's an Nth tab
+      // to switch to (focusWorkroomTab returns true), so ⌥⌘digit still reaches the terminal otherwise.
+      // (Digit chars don't collide with the ⌥⌘R / ⌥⌘arrow checks below.)
+      if flags == [.command, .option], let chars = event.charactersIgnoringModifiers,
+        let digit = Int(chars), (1...9).contains(digit),
+        MainActor.assumeIsolated({ AppStore.shared.focusWorkroomTab(at: digit - 1) })
+      {
+        return nil
       }
       // ⌘R: run-or-focus the selected workroom's run command (issue #7) — caught here so it fires
       // before the terminal swallows it, like ⌘1–9. Consumed unconditionally (⌘R has no terminal use
@@ -320,6 +331,10 @@ extension FocusedValues {
 /// regardless of which pane has focus.
 struct WorkroomCommands: Commands {
   @ObservedObject var updater: Updater
+  /// The shared store, so the View-menu toggles can both *drive* and *reflect* view state — their
+  /// checkmarks track `sidebarVisible` / `showWorkroomTabBar` live (a `Commands` body re-evaluates
+  /// when an `@ObservedObject` it holds changes).
+  @ObservedObject var store: AppStore
   @FocusedValue(\.workroomSelected) private var workroomSelected
   @FocusedValue(\.hasTerminal) private var hasTerminal
   @FocusedValue(\.hasNotifications) private var hasNotifications
@@ -360,13 +375,16 @@ struct WorkroomCommands: Commands {
     }
 
     // Replace the default "Show/Hide Sidebar" with a clearer "Projects" label — it's the projects
-    // sidebar. Keeps the conventional ⌃⌘S toggle. `toggleSidebar(_:)` reaches the NSSplitViewController
-    // backing the NavigationSplitView via the responder chain.
+    // sidebar. A `Toggle` (not a plain `toggleSidebar` Button) so the menu shows a checkmark when the
+    // sidebar is visible; it binds `store.sidebarVisible`, which drives the split view's column
+    // visibility. Keeps the conventional ⌃⌘S shortcut.
     CommandGroup(replacing: .sidebar) {
-      Button("Projects") {
-        NSApp.sendAction(#selector(NSSplitViewController.toggleSidebar(_:)), to: nil, from: nil)
-      }
-      .keyboardShortcut("s", modifiers: [.command, .control])
+      Toggle("Projects", isOn: $store.sidebarVisible)
+        .keyboardShortcut("s", modifiers: [.command, .control])
+
+      // The workroom tab bar (issue #23), sitting under Projects as the other view-structure control.
+      // A checkmark reflects the opt-in `showWorkroomTabBar` state; mirrored by the Settings checkbox.
+      Toggle("Workroom Tabs", isOn: $store.showWorkroomTabBar)
     }
 
     CommandGroup(after: .sidebar) {

@@ -5,11 +5,19 @@ import SwiftUI
 struct RootView: View {
   @EnvironmentObject var store: AppStore
   @EnvironmentObject var notifications: NotificationCenterStore
+  // Observed so the detail's workroom tab bar re-renders as terminals open/close (a tab appears when a
+  // workroom gains its first terminal and disappears when it loses its last) — issue #23.
+  @EnvironmentObject var terminals: TerminalSessions
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @Default(.theme) private var theme
   /// Whether the right-hand notifications inspector is open. `@Default` (not `@State`) so the
   /// View-menu command (WorkroomCommands) toggles the same value.
   @Default(.showNotifications) private var showNotifications
+
+  /// Drives the add-project importer — set from `store.requestAddProject`, which both ⌘O and the
+  /// sidebar's Add-Project buttons raise. Hosted here (vs the sidebar) so the ⌘O command presents it
+  /// even if the sidebar is collapsed via the standard toggle.
+  @State private var showImporter = false
 
   /// True when the selected target can host a terminal right now: it exists, isn't missing,
   /// and isn't currently blocked by a running setup script.
@@ -20,7 +28,14 @@ struct RootView: View {
   }
 
   var body: some View {
-    NavigationSplitView {
+    NavigationSplitView(
+      columnVisibility: Binding(
+        // Own the column visibility so the View ▸ Projects menu item can show a tick (the bar's
+        // toggle, the auto-provided toolbar button, and a drag-collapse all round-trip through
+        // `store.sidebarVisible`). `.detailOnly` is the only hidden state for a two-column split.
+        get: { store.sidebarVisible ? .all : .detailOnly },
+        set: { store.sidebarVisible = $0 != .detailOnly })
+    ) {
       ProjectSidebar()
         .frame(minWidth: 240)
         // Persist the user-dragged sidebar width across launches (issue #14) via the
@@ -47,6 +62,39 @@ struct RootView: View {
       }
     } message: {
       Text(store.errorMessage ?? "")
+    }
+    // Add-project importer + delete confirmation, re-homed here from ProjectSidebar (issue #23 OV1) so
+    // the ⌘O / ⌘⌫ menu commands present reliably even when the sidebar is collapsed in Workrooms View.
+    // The triggers stay on the store (`requestAddProject` / `pendingDeletion`), set by both the menu
+    // commands and the sidebar's own buttons.
+    .onChange(of: store.requestAddProject) { _, request in
+      if request {
+        showImporter = true
+        store.requestAddProject = false
+      }
+    }
+    .fileImporter(isPresented: $showImporter, allowedContentTypes: [.folder]) { result in
+      if case .success(let url) = result {
+        Task { await store.addProject(url) }
+      }
+    }
+    .confirmationDialog(
+      store.pendingDeletion.map { "Delete '\($0.workroom.name)'?" } ?? "Delete workroom?",
+      isPresented: Binding(
+        get: { store.pendingDeletion != nil }, set: { if !$0 { store.pendingDeletion = nil } }),
+      titleVisibility: .visible
+    ) {
+      Button("Delete", role: .destructive) {
+        if let target = store.pendingDeletion {
+          store.deleteWorkroom(target.workroom, in: target.project)
+        }
+        store.pendingDeletion = nil
+      }
+      Button("Cancel", role: .cancel) { store.pendingDeletion = nil }
+    } message: {
+      Text(
+        "This removes the workroom's directory and runs its teardown script. For Git, the branch is left in place."
+      )
     }
     // Top toolbar (issue #26): the back/forward chevrons (snug, one item) pinned to the leading
     // `.navigation` area beside the sidebar toggle; the notifications bell pinned to the trailing
@@ -146,6 +194,33 @@ struct RootView: View {
 
   @ViewBuilder
   private var detail: some View {
+    // The workroom tab bar rides above the terminal whenever ≥1 workroom/root has a terminal (issue
+    // #23). Tapping a tab selects that target, exactly like clicking it in the sidebar. It hides
+    // entirely when nothing's open. The selected target's terminal shows below regardless of whether
+    // it's among the tabs (e.g. a freshly selected workroom mounts its terminal, then a tab appears).
+    // Opt-in: the `showWorkroomTabBar` setting (default off) gates it entirely. Read off the store
+    // (a `@Published`, observed via `@EnvironmentObject`) so toggling it actually re-renders the
+    // NavigationSplitView detail — a bare `@Default` read here didn't.
+    let tabs = store.showWorkroomTabBar ? store.orderedWorkroomTargets() : []
+    VStack(spacing: 0) {
+      if !tabs.isEmpty {
+        WorkroomTabBar(
+          tabs: tabs, selectedID: store.selectedTargetID, onSelect: { selectWorkroomTab($0) })
+        Divider()
+      }
+      detailContent
+    }
+  }
+
+  /// Focus a workroom tab — mirrors `ProjectSidebar`'s selection setter (sets both the target and the
+  /// New-Workroom project context), so every selection-driven command targets the focused workroom.
+  private func selectWorkroomTab(_ sid: SidebarID) {
+    store.selectedTargetID = sid
+    store.selectedProjectID = AppStore.projectPath(of: sid)
+  }
+
+  @ViewBuilder
+  private var detailContent: some View {
     if let target = store.selectedTarget {
       if target.isMissing {
         ContentUnavailableView(

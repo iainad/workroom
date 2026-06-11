@@ -133,6 +133,14 @@ final class TerminalSessions: ObservableObject {
   /// terminal-subtree expand flag when a close drops a target below the 2-tab disclosure threshold).
   func tabCount(forTargetID id: TerminalTarget.ID) -> Int { (tabsByTarget[id] ?? [:]).count }
 
+  /// The set of target ids that currently own at least one terminal — the "active" targets backing
+  /// the Workrooms View tab bar (issue #23). Filtered on **non-empty** because `closeTab` leaves an
+  /// emptied target as `[:]` (key present) while `reap` removes the key entirely; both must read as
+  /// inactive. Reads `@Published tabsByTarget`, so observers re-render as targets gain/lose terminals.
+  var activeTargetIDs: Set<TerminalTarget.ID> {
+    Set(tabsByTarget.compactMap { $0.value.isEmpty ? nil : $0.key })
+  }
+
   /// Whether any terminal in this target is mid-command (has a live command title, issue #2) — drives
   /// the sidebar's running spinner.
   func isRunning(forTargetID id: TerminalTarget.ID) -> Bool {

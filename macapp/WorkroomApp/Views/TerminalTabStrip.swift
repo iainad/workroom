@@ -67,7 +67,8 @@ struct TerminalTabStrip: View {
                 amount: draggedWidth + tabSpacing)
             TerminalTabChip(
               tab: tab, isActive: tab.id == activeID, isHovered: isHovered,
-              isDragging: isDragging, hasActivity: hasActivity, runState: runState
+              isDragging: isDragging, hasActivity: hasActivity, runState: runState,
+              showLeadingSeparator: showsLeadingSeparator(at: index)
             ) {
               store.requestCloseTerminalTab(tab.id, for: target)
             }
@@ -191,6 +192,20 @@ struct TerminalTabStrip: View {
     TabReorder.gapShift(index: index, draggedIndex: draggedIndex, target: target, amount: amount)
   }
 
+  /// Whether to draw a hairline on the leading edge of tab `index`, separating it from its left
+  /// neighbour. Shown only between two adjacent tabs that are **both** idle — not active, not hovered —
+  /// and never during a drag (reorder or drop-into-pane), so the divider quietly vanishes around the
+  /// tab you're pointing at or have focused. Drawn between split-grouped members too (inside the
+  /// `splitWell` bracket), so every idle boundary reads consistently. Mirrors `WorkroomTabBar`.
+  private func showsLeadingSeparator(at index: Int) -> Bool {
+    guard index > 0, draggingID == nil, chipPaneDrag == nil else { return false }
+    let here = tabs[index].id
+    let prev = tabs[index - 1].id
+    if here == activeID || prev == activeID { return false }
+    if hoveredTab == here || hoveredTab == prev { return false }
+    return true
+  }
+
   /// Commit the reorder on drop, then clear drag state (animated, so everything settles).
   private func commitDrag() {
     let tabs = sessions.tabs(for: target)
@@ -221,6 +236,8 @@ private struct TerminalTabChip: View {
   let isDragging: Bool
   let hasActivity: Bool
   let runState: RunState?
+  /// Draw a hairline on the leading edge, separating two adjacent idle tabs (computed by the strip).
+  let showLeadingSeparator: Bool
   let onClose: () -> Void
 
   var body: some View {
@@ -276,6 +293,22 @@ private struct TerminalTabChip: View {
     .background {
       GeometryReader { geo in
         Color.clear.preference(key: TabWidthKey.self, value: [tab.id: geo.size.width])
+      }
+    }
+    // Hairline between two idle neighbours, centred in the *visible* whitespace between the two
+    // titles. An overlay (not an HStack element) so it never enters the width the drag math measures.
+    // Unlike WorkroomTabBar's symmetric chips, a terminal chip always reserves its trailing close
+    // button even when hidden, so the title sits well left of the chip's right edge — centring on the
+    // geometric chip gap would jam the line against the right tab. The midpoint of [previous title's
+    // trailing edge … this title's leading edge] is ≈ (−(tabSpacing 4 + spacing 6 + closeButton ~15 +
+    // trailing 4) + leading 10) / 2 = −9.5; the leading-anchored 1pt rect centres at +0.5, so offset
+    // another −0.5 → −10 to sit on that midpoint.
+    .overlay(alignment: .leading) {
+      if showLeadingSeparator {
+        Rectangle()
+          .fill(Color(nsColor: .separatorColor))
+          .frame(width: 1, height: 14)
+          .offset(x: -10)
       }
     }
     // A flowing underline along the chip's base while a command runs in this tab (issue #28).

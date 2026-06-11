@@ -48,6 +48,28 @@ final class AppStore: ObservableObject {
   @Published var collapsedProjects: Set<String> = Defaults[.collapsedProjects] {
     didSet { Defaults[.collapsedProjects] = collapsedProjects }
   }
+  /// Remembered workroom tab-bar order (issue #23), as `TerminalTarget.ID` strings. `@Published`
+  /// (not read via `@Default` in the view) because a `@Default` write doesn't reliably re-render the
+  /// `NavigationSplitView` detail, so a drag-reorder's write didn't take and the dropped chip snapped
+  /// back to its old slot. Persisted via `didSet`; initialised from `Defaults`. Stale ids resolve away
+  /// in `orderedWorkroomTargets`, so it's self-healing.
+  @Published var workroomTabOrder: [TerminalTarget.ID] = Defaults[.workroomTabOrder] {
+    didSet { Defaults[.workroomTabOrder] = workroomTabOrder }
+  }
+  /// Whether the workroom tab bar rides above the terminal (issue #23). Opt-in (default off). Held
+  /// as `@Published` rather than read via `@Default` in `RootView.detail` for the same reason as
+  /// `workroomTabOrder`: a bare `@Default` write doesn't reliably re-render the `NavigationSplitView`
+  /// detail, so toggling the Settings/menu item appeared to do nothing. Persisted via `didSet`;
+  /// initialised from `Defaults`. The Settings checkbox + the View ▸ Workroom Tabs item bind this.
+  @Published var showWorkroomTabBar: Bool = Defaults[.showWorkroomTabBar] {
+    didSet { Defaults[.showWorkroomTabBar] = showWorkroomTabBar }
+  }
+  /// Whether the projects sidebar column is visible. The single source of truth for the
+  /// `NavigationSplitView` column visibility *and* the View ▸ Projects checkmark — a bare AppKit
+  /// `toggleSidebar` has no state a menu checkmark can bind to, so it could never show a tick.
+  /// Session-only (resets to shown on launch); the dragged width is persisted separately by
+  /// `SplitViewAutosave`.
+  @Published var sidebarVisible: Bool = true
   /// Terminal targets whose terminal subtree is *expanded* in the sidebar (issue #30). Inverse
   /// polarity to `collapsedProjects`: terminals are collapsed by default, so the set holds only the
   /// expanded ones (empty = all collapsed). Session-only and deliberately NOT persisted — the
@@ -175,6 +197,46 @@ final class AppStore: ObservableObject {
       let project = projects.first(where: { $0.id == path })
     else { return nil }
     return project.workrooms.first { $0.id == name }
+  }
+
+  // MARK: Workroom tab bar (issue #23)
+
+  /// The active workroom tabs shown above the terminal: the remembered order resolved to live targets,
+  /// limited to targets that currently have ≥1 terminal (so a tab appears when a workroom gains its
+  /// first terminal and disappears when it loses its last). Pairs each tab's `SidebarID` (for
+  /// selection) with its `TerminalTarget` (for the chip), dropping any id that no longer resolves
+  /// against `projects` (e.g. a deleted workroom).
+  ///
+  /// `order` defaults to the `@Published workroomTabOrder`, so a view observing the store re-renders
+  /// when a drag-reorder rewrites it. Reads `@Published projects` + `terminals.activeTargetIDs`
+  /// (`@Published tabsByTarget`) too — so the bar updates as terminals open/close. `order:` is for tests.
+  func orderedWorkroomTargets(order: [TerminalTarget.ID]? = nil)
+    -> [(sid: SidebarID, target: TerminalTarget)]
+  {
+    Self.orderedActiveTargets(
+      persisted: order ?? workroomTabOrder, active: terminals.activeTargetIDs
+    )
+    .compactMap { tid in
+      guard let sid = Self.sidebarID(forTargetID: tid, in: projects), let target = target(for: sid)
+      else { return nil }
+      return (sid, target)
+    }
+  }
+
+  /// Switch to the Nth workroom tab — bound to ⌥⌘1–9 (issue #23), the workroom-level counterpart to
+  /// ⌘1–9's terminal-tab focus. Returns whether it handled the key, so the AppDelegate monitor consumes
+  /// ⌥⌘digit only when there's an Nth tab to switch to (otherwise the key passes through to the
+  /// terminal).
+  @discardableResult
+  func focusWorkroomTab(at index: Int) -> Bool {
+    // The tab bar is opt-in (issue #23): with it hidden, ⌥⌘1–9 has no visible target, so pass the
+    // key through to the terminal rather than silently reselecting an unseen tab.
+    guard showWorkroomTabBar else { return false }
+    let tabs = orderedWorkroomTargets()
+    guard tabs.indices.contains(index) else { return false }
+    selectedTargetID = tabs[index].sid
+    selectedProjectID = Self.projectPath(of: tabs[index].sid)
+    return true
   }
 
   // MARK: Run command (issue #7)
@@ -444,21 +506,24 @@ final class AppStore: ObservableObject {
     runStates[targetID] = .armed
   }
 
-  /// Create a target's initial terminal when its pane first appears (called by the terminals view).
-  /// Normally just `ensureTab`, but when an auto-run was armed for this just-created workroom
-  /// (issue #7) the run command becomes the first tab instead of a default shell. Because the pane
-  /// only mounts once any blocking setup dialog is dismissed, this is exactly when the command should
-  /// run (post-setup). Falls back to a normal tab if the command can't start (e.g. config cleared).
+  /// Run an armed auto-run command as a target's first terminal when its pane first appears (called by
+  /// the terminals view). Only acts when an auto-run was armed for this just-created workroom (issue
+  /// #7) — the run command becomes the first tab instead of a default shell. Because the pane only
+  /// mounts once any blocking setup dialog is dismissed, this is exactly when the command should run
+  /// (post-setup). For any other target this is a no-op: selecting a workroom does NOT auto-create a
+  /// terminal (issue #23) — the user opens one with ⌘T. Falls back to a normal tab if the armed
+  /// command can't start (e.g. config cleared between arming and mount).
   func ensureInitialTerminal(for target: TerminalTarget) {
-    if case .armed = runStates[target.id] {
-      // Consume the armed intent, then let startRunCommand (re-)derive the state: it becomes `.running`
-      // as the workroom's first tab, or a no-op if the config was cleared between arming and mount.
-      runStates[target.id] = nil
-      startRunCommand(for: target)
-      if terminals.tabCount(forTargetID: target.id) == 0 { terminals.ensureTab(for: target) }
-      return
-    }
-    terminals.ensureTab(for: target)
+    // Auto-run (issue #7): when a workroom was just *created* with an auto-run command, start it as the
+    // first tab on first mount (post-setup). Selecting a workroom otherwise does NOT auto-create a
+    // terminal — the user opens one with ⌘T (or the empty state's "New Terminal" button). So a
+    // selected-but-untouched workroom shows the empty state and gets no tab until a terminal exists.
+    guard case .armed = runStates[target.id] else { return }
+    // Consume the armed intent, then let startRunCommand (re-)derive the state: it becomes `.running`
+    // as the workroom's first tab, or a no-op if the config was cleared between arming and mount.
+    runStates[target.id] = nil
+    startRunCommand(for: target)
+    if terminals.tabCount(forTargetID: target.id) == 0 { terminals.ensureTab(for: target) }
   }
 
   // MARK: Loading
@@ -512,6 +577,10 @@ final class AppStore: ObservableObject {
   private func loadFixture() {
     let fixtures = UITestFixture.projects()
     projects = fixtures
+    // The workroom tab bar is opt-in (default off, issue #23); enable it so the bar's XCUITest can
+    // observe a tab. Only fixture mode reaches here (Release never does), so the real build's default
+    // stands — same "deterministic test state in the shared suite" pattern as the run config below.
+    showWorkroomTabBar = true
     // Seed a deterministic run command (issue #7) so the run-command UI is exercisable in fixture
     // mode (the lifecycle XCUITest + the manual verify-first probe). The path is a temp dir, so real
     // projects' Defaults are untouched. Prints a marker (proves the command parsed + launched) then
@@ -530,6 +599,9 @@ final class AppStore: ObservableObject {
       let workroom = project.workrooms.first
     {
       selectedTargetID = .workroom(project: project.path, name: workroom.name)
+      // Selecting a workroom no longer auto-opens a terminal (issue #23), so explicitly open one here
+      // for the UI tests — they assume the fixture workroom has a terminal (and thus a tab) on launch.
+      terminals.ensureTab(for: workroom.target(inProject: project.path))
     }
     lastLoadAt = Date()
   }
@@ -1058,6 +1130,18 @@ final class AppStore: ObservableObject {
     case .root(let path), .workroom(let path, _), .project(let path): return path
     case .none: return nil
     }
+  }
+
+  /// The display order of the workroom tabs (issue #23): the `persisted` order filtered to those still
+  /// `active` (have ≥1 terminal), then any newly-active target not yet listed appended in a stable
+  /// sorted order. Strictly follows terminal presence — a target with no terminal is never included.
+  /// Pure + nonisolated for direct unit testing, mirroring `validatedSelection`.
+  nonisolated static func orderedActiveTargets(
+    persisted: [TerminalTarget.ID], active: Set<TerminalTarget.ID>
+  ) -> [TerminalTarget.ID] {
+    var result = persisted.filter { active.contains($0) }
+    result.append(contentsOf: active.subtracting(Set(result)).sorted())
+    return result
   }
 
   // MARK: Errors
