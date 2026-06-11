@@ -258,8 +258,9 @@ struct ProjectSidebar: View {
         RunningSpinner()
       }
       // Run/stop the project's command straight from the root row (issue #7), trailing-most — the
-      // root runs it in the project directory. Shows its state (green = running).
-      if store.hasRunCommand(forProject: project.path) {
+      // root runs it in the project directory. Shows its state (green = running). Hidden for a missing
+      // directory, where the button would be a dead no-op (review #9).
+      if store.canRunCommand(for: target, inProject: project.path) {
         RowRunButton(target: target)
       }
     }.contentShape(Rectangle())
@@ -305,8 +306,9 @@ struct ProjectSidebar: View {
       }
       // Run/stop the project's command for this workroom straight from the row (issue #7), trailing-
       // most. Shows its state (green = running) and toggles on click; distinct from the OSC-9;4
-      // `RunningSpinner` above (any terminal's agent activity).
-      if store.hasRunCommand(forProject: project.path) {
+      // `RunningSpinner` above (any terminal's agent activity). Hidden for a missing worktree, where
+      // the button would be a dead no-op (review #9).
+      if store.canRunCommand(for: target, inProject: project.path) {
         RowRunButton(target: target)
           .accessibilityIdentifier("sidebar.workroom.\(workroom.name).run")
       }

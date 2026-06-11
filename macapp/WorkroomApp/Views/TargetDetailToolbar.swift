@@ -81,7 +81,7 @@ struct RunCommandToolbar: ToolbarContent {
 
   var body: some ToolbarContent {
     ToolbarItemGroup {
-      if store.hasRunCommand(forProject: projectPath) {
+      if store.canRunCommand(for: target, inProject: projectPath) {
         if store.isRunCommandRunning(for: target.id) {
           Button {
             store.stopRunCommand(for: target)

@@ -517,8 +517,12 @@ final class GhosttySurfaceView: NSView {
   /// would make the 0x03 a literal byte) and NOT `ghostty_surface_write_buffer` (it enqueues and only
   /// flushes on the next surface event, so a Stop click with no follow-up input wouldn't fire). Backs
   /// the run command's Stop (issue #7). No-op until the surface exists. keyCode 8 = ANSI "C".
+  ///
+  /// Skips when the child has already exited: there's nothing to interrupt, and routing a synthetic key
+  /// through `keyDown` then would trip the "press any key to close" guard and close the run tab instead
+  /// — e.g. a Stop pressed in the gap between the process exiting and `markRunExited` firing (review #6).
   func sendInterrupt() {
-    guard surface != nil,
+    guard surface != nil, !processHasExited,
       let event = NSEvent.keyEvent(
         with: .keyDown, location: .zero, modifierFlags: .control,
         timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window?.windowNumber ?? 0,

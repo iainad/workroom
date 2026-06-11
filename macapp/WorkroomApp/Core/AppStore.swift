@@ -1,3 +1,4 @@
+import AppKit
 import Defaults
 import Foundation
 import SwiftUI
@@ -237,6 +238,13 @@ final class AppStore: ObservableObject {
     runConfig(forProject: projectPath).hasCommand
   }
 
+  /// Whether to surface run controls for a target: its project has a command configured AND the target
+  /// exists (not a missing directory, where `startRunCommand` silently no-ops). One gate for the
+  /// toolbar and the sidebar run buttons, so a new condition lands in a single place (review #9/#14).
+  func canRunCommand(for target: TerminalTarget, inProject projectPath: String) -> Bool {
+    !target.isMissing && hasRunCommand(forProject: projectPath)
+  }
+
   /// Persist a project's run config. A blank command with auto-run off removes the entry so the map
   /// doesn't accrue dead keys. `objectWillChange` fires so the toolbar/menu re-render `hasRunCommand`
   /// the moment Save commits (those consumers observe this store — issue #7 reactivity, OV-A).
@@ -270,13 +278,12 @@ final class AppStore: ObservableObject {
   /// interactive rc won't load — a documented limitation (issue #7, fold #7).
   private func runCommandLine(_ raw: String) -> String {
     let shell = ShellEnvironment.loginShell()
-    let escaped = raw.replacingOccurrences(of: "'", with: "'\\''")
+    let quotedCommand = CommandLineInstaller.shellQuoted(raw)
     let name = (shell as NSString).lastPathComponent
     if ["zsh", "bash", "sh", "dash", "ksh"].contains(name) {
-      let shellEscaped = shell.replacingOccurrences(of: "'", with: "'\\''")
-      return "'\(shellEscaped)' -lic '\(escaped)'"
+      return "\(CommandLineInstaller.shellQuoted(shell)) -lic \(quotedCommand)"
     }
-    return "/bin/sh -lc '\(escaped)'"
+    return "/bin/sh -lc \(quotedCommand)"
   }
 
   /// Start the project's run command in `target`'s directory, in a dedicated run terminal. No-op
@@ -314,10 +321,17 @@ final class AppStore: ObservableObject {
     }
   }
 
+  /// True while the user is typing in a text field (e.g. the Project Settings command field). The
+  /// ambient ⌘R / ⇧⌘R / ⌥⌘R act on the sidebar *selection*, so they must not fire behind an editor —
+  /// otherwise a run starts on the background workroom while you're editing settings (review #8). A
+  /// focused NSTextField makes the window's field editor (an `NSTextView`, an `NSText`) first responder;
+  /// the terminal surface is a plain `NSView`, so this stays false when a terminal is focused.
+  private var isEditingTextField: Bool { NSApp.keyWindow?.firstResponder is NSText }
+
   /// ⌘R / toolbar Run = "ensure running" (OV-B): running → focus it; stopped-but-open → re-run;
   /// none → start. Acts on the current selection.
   func runOrFocusRunCommand() {
-    guard let target = selectedTarget, !target.isMissing else { return }
+    guard !isEditingTextField, let target = selectedTarget, !target.isMissing else { return }
     switch runStates[target.id] {
     case .running(let tab, _), .restarting(let tab):
       terminals.focus(tab, for: target)
@@ -330,13 +344,17 @@ final class AppStore: ObservableObject {
 
   /// ⇧⌘R / Stop menu: stop the selected target's run command if it's running. No-op otherwise.
   func stopSelectedRunCommand() {
-    guard let target = selectedTarget, isRunCommandRunning(for: target.id) else { return }
+    guard !isEditingTextField, let target = selectedTarget,
+      isRunCommandRunning(for: target.id)
+    else { return }
     stopRunCommand(for: target)
   }
 
   /// ⌥⌘R / Restart menu: restart the selected target's run command if it's running. No-op otherwise.
   func restartSelectedRunCommand() {
-    guard let target = selectedTarget, isRunCommandRunning(for: target.id) else { return }
+    guard !isEditingTextField, let target = selectedTarget,
+      isRunCommandRunning(for: target.id)
+    else { return }
     restartRunCommand(for: target)
   }
 

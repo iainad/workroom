@@ -83,10 +83,11 @@ final class RunCommandTests: XCTestCase {
 
     XCTAssertNotNil(store.runTabID(for: t.id))
     XCTAssertTrue(store.isRunCommandRunning(for: t.id))
-    // The command is wrapped in a login shell so it gets the user's environment (A3).
+    // Wrapped in an interactive login shell so it gets the user's environment (A3). Assert `-lic`
+    // specifically — `-l` alone would also match the degraded `/bin/sh -lc` fallback (review #15).
     let cmd = try! XCTUnwrap(captured.last as? String)
     XCTAssertTrue(cmd.contains("'echo hi'"), "command not single-quoted: \(cmd)")
-    XCTAssertTrue(cmd.contains("-l"), "not a login shell: \(cmd)")
+    XCTAssertTrue(cmd.contains("-lic"), "not an interactive login shell: \(cmd)")
   }
 
   func testStartIsNoOpWithoutCommand() {
@@ -297,5 +298,19 @@ final class RunCommandTests: XCTestCase {
 
     store.stopRunCommand(for: t)  // now escalates
     XCTAssertNil(store.runTabID(for: t.id), "2nd Stop hard-kills")
+  }
+
+  /// Run controls show only for a present target whose project has a command — not for a missing
+  /// directory (where startRunCommand silently no-ops), and not without a command (review #9/#14).
+  func testCanRunCommandGate() {
+    let store = makeStore([])
+    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    let present = TerminalTarget(id: "x", title: "main", path: "/a/main", isMissing: false)
+    let missing = TerminalTarget(id: "y", title: "gone", path: "/a/gone", isMissing: true)
+
+    XCTAssertTrue(store.canRunCommand(for: present, inProject: "/a"))
+    XCTAssertFalse(store.canRunCommand(for: missing, inProject: "/a"), "missing → no run controls")
+    XCTAssertFalse(
+      store.canRunCommand(for: present, inProject: "/b"), "no command → no run controls")
   }
 }

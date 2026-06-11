@@ -13,6 +13,12 @@ struct ProjectSettingsSheet: View {
   @State private var command = ""
   @State private var autoRun = false
 
+  /// Trim with the same set `RunConfig.hasCommand` uses, so the auto-run gate and what's actually
+  /// runnable agree (a newlines-only command must read as blank too — review #7).
+  private var commandIsBlank: Bool {
+    command.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+  }
+
   var body: some View {
     VStack(spacing: 0) {
       Form {
@@ -21,7 +27,10 @@ struct ProjectSettingsSheet: View {
             .lineLimit(1)
             .accessibilityIdentifier("projectSettings.runCommand")
           Toggle("Run automatically when a workroom is created", isOn: $autoRun)
-            .disabled(command.trimmingCharacters(in: .whitespaces).isEmpty)
+            // Disabled — and forced back off — when there's no command, so Save can't persist a dead
+            // `RunConfig(command: "", autoRun: true)` that never runs (review #7).
+            .disabled(commandIsBlank)
+            .onChange(of: command) { _ in if commandIsBlank { autoRun = false } }
             .accessibilityIdentifier("projectSettings.autoRun")
         } header: {
           Text("Run Command")
