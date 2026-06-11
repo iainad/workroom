@@ -221,13 +221,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     true
   }
 
-  /// Ordered libghostty teardown before exit: free every surface (which clears its callbacks first),
-  /// then the runtime app + config. Fires only after `applicationShouldTerminate` approves the quit.
+  /// Deliberately does NOT tear down libghostty on quit. Freeing surfaces (or the app) while their
+  /// IO/render is still active races libghostty's surface teardown and crashes — EXC_BAD_ACCESS in
+  /// `Surface.deinit`, or `os_unfair_lock` corruption in `Surface.handleMessage` — most readily when a
+  /// run command's dev server (issue #7) is still busy. The process is exiting anyway: the OS reclaims
+  /// libghostty's memory and closes the PTYs, so every child shell/server gets SIGHUP exactly as a
+  /// manual `ghostty_surface_free` would deliver. (The per-workroom delete path still reaps a single
+  /// steady-state surface — that's not a mass-free racing termination.)
   @MainActor
-  func applicationWillTerminate(_ notification: Notification) {
-    AppStore.shared.terminals.reapAll()
-    GhosttyApp.shared.shutdown()
-  }
+  func applicationWillTerminate(_ notification: Notification) {}
 }
 
 /// Whether the focused window has a usable terminal target selected (a root or a workroom,
