@@ -175,49 +175,20 @@ struct TerminalTabStrip: View {
     return (x, width)
   }
 
-  /// Where the dragged tab would land given its current translation: walk outward from
-  /// its start index, crossing each neighbour once the drag passes that neighbour's
-  /// half-width. Reaches index 0 and the last slot.
+  /// Where the dragged tab would land given its current translation (delegates to the shared
+  /// `TabReorder` math, mapping this strip's tabs to position-indexed widths).
   private func dropTargetIndex(_ tabs: [TerminalTab], draggedIndex di: Int) -> Int {
-    var idx = di
-    if dragTranslation > 0 {
-      var accumulated: CGFloat = 0
-      var j = di + 1
-      while j < tabs.count {
-        let span = (widths[tabs[j].id] ?? 0) + tabSpacing
-        if dragTranslation > accumulated + span / 2 {
-          idx = j
-          accumulated += span
-          j += 1
-        } else {
-          break
-        }
-      }
-    } else if dragTranslation < 0 {
-      var accumulated: CGFloat = 0
-      var j = di - 1
-      while j >= 0 {
-        let span = (widths[tabs[j].id] ?? 0) + tabSpacing
-        if -dragTranslation > accumulated + span / 2 {
-          idx = j
-          accumulated += span
-          j -= 1
-        } else {
-          break
-        }
-      }
-    }
-    return idx
+    TabReorder.dropTargetIndex(
+      widths: tabs.map { widths[$0.id] ?? 0 }, draggedIndex: di,
+      translation: dragTranslation, spacing: tabSpacing)
   }
 
-  /// Horizontal shift for a non-dragged chip so the row opens a gap at the drop target.
+  /// Horizontal shift for a non-dragged chip so the row opens a gap at the drop target (delegates to
+  /// the shared `TabReorder` math).
   private func gapShift(for index: Int, draggedIndex: Int?, target: Int?, amount: CGFloat)
     -> CGFloat
   {
-    guard let di = draggedIndex, let ti = target else { return 0 }
-    if di < ti, index > di, index <= ti { return -amount }  // dragging right: slide left
-    if di > ti, index >= ti, index < di { return amount }  // dragging left: slide right
-    return 0
+    TabReorder.gapShift(index: index, draggedIndex: draggedIndex, target: target, amount: amount)
   }
 
   /// Commit the reorder on drop, then clear drag state (animated, so everything settles).
