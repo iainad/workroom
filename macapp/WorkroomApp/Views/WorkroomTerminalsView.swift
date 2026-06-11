@@ -42,7 +42,7 @@ struct WorkroomTerminalsView: View {
             Color.clear.preference(key: ContentFrameKey.self, value: geo.frame(in: .global))
           }
         )
-        .padding(8)
+        .padding(6)
       } else {
         ContentUnavailableView {
           Label("No terminal", systemImage: "terminal")
