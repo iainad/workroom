@@ -208,9 +208,14 @@ struct ProjectSidebar: View {
       terminalDisclosure(for: target)
       Text(style.label)
         .font(.callout)
-        .foregroundColor(style.dim ? .secondary : .primary)
         .lineLimit(1)
         .truncationMode(.tail)
+        // A healthy root must apply NO foreground color so it inherits the sidebar's default
+        // (vibrant) foreground and dims with every other row when the window goes inactive — exactly
+        // like the workroom rows. Pinning a color here (even `.foregroundColor(nil)`) opts the text
+        // out of that vibrancy dimming, which left roots bright on blur (issue #43). Only the
+        // de-emphasized detached/none states take an explicit `.secondary`.
+        .modifier(RootLabelTint(dim: style.dim))
       // House marks this row as the project root, sitting right after the label (issue #30).
       Image(systemName: "house")
         .font(.system(size: 10))
@@ -482,6 +487,18 @@ struct ProjectSidebar: View {
     }
     .padding(.horizontal, 8)
     .padding(.vertical, 6)
+  }
+}
+
+/// The root row's label tint (issue #43). A detached/none root takes an explicit `.secondary`; a
+/// healthy root applies NO foreground color so it keeps the inherited (vibrant) foreground and dims
+/// along with the rest of the sidebar when the window is inactive — pinning any color here (including
+/// `.foregroundColor(nil)`) opts the text out of that dimming and leaves it bright on blur. A
+/// modifier rather than an inline `if` keeps the row's other label modifiers in one chain.
+private struct RootLabelTint: ViewModifier {
+  let dim: Bool
+  @ViewBuilder func body(content: Content) -> some View {
+    if dim { content.foregroundColor(.secondary) } else { content }
   }
 }
 
