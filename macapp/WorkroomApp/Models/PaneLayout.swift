@@ -119,6 +119,23 @@ indirect enum PaneLayout<Leaf: Hashable>: Equatable {
     }
   }
 
+  /// Swap one leaf's identity in place — same slot, orientation, ratio, and siblings — returning the
+  /// tree unchanged if `old` isn't present. Lets a tab be respawned into a split member's exact
+  /// position (issue #40): a run-command restart closes the old run tab (freeing its port via SIGHUP)
+  /// and the replacement takes its slot, instead of the split collapsing and the new pane reappearing
+  /// solo outside it.
+  func replacingLeaf(_ old: Leaf, with new: Leaf) -> PaneLayout<Leaf> {
+    switch self {
+    case .leaf(let id):
+      return id == old ? .leaf(new) : self
+    case .split(let sid, let o, let r, let first, let second):
+      return .split(
+        id: sid, orientation: o, ratio: r,
+        first: first.replacingLeaf(old, with: new),
+        second: second.replacingLeaf(old, with: new))
+    }
+  }
+
   /// Set the divider fraction of the split node with `splitID`. No-op if not found. The view owns the
   /// usable clamp (min-pane is a points concern); this stores the value with only a sanity bound.
   func settingRatio(_ ratio: CGFloat, forSplit splitID: UUID) -> PaneLayout<Leaf> {

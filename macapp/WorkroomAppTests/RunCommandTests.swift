@@ -184,6 +184,59 @@ final class RunCommandTests: XCTestCase {
     XCTAssertNotEqual(store.runTabID(for: t.id), first, "restart should spawn a fresh tab")
   }
 
+  /// Put the run tab in a split (run tab + one sibling), then restart it. The fresh run tab must take
+  /// the old one's slot — the split stays intact with the new tab in it — rather than collapsing the
+  /// split and reappearing as a solo pane outside it (issue #40).
+  func testGracefulRestartKeepsRunTabInSplit() {
+    let store = makeStore([project("/a", workrooms: ["main"])])
+    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    let t = target(store, "/a", "main")
+
+    store.startRunCommand(for: t)
+    let runID = try! XCTUnwrap(store.runTabID(for: t.id))
+    let sibling = store.terminals.addTab(for: t).id  // a second pane to split against
+    // Split: [sibling, run].
+    store.terminals.moveTabIntoSplit(runID, ontoEdge: .right, of: sibling, for: t)
+    XCTAssertEqual(store.terminals.split(for: t)?.tabIDs, [sibling, runID])
+
+    store.restartRunCommand(for: t)  // running → Ctrl-C, await exit
+    runView(store, t)?.handleChildExited(exitCode: 0)  // exit → (deferred) close + respawn in place
+
+    let pumped = expectation(description: "deferred respawn")
+    DispatchQueue.main.async { pumped.fulfill() }
+    wait(for: [pumped], timeout: 1)
+
+    let newRun = try! XCTUnwrap(store.runTabID(for: t.id))
+    XCTAssertNotEqual(newRun, runID, "restart spawns a fresh tab")
+    let split = try! XCTUnwrap(store.terminals.split(for: t), "split must survive the restart")
+    XCTAssertEqual(split.tabIDs, [sibling, newRun], "new run tab takes the old one's slot")
+    XCTAssertTrue(store.isRunCommandRunning(for: t.id))
+  }
+
+  /// The stopped-but-open re-run path (⌘R on an exited run tab) must likewise keep the tab in its split
+  /// instead of pulling it out (issue #40). This path is synchronous (no graceful Ctrl-C/await).
+  func testStoppedReRunKeepsRunTabInSplit() {
+    let store = makeStore([project("/a", workrooms: ["main"])])
+    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    let t = target(store, "/a", "main")
+    store.selectedTargetID = .workroom(project: "/a", name: "main")
+
+    store.startRunCommand(for: t)
+    let runID = try! XCTUnwrap(store.runTabID(for: t.id))
+    let sibling = store.terminals.addTab(for: t).id
+    store.terminals.moveTabIntoSplit(runID, ontoEdge: .left, of: sibling, for: t)  // [run, sibling]
+    runView(store, t)?.handleChildExited(exitCode: 0)  // run tab now stopped-but-open
+    XCTAssertFalse(store.isRunCommandRunning(for: t.id))
+
+    store.runOrFocusRunCommand()  // stopped → re-run in place
+
+    let newRun = try! XCTUnwrap(store.runTabID(for: t.id))
+    XCTAssertNotEqual(newRun, runID, "re-run spawns a fresh tab")
+    let split = try! XCTUnwrap(store.terminals.split(for: t), "split must survive the re-run")
+    XCTAssertEqual(split.tabIDs, [newRun, sibling], "new run tab takes the old one's slot")
+    XCTAssertTrue(store.isRunCommandRunning(for: t.id))
+  }
+
   func testArmedAutoRunStartsOnInitialTerminalMount() {
     let store = makeStore([project("/a", workrooms: ["main"])])
     store.setRunConfig(RunConfig(command: "echo hi", autoRun: true), forProject: "/a")

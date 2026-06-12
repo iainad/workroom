@@ -228,18 +228,63 @@ final class TerminalSessions: ObservableObject {
   /// ```
   @discardableResult
   func addRunTab(for target: TerminalTarget, command: String, cwd: String) -> TerminalTab {
+    let tab = makeRunTab(for: target, command: command, cwd: cwd)
+    insert(tab, for: target)
+    setFocused(tab.id, for: target.id)
+    reconcileOcclusion(for: target)
+    return tab
+  }
+
+  /// Respawn a run tab *in place* (issue #40). The old run tab is closed FIRST — freeing its surface
+  /// hangs up the PTY (SIGHUP), releasing any bound port before the replacement spawns, the
+  /// graceful-restart ordering `AppStore` depends on — but the new run tab then takes the old one's
+  /// exact slot: its position in the split (same neighbour, orientation, ratio) and its place in the
+  /// strip order, instead of the split collapsing and the replacement reappearing as a solo pane
+  /// outside it. With no split (the run tab was solo) this is just close-then-append, like a plain
+  /// `addRunTab`. Returns the new tab so the caller wires run-state + `onChildExited`, as `addRunTab` does.
+  @discardableResult
+  func respawnRunTab(
+    replacing oldID: TerminalTab.ID, for target: TerminalTarget, command: String, cwd: String
+  ) -> TerminalTab {
+    // Capture the old tab's place BEFORE closing it collapses the split / drops it from the order.
+    let priorSplit = splitByTarget[target.id]
+    let wasInSplit = priorSplit?.contains(oldID) ?? false
+    let orderIndex = orderByTarget[target.id]?.firstIndex(of: oldID)
+
+    closeTab(oldID, for: target)  // frees the port (SIGHUP); collapses the split — restored below
+
+    let tab = makeRunTab(for: target, command: command, cwd: cwd)
+    tabsByTarget[target.id, default: [:]][tab.id] = tab
+    if let orderIndex {
+      var order = orderByTarget[target.id] ?? []
+      order.insert(tab.id, at: min(orderIndex, order.count))
+      orderByTarget[target.id] = order
+    } else {
+      orderByTarget[target.id, default: []].append(tab.id)
+    }
+    // Re-derive the split from the pre-close tree with the new tab in the old leaf's slot — exact for
+    // any depth (a 3-pane split keeps both siblings), unlike re-inserting beside a guessed neighbour.
+    if wasInSplit, let priorSplit {
+      splitByTarget[target.id] = priorSplit.replacingLeaf(oldID, with: tab.id)
+    }
+    setFocused(tab.id, for: target.id)
+    reconcileOcclusion(for: target)
+    return tab
+  }
+
+  /// Build a run tab (issue #7) without placing it: the surface launches `command` in `cwd`, titled
+  /// "Run" until the program reports its own title. "Process exited. Press any key to close"
+  /// (wait_after_command) → close this tab on the keypress, without the confirm (the process has
+  /// already exited). Only run tabs wire `onCloseRequested`. Shared by `addRunTab` (append + focus) and
+  /// `respawnRunTab` (in-place restart, issue #40).
+  private func makeRunTab(for target: TerminalTarget, command: String, cwd: String) -> TerminalTab {
     let tab = makeTab(for: target, cwd: cwd, command: command, title: "Run")
-    // "Process exited. Press any key to close" (wait_after_command) → close this tab on the keypress,
-    // without the confirm (the process has already exited). Only run tabs wire this (issue #7).
     let targetID = target.id
     let tabID = tab.id
     tab.view.onCloseRequested = { [weak self] in
       guard let self, let target = self.target(forID: targetID) else { return }
       self.closeTab(tabID, for: target)
     }
-    insert(tab, for: target)
-    setFocused(tab.id, for: target.id)
-    reconcileOcclusion(for: target)
     return tab
   }
 

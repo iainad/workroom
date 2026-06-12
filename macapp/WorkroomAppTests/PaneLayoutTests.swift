@@ -65,6 +65,34 @@ final class PaneLayoutTests: XCTestCase {
     XCTAssertEqual(PaneLayout.leaf(a).removingLeaf(b), .leaf(a))  // not present → unchanged
   }
 
+  func testReplacingLeafKeepsSlotAndStructure() {
+    // split(h, 0.3, leaf(a), split(v, 0.7, leaf(b), leaf(c)))  →  swap b for d in place.
+    let inner = UUID()
+    let outer = UUID()
+    let tree = PaneLayout.split(
+      id: outer, orientation: .horizontal, ratio: 0.3,
+      first: .leaf(a),
+      second: .split(
+        id: inner, orientation: .vertical, ratio: 0.7, first: .leaf(b), second: .leaf(c)))
+    let replaced = tree.replacingLeaf(b, with: d)
+    // d takes b's exact slot; reading order, sibling, orientations, ratios, and node ids all survive.
+    XCTAssertEqual(
+      replaced,
+      .split(
+        id: outer, orientation: .horizontal, ratio: 0.3,
+        first: .leaf(a),
+        second: .split(
+          id: inner, orientation: .vertical, ratio: 0.7, first: .leaf(d), second: .leaf(c))))
+    XCTAssertEqual(replaced.tabIDs, [a, d, c])
+  }
+
+  func testReplacingAbsentLeafIsUnchanged() {
+    let tree = PaneLayout.split(
+      id: UUID(), orientation: .horizontal, ratio: 0.5, first: .leaf(a), second: .leaf(b))
+    XCTAssertEqual(tree.replacingLeaf(c, with: d), tree)  // c not present → no change
+    XCTAssertEqual(PaneLayout.leaf(a).replacingLeaf(a, with: d), .leaf(d))  // bare leaf swaps
+  }
+
   func testSettingRatioTargetsOneNode() {
     let inner = UUID()
     let tree = PaneLayout.split(

@@ -385,6 +385,27 @@ final class AppStore: ObservableObject {
     tab.view.onChildExited = { [weak self] _ in self?.markRunExited(for: target) }
   }
 
+  /// Respawn the run command in place of `oldTab` (issue #40): the replacement takes the old run tab's
+  /// exact slot, so restarting a run command that lives in a split keeps it in the split instead of
+  /// pulling it out as a solo pane. Mirrors `startRunCommand`'s state wiring; `respawnRunTab` closes
+  /// `oldTab` first so its port frees (SIGHUP) before the new instance binds — the graceful-restart
+  /// ordering. If the command was cleared between the restart and here, the old tab is just closed
+  /// (state then clears via `onTabsRemoved`), matching the former close-then-no-op behaviour.
+  private func respawnRunCommand(replacing oldTab: TerminalTab.ID, for target: TerminalTarget) {
+    guard !target.isMissing, let project = project(forTarget: target),
+      hasRunCommand(forProject: project.path)
+    else {
+      terminals.closeTab(oldTab, for: target)
+      return
+    }
+    let config = runConfig(forProject: project.path)
+    let line = runCommandLine(config.command.trimmingCharacters(in: .whitespacesAndNewlines))
+    let tab = terminals.respawnRunTab(
+      replacing: oldTab, for: target, command: line, cwd: target.path)
+    runStates[target.id] = .running(tab: tab.id, interrupted: false)
+    tab.view.onChildExited = { [weak self] _ in self?.markRunExited(for: target) }
+  }
+
   /// Toggle a specific target's run command from the sidebar: running → stop; otherwise start (or
   /// re-run a stopped-but-open tab). Acts on the given target (not the selection). On start, also
   /// navigates the detail pane to that target so the just-started run tab is visible — it's already
@@ -489,8 +510,7 @@ final class AppStore: ObservableObject {
     case .restarting:
       break  // already restarting → don't double-send Ctrl-C
     case .stopped(let tab):
-      terminals.closeTab(tab, for: target)  // clears state via onTabsRemoved
-      startRunCommand(for: target)
+      respawnRunCommand(replacing: tab, for: target)  // close + respawn in the old tab's slot (#40)
     case .armed, .none:
       startRunCommand(for: target)
     }
@@ -510,8 +530,7 @@ final class AppStore: ObservableObject {
     case .restarting:
       DispatchQueue.main.async { [weak self] in
         guard let self, case .restarting(let tab) = self.runStates[target.id] else { return }
-        self.terminals.closeTab(tab, for: target)
-        self.startRunCommand(for: target)
+        self.respawnRunCommand(replacing: tab, for: target)  // new tab keeps the split slot (#40)
       }
     case .armed, .stopped, .none:
       break
