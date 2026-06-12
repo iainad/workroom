@@ -919,7 +919,8 @@ final class AppStore: ObservableObject {
     alert.suppressionButton?.title = "Don't ask me again"
     let confirmed = alert.runModal() == .alertFirstButtonReturn
     // Ticking the box stops future confirmations whether they Close or Cancel — it means "stop
-    // asking". Writes the same key the Settings toggle binds to.
+    // asking". Writes the same key the Settings checkbox and the File ▸ "Confirm Before Closing a
+    // Terminal" menu toggle bind to, so both unset the moment the box is ticked.
     if alert.suppressionButton?.state == .on {
       Defaults[.confirmOnCloseTerminal] = false
     }

@@ -350,6 +350,10 @@ struct WorkroomCommands: Commands {
   // Gate the quit-confirmation alert. Same key as the Settings checkbox so the two stay in sync;
   // AppDelegate reads it in applicationShouldTerminate.
   @Default(.confirmOnQuit) private var confirmOnQuit
+  // Gate the close-terminal confirmation (default on). Same key as the Settings checkbox and the
+  // dialog's "Don't ask me again", so the File-menu checkmark reflects — and drives — all three;
+  // AppStore reads it in requestCloseTerminalTab.
+  @Default(.confirmOnCloseTerminal) private var confirmOnCloseTerminal
 
   var body: some Commands {
     CommandGroup(after: .appInfo) {
@@ -455,6 +459,13 @@ struct WorkroomCommands: Commands {
         AppStore.shared.requestAddProject = true
       }
       .keyboardShortcut("o", modifiers: .command)
+
+      // Gate the close-terminal confirmation (default on). A set-and-forget preference, so a divider
+      // sets it apart from the File actions above (like the Quit toggle); no shortcut. Binds the same
+      // key as the Settings checkbox and the dialog's "Don't ask me again", so ticking that box in the
+      // confirm alert unchecks this item, and vice versa.
+      Divider()
+      Toggle("Confirm Before Closing a Terminal", isOn: $confirmOnCloseTerminal)
     }
 
     // Browser/Finder-style back/forward over the workroom + terminal history (issue #26), plus
