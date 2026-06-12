@@ -255,36 +255,26 @@ run-command actions, `Core/TerminalSessions.swift` `addRunTab`).
 
 **Priority:** P3 (deferred from #7 — the feature is useful without it; surfaced by the eng-review).
 
-## Workroom tabs: drag a workroom tab into another to split (macapp) — #23 follow-up
+## Workroom split: deferred follow-ups (macapp) — #23
 
-**What:** Dragging one workroom tab into another creates a top-level side-by-side split (issue #23's
-last bullet), mirroring the terminal pane split — two workrooms' full terminal UIs shown at once,
-draggable/resizable.
+**Shipped:** drag a workroom tab onto a pane edge → a nested, resizable side-by-side split of full
+terminal UIs, same feel as the ⌘D terminal panes (`Views/WorkroomSplitView.swift`,
+`Core/AppStore+WorkroomSplit.swift`, generic `PaneLayout<Leaf>` / `PaneTreeLayout`). The bar always
+shows; `RootView` always routes the detail through `WorkroomSplitView` (single = `.leaf(selected)`).
+The pieces below were explicitly deferred — each small, none blocking.
 
-**Why:** #23 shipped the opt-in tab bar (the `showWorkroomTabBar` setting, default off — no separate
-"Workrooms View" mode), the per-tab chips, drag-to-reorder, and ⌥⌘1–9 switching; the split was
-explicitly phased out as the highest-risk part. It's the natural next step for true side-by-side
-monitoring.
+- **⌥⌘-arrow focus between workroom panes** — `PaneTreeLayout.adjacentPane` is already generic and
+  ready; only the key-monitor wiring is missing. Deferred to avoid clashing with the terminal-level
+  ⌥⌘arrows (which navigate the focused workroom's *terminal* split) — needs a precedence decision.
+- **Drag-a-pane-out-to-dissolve** — removal today is the per-pane ✕ (strip trailing) + clicking a
+  non-member tab; the terminal split's "drag the grip up out of the panes" gesture isn't wired for
+  workroom panes.
+- **Cross-relaunch persistence of the split** — `workroomSplit` is session-only (the terminal split
+  isn't persisted either). Add a `Defaults` key + restore-on-load if wanted.
+- **Per-pane activity border-flash** — workroom panes don't flash on background activity the way
+  terminal split panes do (`activityPulse`); workroom activity still surfaces via bar-chip tinting.
 
-**How to start:** The groundwork is intact: the tab order is keyed by `TerminalTarget.ID`
-(`AppStore.workroomTabOrder` / `orderedWorkroomTargets`), and the reorder/drop *algorithms*
-(`Views/TabReorderMath.swift`, `Views/PaneTreeView.swift`'s `PaneTreeLayout.dropTarget`/`nearestEdge`)
-are leaf-type-agnostic — point them at workroom-target rects, no new geometry. The real change is in
-`Views/RootView.swift`: `detail` renders the `WorkroomTabBar` above a single
-`targetDetail(store.selectedTarget)`, so exactly ONE target's terminal is mounted at a time. A split
-must mount ≥2 target bodies at once — the already-extracted but currently-unused
-`Views/TargetTerminalDetail.swift` (the terminal ZStack without title/toolbar) is the ready-made unit
-to host side by side. That breaks the "one detail mounted" assumption: ensure occlusion stays correct
-across multiple on-screen targets — `TerminalSessions.reconcileOcclusion(for:)` only sets visibility
-for its own target's tabs (today the *other* targets simply aren't mounted, so their surfaces idle),
-so every co-visible target must be reconciled and a newly co-visible target's surfaces must not be
-left paused from when it was hidden. Do **not** make `PaneLayout`/`PaneTreeLayout` generic until this
-lands — they're pure, tested, and shared with the shipped terminal split; the transforms already
-require only `Hashable`, so converting to `PaneLayout<LeafID>` later is mechanical.
-
-**Depends on:** the #23 tab bar shipping first (done).
-
-**Priority:** P3 (deferred from #23 — the highest-risk piece; surfaced and scoped by the eng-review).
+**Priority:** P3 (polish on a shipped feature).
 
 ## Workroom tabs: tab-chip management actions (macapp) — #23 follow-up
 
@@ -292,11 +282,10 @@ require only `Hashable`, so converting to `PaneLayout<LeafID>` later is mechanic
 ("Delete…", and maybe "New Terminal" / "Reveal in Finder"), and optionally a create-workroom
 affordance — so common actions don't require reaching for the sidebar.
 
-**Why:** #23 keeps create/add-project/delete in the Projects sidebar. There's no separate "Workrooms
-View" mode anymore — the tab bar is just an opt-in strip above the terminal (`showWorkroomTabBar`) and
-the sidebar is a ⌃⌘S toggle away — so the original "never toggle back to manage" motivation is mostly
-moot. What remains is a small ergonomic win: right-click a tab to act on that workroom without hunting
-for its sidebar row. The add-project importer (`⌘O`) and the delete confirmation are already re-homed
+**Why:** #23 keeps create/add-project/delete in the Projects sidebar. The tab bar sits above the
+terminal and the sidebar is a ⌃⌘S toggle away, so the original "never toggle back to manage" motivation
+is mostly moot. What remains is a small ergonomic win: right-click a tab to act on that workroom
+without hunting for its sidebar row. The add-project importer (`⌘O`) and the delete confirmation are already re-homed
 to `RootView` (they present regardless of sidebar visibility), which is the prerequisite for any
 in-tab trigger; the run-command config sheet (`ProjectSettingsSheet`) is still sidebar-only.
 
