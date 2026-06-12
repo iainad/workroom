@@ -17,6 +17,11 @@ struct PaneTreeView: View {
   /// A drag originating outside the tree (a strip tab chip dragged into the content), in content-local
   /// coords — rendered with the same edge preview + ghost as an in-tree pane-handle drag.
   var externalDrag: PaneDragState?
+  /// Whether this whole terminal tree may hold keyboard focus. `true` normally; the workroom split
+  /// (issue #23 follow-up) passes `false` for a co-displayed but non-focused workroom, so its terminal
+  /// renders without grabbing first responder on mount — otherwise each co-displayed workroom's surface
+  /// would steal focus (and retarget the workroom selection) as the split mounts.
+  var surfaceActive: Bool = true
 
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @State private var drag: PaneDragState?
@@ -35,7 +40,7 @@ struct PaneTreeView: View {
           if let tab = sessions.tab(tabID, for: target), let rect = plan.panes[tabID] {
             PaneLeafView(
               tabID: tabID, view: tab.view, sessions: sessions, title: tab.title,
-              focused: tabID == focusedID, multiPane: multiPane,
+              focused: surfaceActive && tabID == focusedID, multiPane: multiPane,
               paneIndex: index + 1, paneCount: layout.tabIDs.count, coordinateSpace: Self.space,
               onDragChanged: { beginOrUpdateDrag(tabID: tabID, at: $0) },
               onDragEnded: { commitDrag(plan: plan) }

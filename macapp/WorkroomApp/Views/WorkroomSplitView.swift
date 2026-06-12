@@ -96,16 +96,20 @@ private struct WorkroomPaneLeaf: View {
   var body: some View {
     // The remove-from-split control rides on the tab strip's right edge (a layout sibling of the tabs,
     // so it never overlaps them) rather than as a corner overlay — forwarded via `onCloseWorkroomPane`.
-    TargetTerminalDetail(target: target, onCloseWorkroomPane: multi ? onClose : nil)
-      .overlay(
-        RoundedRectangle(cornerRadius: 12).strokeBorder(borderColor, lineWidth: 1.5)
-      )
-      // Same 3pt inset as a terminal pane, so a workroom's surface sits in the same place solo or split.
-      .padding(3)
-      .accessibilityElement(children: .contain)
-      .accessibilityIdentifier("workroom.pane")
-      .accessibilityLabel(Text("Workroom \(target.title)"))
-      .accessibilityAddTraits(focused && multi ? .isSelected : [])
+    // `surfaceActive: focused` so only the focused workroom pane's terminal grabs first responder — a
+    // co-displayed non-focused pane must not steal focus (and retarget the selection) as it mounts.
+    TargetTerminalDetail(
+      target: target, onCloseWorkroomPane: multi ? onClose : nil, surfaceActive: focused
+    )
+    .overlay(
+      RoundedRectangle(cornerRadius: 12).strokeBorder(borderColor, lineWidth: 1.5)
+    )
+    // Same 3pt inset as a terminal pane, so a workroom's surface sits in the same place solo or split.
+    .padding(3)
+    .accessibilityElement(children: .contain)
+    .accessibilityIdentifier("workroom.pane")
+    .accessibilityLabel(Text("Workroom \(target.title)"))
+    .accessibilityAddTraits(focused && multi ? .isSelected : [])
   }
 
   private var borderColor: Color {

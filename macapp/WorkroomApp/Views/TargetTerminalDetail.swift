@@ -14,6 +14,9 @@ struct TargetTerminalDetail: View {
   /// When co-displayed in a workroom split (issue #23 follow-up), the action that removes this workroom
   /// from the split — forwarded to the tab strip's trailing control. nil (default) for a solo target.
   var onCloseWorkroomPane: (() -> Void)? = nil
+  /// Whether this workroom pane is the focused one — gates terminal first-responder so a co-displayed
+  /// non-focused workroom doesn't steal focus on mount (issue #23 follow-up). `true` for a solo target.
+  var surfaceActive: Bool = true
   @EnvironmentObject var store: AppStore
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -23,7 +26,8 @@ struct TargetTerminalDetail: View {
       if !isBlocking {
         VStack(spacing: 0) {
           WorkroomTerminalsView(
-            target: target, sessions: store.terminals, onCloseWorkroomPane: onCloseWorkroomPane)
+            target: target, sessions: store.terminals, onCloseWorkroomPane: onCloseWorkroomPane,
+            surfaceActive: surfaceActive)
 
           if let log = store.logs[target.id] {
             Divider()

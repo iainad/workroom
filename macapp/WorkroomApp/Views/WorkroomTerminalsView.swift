@@ -16,6 +16,9 @@ struct WorkroomTerminalsView: View {
   /// removes it from the split — surfaced as a control on the right edge of the tab strip. nil
   /// (default) for the normal single-target case.
   var onCloseWorkroomPane: (() -> Void)? = nil
+  /// Whether this workroom's terminal may hold keyboard focus — `false` for a co-displayed but
+  /// non-focused split member, so it doesn't steal first responder (and the workroom selection) on mount.
+  var surfaceActive: Bool = true
   @EnvironmentObject var notifications: NotificationCenterStore
   @EnvironmentObject var store: AppStore
 
@@ -39,7 +42,7 @@ struct WorkroomTerminalsView: View {
         // split leaf) fighting over the same surface and stranding it in a detached container (#3).
         PaneTreeView(
           layout: contentLayout(active: active), target: target, sessions: sessions,
-          externalDrag: chipPaneDrag
+          externalDrag: chipPaneDrag, surfaceActive: surfaceActive
         )
         .background(
           GeometryReader { geo in
