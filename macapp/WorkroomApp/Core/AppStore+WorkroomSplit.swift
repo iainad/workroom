@@ -16,8 +16,48 @@ extension AppStore {
     return live.count >= 2 ? live : nil
   }
 
-  /// Whether a real (≥2 live members) workroom split is active — drives `RootView`'s render branch.
+  /// Whether a real (≥2 live members) workroom split exists at all (regardless of what's selected) —
+  /// drives the tab bar's grouping bracket.
   var workroomSplitActive: Bool { resolvedSplitLeaves() != nil }
+
+  /// Whether the split is currently *shown*: it exists (≥2 live) AND the selected workroom is one of
+  /// its members. Mirrors `TerminalSessions.isSplitVisible` — the split is persistent state; selecting
+  /// a non-member shows that workroom solo without dissolving the split (it reappears on reselect).
+  var isWorkroomSplitVisible: Bool {
+    guard let split = workroomSplit, let sel = selectedTargetID else { return false }
+    return split.contains(sel) && resolvedSplitLeaves() != nil
+  }
+
+  /// The layout the detail renders for `selected`: the split when `selected` is a member, else the
+  /// workroom solo (`.leaf`). Mirrors `WorkroomTerminalsView.contentLayout`. The split is NOT discarded
+  /// when a non-member is shown — `workroomSplit` persists, so reselecting a member brings it back.
+  func visibleWorkroomLayout(for selected: SidebarID) -> PaneLayout<SidebarID> {
+    if let split = workroomSplit, split.contains(selected), resolvedSplitLeaves() != nil {
+      return split
+    }
+    return .leaf(selected)
+  }
+
+  /// The active workroom tabs in bar order, but with the split's members pulled into a contiguous run
+  /// at the earliest member's slot — so the grouped workrooms sit together and a single bracket can
+  /// span them. Mirrors `TerminalSessions.displayedTabIDs`. No split ⇒ just `orderedWorkroomTargets()`.
+  func displayedWorkroomTargets() -> [(sid: SidebarID, target: TerminalTarget)] {
+    let ordered = orderedWorkroomTargets()
+    guard let split = workroomSplit else { return ordered }
+    let memberSet = Set(split.tabIDs)
+    guard let anchor = ordered.firstIndex(where: { memberSet.contains($0.sid) }) else {
+      return ordered
+    }
+    let byID = Dictionary(ordered.map { ($0.sid, $0) }, uniquingKeysWith: { a, _ in a })
+    // Members present in the bar, in split (tree) order.
+    let memberRun = split.tabIDs.compactMap { byID[$0] }
+    var result: [(sid: SidebarID, target: TerminalTarget)] = []
+    for (i, entry) in ordered.enumerated() {
+      if i == anchor { result.append(contentsOf: memberRun) }
+      if !memberSet.contains(entry.sid) { result.append(entry) }
+    }
+    return result
+  }
 
   /// Focus a split member: this is the selection (mirrors `RootView.selectWorkroomTab`). Records nav
   /// history via `selectedTargetID.didSet` — used by *deliberate* actions (drop, remove-reselect). The
@@ -72,10 +112,6 @@ extension AppStore {
       if let survivor, selectedTargetID == sid { focusWorkroomMember(survivor) }
     }
   }
-
-  /// Tear down the split, showing the single focused workroom. Used by the "click a non-member bar tab"
-  /// path (selection then dissolves the co-display) and by the bar-off case. Selection is left to the caller.
-  func dissolveWorkroomSplit() { workroomSplit = nil }
 
   /// Set a divider ratio (driven by `WorkroomSplitView`'s divider drag).
   func setWorkroomSplitRatio(_ ratio: CGFloat, forSplit splitID: UUID) {

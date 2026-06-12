@@ -202,9 +202,9 @@ struct RootView: View {
   private var detail: some View {
     // The workroom tab bar rides above the terminal whenever ≥1 workroom/root has a terminal (issue
     // #23). Tapping a tab selects that target, exactly like clicking it in the sidebar. It hides
-    // entirely when nothing's open. The selected target's terminal shows below regardless of whether
-    // it's among the tabs (e.g. a freshly selected workroom mounts its terminal, then a tab appears).
-    let tabs = store.orderedWorkroomTargets()
+    // entirely when nothing's open. Split members are pulled into a contiguous run so the bar can
+    // bracket them (`displayedWorkroomTargets`, mirroring the terminal strip's `displayedTabIDs`).
+    let tabs = store.displayedWorkroomTargets()
     VStack(spacing: 0) {
       if !tabs.isEmpty {
         WorkroomTabBar(
@@ -233,12 +233,12 @@ struct RootView: View {
     return CGPoint(x: global.x - detailContentFrame.minX, y: global.y - detailContentFrame.minY)
   }
 
-  /// The layout a chip drop targets: the active split, or a single `.leaf(selected)` so the first drop
-  /// onto the lone visible pane seeds a split.
+  /// The layout a chip drop targets — the same one the detail is rendering, so the drop edges match
+  /// what's on screen: the split when a member is selected, else the lone visible workroom (a drop onto
+  /// which seeds a fresh split).
   private func workroomDropLayout() -> PaneLayout<SidebarID>? {
-    if let split = store.workroomSplit { return split }
-    if let sid = store.selectedTargetID { return .leaf(sid) }
-    return nil
+    guard let sid = store.selectedTargetID else { return nil }
+    return store.visibleWorkroomLayout(for: sid)
   }
 
   /// Where a chip dropped at `global` lands (workroom pane + edge), using the same plan the renderer
@@ -253,12 +253,11 @@ struct RootView: View {
   }
 
   /// Focus a workroom tab — mirrors `ProjectSidebar`'s selection setter (sets both the target and the
-  /// New-Workroom project context), so every selection-driven command targets the focused workroom.
-  /// Clicking a tab that isn't a current split member returns to a single view of it (dissolve the
-  /// split); clicking a member just focuses it, keeping the split — the renderer keys the focused pane
-  /// on `selectedTargetID`, so the focused member must always be a leaf of what's rendered (issue #23 T2).
+  /// New-Workroom project context). The split is persistent (like a terminal split): selecting a member
+  /// shows the split, selecting a non-member shows that workroom solo *without* dissolving the split —
+  /// it reappears when a member is reselected (`visibleWorkroomLayout`). The split dissolves only by
+  /// removing members below two.
   private func selectWorkroomTab(_ sid: SidebarID) {
-    if let split = store.workroomSplit, !split.contains(sid) { store.dissolveWorkroomSplit() }
     store.selectedTargetID = sid
     store.selectedProjectID = AppStore.projectPath(of: sid)
   }
@@ -308,14 +307,15 @@ struct RootView: View {
     }
   }
 
-  /// The workroom body when the tab bar is on: always `WorkroomSplitView`, with the layout being the
-  /// active split or a single `.leaf(selected)` (issue #23 T1). One render path → no reparent on
-  /// single↔split. Falls back to the bare terminal body if somehow there's no selection id.
+  /// The workroom body: always `WorkroomSplitView`, with the layout being the split when the selected
+  /// workroom is a member, else `.leaf(selected)` — the split is shown only when a member is focused but
+  /// persists otherwise (`visibleWorkroomLayout`, mirroring the terminal split). One render path → no
+  /// reparent on single↔split. Falls back to the bare terminal body if somehow there's no selection id.
   @ViewBuilder
   private func workroomSplitBody(focused: TerminalTarget) -> some View {
     if let selected = store.selectedTargetID {
       WorkroomSplitView(
-        layout: store.workroomSplit ?? .leaf(selected),
+        layout: store.visibleWorkroomLayout(for: selected),
         resolve: { store.target(for: $0) },
         focusedID: selected,
         externalDrag: workroomChipDrag,

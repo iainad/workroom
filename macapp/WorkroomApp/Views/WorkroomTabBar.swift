@@ -100,6 +100,7 @@ struct WorkroomTabBar: View {
             isDragging || reduceMotion ? nil : .easeInOut(duration: 0.18), value: offsetX)
         }
       }
+      .background(alignment: .leading) { splitWell }
       .padding(.horizontal, 8)
       .onPreferenceChange(WorkroomTabWidthKey.self) { widths = $0 }
     }
@@ -121,6 +122,42 @@ struct WorkroomTabBar: View {
     if here == selectedID || prev == selectedID { return false }
     if hoveredID == here || hoveredID == prev { return false }
     return true
+  }
+
+  /// A rounded outline + accent underline bracketing the workroom-split members' contiguous run, so the
+  /// grouping is visible even while you're viewing a non-member workroom (the split persists). Mirrors
+  /// `TerminalTabStrip.splitWell` — an outline, not a fill, so it doesn't compete with the active-chip
+  /// fill. Hidden during a drag; only for a real split (`displayedWorkroomTargets` keeps members
+  /// contiguous, so the run is one block).
+  @ViewBuilder private var splitWell: some View {
+    if draggingID == nil, let run = splitRunRect() {
+      RoundedRectangle(cornerRadius: 7)
+        .strokeBorder(Color.primary.opacity(0.16), lineWidth: 1)
+        .overlay(alignment: .bottom) {
+          RoundedRectangle(cornerRadius: 1)
+            .fill(Color.accentColor.opacity(0.55))
+            .frame(height: 2)
+            .padding(.horizontal, 3)
+        }
+        .frame(width: run.width)
+        .offset(x: run.x)
+    }
+  }
+
+  /// The x-offset and width of the split members' contiguous run within the chip row (x = 0 at the
+  /// first chip), from the measured chip widths — or nil when there's no split. Mirrors
+  /// `TerminalTabStrip.splitRunRect`.
+  private func splitRunRect() -> (x: CGFloat, width: CGFloat)? {
+    guard let members = store.workroomSplit?.tabIDs, members.count >= 2 else { return nil }
+    let memberSet = Set(members)
+    let idxs = tabs.indices.filter { memberSet.contains(tabs[$0].sid) }
+    guard let first = idxs.first, let last = idxs.last else { return nil }
+    var x: CGFloat = 0
+    for i in 0..<first { x += (widths[tabs[i].sid] ?? 0) + tabSpacing }
+    var width: CGFloat = 0
+    for i in first...last { width += widths[tabs[i].sid] ?? 0 }
+    width += tabSpacing * CGFloat(last - first)
+    return (x, width)
   }
 
   /// Commit the reorder on drop: rewrite `store.workroomTabOrder` (a `@Published`, so the parent view

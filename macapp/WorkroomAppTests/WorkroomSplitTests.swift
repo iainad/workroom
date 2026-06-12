@@ -116,11 +116,38 @@ final class WorkroomSplitTests: XCTestCase {
     XCTAssertEqual(store.workroomSplit?.tabIDs.count, 2)
   }
 
-  func testDissolveClearsSplit() {
+  // MARK: persistence — split survives selecting a non-member (grouping like terminal tabs)
+
+  func testSplitPersistsAndHidesWhenSelectingNonMember() {
     let store = store3()
     store.insertWorkroomSplit(wr("feature"), beside: wr("main"), edge: .right)
-    store.dissolveWorkroomSplit()
-    XCTAssertNil(store.workroomSplit)
+    // Split is main+feature. Select a non-member → its solo layout shows, split NOT discarded.
+    store.selectedTargetID = wr("bugfix")
+    XCTAssertEqual(store.visibleWorkroomLayout(for: wr("bugfix")), .leaf(wr("bugfix")))
+    XCTAssertFalse(store.isWorkroomSplitVisible)
+    XCTAssertNotNil(store.workroomSplit, "the split persists while a non-member is shown")
+    // Reselect a member → the split is shown again.
+    store.selectedTargetID = wr("main")
+    XCTAssertTrue(store.isWorkroomSplitVisible)
+    XCTAssertEqual(
+      store.visibleWorkroomLayout(for: wr("main")).tabIDs, [wr("main"), wr("feature")])
+  }
+
+  func testDisplayedWorkroomTargetsGroupsMembersContiguously() {
+    // Bar order [main, feature, bugfix]; split {main, bugfix} (non-adjacent). The display pulls them
+    // into a contiguous run at main's slot: [main, bugfix, feature].
+    let store = makeStore([project("/a", workrooms: ["main", "feature", "bugfix"])])
+    store.workroomTabOrder = [
+      TerminalTarget.workroomID(project: "/a", name: "main"),
+      TerminalTarget.workroomID(project: "/a", name: "feature"),
+      TerminalTarget.workroomID(project: "/a", name: "bugfix"),
+    ]
+    for name in ["main", "feature", "bugfix"] {
+      store.terminals.addTab(for: store.target(for: wr(name))!)  // make all three active in the bar
+    }
+    store.insertWorkroomSplit(wr("bugfix"), beside: wr("main"), edge: .right)  // split: main+bugfix
+    XCTAssertEqual(
+      store.displayedWorkroomTargets().map(\.sid), [wr("main"), wr("bugfix"), wr("feature")])
   }
 
   // MARK: setRatio
