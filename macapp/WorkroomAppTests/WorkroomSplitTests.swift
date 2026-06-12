@@ -1,0 +1,214 @@
+import XCTest
+
+@testable import Workroom
+
+/// Store-level tests for the workroom-into-workroom split (issue #23 follow-up): the pure transforms on
+/// `AppStore.workroomSplit` (insert with move-semantics, remove/collapse/dissolve, setRatio), the
+/// resolve-to-live-leaves self-heal, and the focused-member ⇄ selection coupling. Drives a real,
+/// non-singleton `AppStore` with the terminal factory seam overridden (no live PTY). The split only
+/// cares that a leaf's `SidebarID` resolves via `target(for:)` (project list), so no terminals are
+/// needed here; the drag gesture + renderer are manual QA.
+@MainActor
+final class WorkroomSplitTests: XCTestCase {
+
+  private func makeStore(_ projects: [Project]) -> AppStore {
+    let store = AppStore()
+    store.terminals.makeView = { _, cwd, command in
+      GhosttySurfaceView(workingDirectory: cwd, command: command, spawnsSurface: false)
+    }
+    store.projects = projects
+    return store
+  }
+
+  private func project(_ path: String, workrooms: [String]) -> Project {
+    Project(
+      path: path, vcs: "git",
+      workrooms: workrooms.map {
+        Workroom(name: $0, path: "\(path)/\($0)", vcsName: "workroom/\($0)", warnings: [])
+      })
+  }
+
+  private func wr(_ name: String, in path: String = "/a") -> SidebarID {
+    .workroom(project: path, name: name)
+  }
+
+  private func store3() -> AppStore {
+    makeStore([project("/a", workrooms: ["main", "feature", "bugfix"])])
+  }
+
+  private func rootRatio(_ store: AppStore) -> CGFloat? {
+    if case .split(_, _, let ratio, _, _) = store.workroomSplit { return ratio }
+    return nil
+  }
+
+  private func rootSplitID(_ store: AppStore) -> UUID? {
+    if case .split(let id, _, _, _, _) = store.workroomSplit { return id }
+    return nil
+  }
+
+  // MARK: insert
+
+  func testInsertSeedsTwoLeafSplitFromSelection() {
+    let store = store3()
+    store.insertWorkroomSplit(wr("feature"), beside: wr("main"), edge: .right)
+    // right ⇒ the dropped member lands trailing, so the anchor (main) is first.
+    XCTAssertEqual(store.workroomSplit?.tabIDs, [wr("main"), wr("feature")])
+    XCTAssertEqual(store.selectedTargetID, wr("feature"), "the dropped member is focused")
+    XCTAssertTrue(store.workroomSplitActive)
+  }
+
+  func testInsertGrowsToThreeLeaves() {
+    let store = store3()
+    store.insertWorkroomSplit(wr("feature"), beside: wr("main"), edge: .right)
+    store.insertWorkroomSplit(wr("bugfix"), beside: wr("feature"), edge: .bottom)
+    XCTAssertEqual(
+      Set(store.workroomSplit?.tabIDs ?? []), [wr("main"), wr("feature"), wr("bugfix")])
+    XCTAssertEqual(store.workroomSplit?.tabIDs.count, 3)
+  }
+
+  func testInsertMovingExistingMemberIsNotADuplicate() {
+    let store = store3()
+    store.insertWorkroomSplit(wr("feature"), beside: wr("main"), edge: .right)  // [main, feature]
+    // Drag "main" (already a member) beside "feature": a move, not a duplicate.
+    store.insertWorkroomSplit(wr("main"), beside: wr("feature"), edge: .right)
+    XCTAssertEqual(store.workroomSplit?.tabIDs.count, 2, "move, not duplicate")
+    XCTAssertEqual(Set(store.workroomSplit?.tabIDs ?? []), [wr("main"), wr("feature")])
+  }
+
+  func testInsertSelfDropIsNoOp() {
+    let store = store3()
+    store.insertWorkroomSplit(wr("main"), beside: wr("main"), edge: .right)
+    XCTAssertNil(store.workroomSplit)
+  }
+
+  func testInsertRejectsNonResolvingLeaf() {
+    let store = store3()
+    // `.project` is never a target, and an unknown workroom doesn't resolve — both must be rejected.
+    store.insertWorkroomSplit(.project("/a"), beside: wr("main"), edge: .right)
+    store.insertWorkroomSplit(wr("ghost"), beside: wr("main"), edge: .right)
+    XCTAssertNil(store.workroomSplit)
+  }
+
+  // MARK: remove / dissolve
+
+  func testRemoveCollapsesThreeToTwo() {
+    let store = store3()
+    store.insertWorkroomSplit(wr("feature"), beside: wr("main"), edge: .right)
+    store.insertWorkroomSplit(wr("bugfix"), beside: wr("feature"), edge: .bottom)
+    store.removeWorkroomSplitMember(wr("bugfix"))
+    XCTAssertEqual(Set(store.workroomSplit?.tabIDs ?? []), [wr("main"), wr("feature")])
+  }
+
+  func testRemoveDissolvesBelowTwoAndReselectsSurvivor() {
+    let store = store3()
+    store.insertWorkroomSplit(wr("feature"), beside: wr("main"), edge: .right)
+    store.selectedTargetID = wr("feature")
+    store.removeWorkroomSplitMember(wr("feature"))
+    XCTAssertNil(store.workroomSplit, "below two members → dissolve to single")
+    XCTAssertEqual(
+      store.selectedTargetID, wr("main"), "the removed-and-focused member yields to the survivor")
+  }
+
+  func testRemoveNonMemberIsNoOp() {
+    let store = store3()
+    store.insertWorkroomSplit(wr("feature"), beside: wr("main"), edge: .right)
+    store.removeWorkroomSplitMember(wr("bugfix"))  // not in the split
+    XCTAssertEqual(store.workroomSplit?.tabIDs.count, 2)
+  }
+
+  func testDissolveClearsSplit() {
+    let store = store3()
+    store.insertWorkroomSplit(wr("feature"), beside: wr("main"), edge: .right)
+    store.dissolveWorkroomSplit()
+    XCTAssertNil(store.workroomSplit)
+  }
+
+  // MARK: setRatio
+
+  func testSetRatioTargetsTheNode() {
+    let store = store3()
+    store.insertWorkroomSplit(wr("feature"), beside: wr("main"), edge: .right)
+    let id = rootSplitID(store)!
+    store.setWorkroomSplitRatio(0.3, forSplit: id)
+    XCTAssertEqual(rootRatio(store) ?? -1, 0.3, accuracy: 0.0001)
+  }
+
+  // MARK: resolve / self-heal
+
+  func testResolvedSplitLeavesDropsDeletedAndNilsBelowTwo() {
+    let store = store3()
+    store.insertWorkroomSplit(wr("feature"), beside: wr("main"), edge: .right)
+    XCTAssertEqual(store.resolvedSplitLeaves()?.count, 2)
+    // Remove "feature" from the project list → only "main" resolves → <2 live → nil.
+    store.projects = [project("/a", workrooms: ["main", "bugfix"])]
+    XCTAssertNil(store.resolvedSplitLeaves())
+    XCTAssertFalse(store.workroomSplitActive)
+  }
+
+  func testPruneDropsDeadLeafKeepingSplit() {
+    let store = store3()
+    store.insertWorkroomSplit(wr("feature"), beside: wr("main"), edge: .right)
+    store.insertWorkroomSplit(wr("bugfix"), beside: wr("feature"), edge: .bottom)  // → 3 leaves
+    store.projects = [project("/a", workrooms: ["main", "bugfix"])]  // delete "feature"
+    store.pruneWorkroomSplitToLiveLeaves()
+    XCTAssertEqual(Set(store.workroomSplit?.tabIDs ?? []), [wr("main"), wr("bugfix")])
+  }
+
+  func testPruneDissolvesWhenBelowTwoLiveAndReselects() {
+    let store = store3()
+    store.insertWorkroomSplit(wr("feature"), beside: wr("main"), edge: .right)
+    store.selectedTargetID = nil  // mimic apply() having nilled a dead selection before prune
+    store.projects = [project("/a", workrooms: ["main"])]  // only "main" survives
+    store.pruneWorkroomSplitToLiveLeaves()
+    XCTAssertNil(store.workroomSplit)
+    XCTAssertEqual(store.selectedTargetID, wr("main"), "dissolve re-selects the live survivor")
+  }
+
+  // MARK: surface-focus routing (issue #23 F2 / T3)
+
+  func testSurfaceFocusRoutesSelectionWithinSplitWithoutHistory() {
+    let store = store3()
+    let a = wr("main")
+    let b = wr("feature")
+    store.terminals.addTab(for: store.target(for: a)!)  // recordCurrentLocation needs a focused tab
+    store.terminals.addTab(for: store.target(for: b)!)
+    store.insertWorkroomSplit(b, beside: a, edge: .right)  // split [a, b]
+    store.selectedTargetID = a  // focus a (deliberate — records history)
+    let before = store.history.entries.count
+
+    // A click into b's terminal surface routes selection to b — but does NOT record nav history (T3).
+    store.terminals.onSurfaceFocused?(store.target(for: b)!.id)
+    XCTAssertEqual(store.selectedTargetID, b, "surface focus retargets the focused workroom (F2)")
+    XCTAssertEqual(
+      store.history.entries.count, before, "intra-split focus is history-suppressed (T3)")
+  }
+
+  func testSurfaceFocusIsNoOpWithoutSplit() {
+    let store = store3()
+    let a = wr("main")
+    let b = wr("feature")
+    store.terminals.addTab(for: store.target(for: a)!)
+    store.terminals.addTab(for: store.target(for: b)!)
+    store.selectedTargetID = a  // no split active
+    store.terminals.onSurfaceFocused?(store.target(for: b)!.id)
+    XCTAssertEqual(
+      store.selectedTargetID, a, "no split → a surface focus must not retarget the workroom")
+  }
+
+  // MARK: leaf-agnostic geometry (drop-planning math over SidebarID — issue #23 follow-up)
+
+  func testPlanAndDropTargetResolveOverSidebarIDLeaves() {
+    let a = wr("main")
+    let b = wr("feature")
+    let layout: PaneLayout<SidebarID> = .split(
+      id: UUID(), orientation: .horizontal, ratio: 0.5, first: .leaf(a), second: .leaf(b))
+    let plan = PaneTreeLayout.plan(layout, in: CGRect(x: 0, y: 0, width: 400, height: 100))
+    XCTAssertNotNil(plan.panes[a])
+    XCTAssertNotNil(plan.panes[b])
+    // A point deep in the right pane resolves to `b`, nearest edge `.right` — the same geometry the
+    // terminal split uses, now proven leaf-agnostic at `SidebarID`.
+    let hit = PaneTreeLayout.dropTarget(at: CGPoint(x: 380, y: 50), panes: plan.panes)
+    XCTAssertEqual(hit?.tab, b)
+    XCTAssertEqual(hit?.edge, .right)
+  }
+}

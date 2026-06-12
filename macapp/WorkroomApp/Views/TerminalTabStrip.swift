@@ -22,6 +22,11 @@ struct TerminalTabStrip: View {
   let localize: (CGPoint) -> CGPoint?
   /// Where a chip dropped at a global location lands (pane + edge), or nil if it isn't over a pane.
   let dropTarget: (CGPoint) -> (tab: TerminalTab.ID, edge: PaneEdge)?
+  /// When this target is a member of a *workroom* split (issue #23 follow-up), the action that removes
+  /// it from the split. Rendered as a trailing control pinned to the strip's right edge — a layout
+  /// sibling of the scrolling tabs, so it never overlaps them no matter how many tabs there are. nil
+  /// (the default) outside a split: no control.
+  var onCloseWorkroomPane: (() -> Void)? = nil
 
   @State private var hoveredTab: TerminalTab.ID?
   @State private var addHovering = false
@@ -109,6 +114,7 @@ struct TerminalTabStrip: View {
             .animation(
               isDragging || reduceMotion ? nil : .easeInOut(duration: 0.18), value: offsetX)
           }
+          addTerminalButton
         }
         .background(alignment: .leading) { splitWell(tabs) }
         .padding(.horizontal, 8)
@@ -117,26 +123,38 @@ struct TerminalTabStrip: View {
       // Hug the chips' height; otherwise the horizontal ScrollView grabs all the vertical slack
       // when there's no terminal below it (the empty state), ballooning the tab bar.
       .fixedSize(horizontal: false, vertical: true)
-      Button {
-        sessions.addTab(for: target)
-      } label: {
-        Image(systemName: "plus")
-          .font(.system(size: 11))
-          .foregroundStyle(.secondary)
-          .padding(4)
-          .background(
-            RoundedRectangle(cornerRadius: 5)
-              .fill(Color.primary.opacity(addHovering ? 0.1 : 0))
-          )
+      // Remove-from-split control (issue #23 follow-up), pinned to the strip's right edge as a layout
+      // sibling of the scrolling tabs — so it never overlaps them however many tabs there are. Only a
+      // workroom split member gets one (the callback is nil otherwise).
+      if let onCloseWorkroomPane {
+        CloseWorkroomPaneButton(action: onCloseWorkroomPane)
       }
-      .buttonStyle(.plain)
-      .onHover { addHovering = $0 }
-      .padding(.horizontal, 8)
-      .help("New terminal")
-      .accessibilityLabel("New terminal")
-      .accessibilityIdentifier("NewTerminal")
     }
     .padding(.vertical, 4)
+  }
+
+  /// The "new terminal" (+) button. Lives inside the scrolling tab row, immediately after the last tab
+  /// (it scrolls with the tabs), rather than pinned to the far right of the strip — so it sits next to
+  /// the rightmost tab and never collides with the trailing remove-from-split control.
+  private var addTerminalButton: some View {
+    Button {
+      sessions.addTab(for: target)
+    } label: {
+      Image(systemName: "plus")
+        .font(.system(size: 11))
+        .foregroundStyle(.secondary)
+        .padding(4)
+        .background(
+          RoundedRectangle(cornerRadius: 5)
+            .fill(Color.primary.opacity(addHovering ? 0.1 : 0))
+        )
+    }
+    .buttonStyle(.plain)
+    .onHover { addHovering = $0 }
+    .padding(.leading, 2)
+    .help("New terminal")
+    .accessibilityLabel("New terminal")
+    .accessibilityIdentifier("NewTerminal")
   }
 
   /// A rounded *outline* + accent underline bracketing the split's contiguous chip run, so it's easy
@@ -394,5 +412,29 @@ private struct TabCloseButton: View {
     }
     .buttonStyle(.plain)
     .onHover { hovering = $0 }
+  }
+}
+
+/// The remove-from-split (✕) control for a workroom split member (issue #23 follow-up), pinned at the
+/// tab strip's right edge. A view (not an inline button) so it carries its own `onHover` — which both
+/// gives the subtle hover feedback the other strip controls have AND ensures the `.help` tooltip's
+/// tracking area is installed (a bare `.help` without any hover tracking can silently fail to show).
+private struct CloseWorkroomPaneButton: View {
+  let action: () -> Void
+  @State private var hovering = false
+
+  var body: some View {
+    Button(action: action) {
+      Image(systemName: "xmark.circle.fill")
+        .font(.system(size: 12))
+        .foregroundStyle(hovering ? .primary : .secondary)
+    }
+    .buttonStyle(.plain)
+    .padding(.horizontal, 8)
+    .contentShape(Rectangle())
+    .onHover { hovering = $0 }
+    .help("Remove this workroom from the split")
+    .accessibilityLabel("Remove workroom from split")
+    .accessibilityIdentifier("workroom.pane.close")
   }
 }

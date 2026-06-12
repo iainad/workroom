@@ -11,6 +11,15 @@ struct WorkroomTabBar: View {
   let tabs: [(sid: SidebarID, target: TerminalTarget)]
   let selectedID: SidebarID?
   let onSelect: (SidebarID) -> Void
+  /// The live drag of a chip into the detail content (to form a split), in content-local coords —
+  /// shared with `WorkroomSplitView` via `RootView` so the same drop-edge highlight renders (issue #23
+  /// follow-up). nil while not dragging into the content (a plain strip reorder).
+  @Binding var chipPaneDrag: WorkroomPaneDrag?
+  /// The content-local point for a chip drag at a global location, or nil when the cursor is still over
+  /// the bar (→ a reorder, not a drop-into-content). Owned by `RootView` (it knows the content frame).
+  let localize: (CGPoint) -> CGPoint?
+  /// Where a chip dropped at a global location lands (workroom pane + edge), or nil if not over a pane.
+  let dropTarget: (CGPoint) -> (sid: SidebarID, edge: PaneEdge)?
 
   @EnvironmentObject var store: AppStore
   @EnvironmentObject var notifications: NotificationCenterStore
@@ -28,11 +37,16 @@ struct WorkroomTabBar: View {
 
   var body: some View {
     let draggedIndex = draggingID.flatMap { id in tabs.firstIndex { $0.sid == id } }
-    let dropIndex = draggedIndex.map {
-      TabReorder.dropTargetIndex(
-        widths: tabs.map { widths[$0.sid] ?? 0 }, draggedIndex: $0,
-        translation: dragTranslation, spacing: tabSpacing)
-    }
+    // While dragging a chip down into the content (forming a split), the strip stops opening a reorder
+    // gap — mirrors `TerminalTabStrip`.
+    let dropIndex =
+      chipPaneDrag != nil
+      ? nil
+      : draggedIndex.map {
+        TabReorder.dropTargetIndex(
+          widths: tabs.map { widths[$0.sid] ?? 0 }, draggedIndex: $0,
+          translation: dragTranslation, spacing: tabSpacing)
+      }
     let draggedWidth = draggingID.flatMap { widths[$0] } ?? 0
 
     ScrollView(.horizontal, showsIndicators: false) {
@@ -63,8 +77,22 @@ struct WorkroomTabBar: View {
                 if draggingID == nil { draggingID = tab.sid }
                 guard draggingID == tab.sid else { return }
                 dragTranslation = value.translation.width
+                // Dragged into the detail content → preview a drop-into-pane split (the strip stops
+                // gapping); otherwise it's a plain reorder.
+                chipPaneDrag = localize(value.location).map {
+                  WorkroomPaneDrag(sid: tab.sid, location: $0)
+                }
               }
-              .onEnded { _ in commitDrag() }
+              .onEnded { value in
+                if let drop = dropTarget(value.location) {
+                  store.insertWorkroomSplit(tab.sid, beside: drop.sid, edge: drop.edge)
+                  draggingID = nil
+                  dragTranslation = 0
+                } else {
+                  commitDrag()  // a plain strip reorder
+                }
+                chipPaneDrag = nil
+              }
           )
           .offset(x: offsetX)
           .zIndex(isDragging ? 1 : 0)

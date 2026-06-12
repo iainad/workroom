@@ -1,51 +1,61 @@
 import Foundation
 
-/// Split-pane layout for a terminal target (issue #3).
+/// Split-pane layout, generic over the leaf identity (issue #3 terminal panes; issue #23 workroom
+/// panes). Two instantiations exist:
+/// - `PaneLayout<TerminalTab.ID>` (alias `TerminalPaneLayout`) — a terminal target's split of tabs.
+/// - `PaneLayout<SidebarID>` — the workroom-into-workroom split (issue #23 follow-up).
 ///
-/// The model is **single-layout**: a target has at most ONE split at a time, plus solo tabs. A tab is
-/// always its own entry in the shared strip (1:1 with a `GhosttySurfaceView`); a "split" just shows
-/// several tabs together as panes. So a `PaneLayout` leaf REFERENCES a tab by id — it does not own the
-/// surface (the tab does). That keeps this a pure value tree: `Equatable`, and unit-testable with no
-/// AppKit/libghostty in sight.
+/// The model is **single-layout**: a container has at most ONE split at a time, plus solo leaves. A
+/// leaf REFERENCES its content by id — it does not own the view/surface (the tab / target detail does).
+/// That keeps this a pure value tree: `Equatable`, and unit-testable with no AppKit/libghostty in sight.
 ///
 /// ```
 ///   split(h, 0.5, leaf(B), split(v, 0.6, leaf(C), leaf(D)))
 ///
 ///   ┌─────────┬───────────────┐      tabIDs == [B, C, D]   (left→right / top→bottom)
 ///   │         │      C         │      firstTabID == B
-///   │    B    ├───────────────┤      a lone tab is NOT a PaneLayout — it's just "no split".
+///   │    B    ├───────────────┤      a lone leaf is NOT a PaneLayout — it's just "no split".
 ///   │         │      D         │      Split nodes carry a stable `id` so a divider can address
 ///   └─────────┴───────────────┘      exactly one node when the user drags it (resize).
 /// ```
 ///
 /// All structural edits go through the pure transforms below (`inserting` / `removingLeaf` /
-/// `settingRatio`); `TerminalSessions` never walks the tree inline (DRY).
+/// `settingRatio`); callers never walk the tree inline (DRY).
 enum SplitOrientation: Equatable {
   case horizontal  // panes side by side — a vertical divider   (⌘D "split right")
   case vertical  // panes stacked    — a horizontal divider (⇧⌘D "split down")
 }
 
-/// Which edge of a pane a tab was dropped on (drag-to-split, issue #3). Resolves to the split
-/// orientation and which side the dropped tab lands on.
+/// Which edge of a pane a leaf was dropped on (drag-to-split, issue #3). Resolves to the split
+/// orientation and which side the dropped leaf lands on.
 enum PaneEdge {
   case top, right, bottom, left
 
   var orientation: SplitOrientation { self == .left || self == .right ? .horizontal : .vertical }
-  /// True when the dropped tab should become the leading/top child (a left or top drop).
+  /// True when the dropped leaf should become the leading/top child (a left or top drop).
   var placesDroppedFirst: Bool { self == .left || self == .top }
 }
 
 /// A direction to move keyboard focus between panes (⌥⌘arrows, issue #3 Phase 3).
 enum PaneDirection { case left, right, up, down }
 
-indirect enum PaneLayout: Equatable {
-  case leaf(TerminalTab.ID)
-  case split(
-    id: UUID, orientation: SplitOrientation, ratio: CGFloat, first: PaneLayout, second: PaneLayout)
+/// Ratio sanitisation, split off the generic `PaneLayout` so it can be called without a leaf type in
+/// context (a bare `PaneLayout.sanitize` on the generic enum can't infer `Leaf`).
+enum PaneRatio {
+  /// Keep a stored ratio strictly inside (0, 1) so a node can never be exactly collapsed in the model;
+  /// the renderer applies the real min-pane (points-based) clamp on top.
+  static func sanitize(_ ratio: CGFloat) -> CGFloat { min(0.999, max(0.001, ratio)) }
+}
 
-  /// Tab ids in reading order (left→right / top→bottom). Always non-empty; the strip renders the
+indirect enum PaneLayout<Leaf: Hashable>: Equatable {
+  case leaf(Leaf)
+  case split(
+    id: UUID, orientation: SplitOrientation, ratio: CGFloat, first: PaneLayout<Leaf>,
+    second: PaneLayout<Leaf>)
+
+  /// Leaf ids in reading order (left→right / top→bottom). Always non-empty; a strip renders the
   /// split's members as this contiguous run.
-  var tabIDs: [TerminalTab.ID] {
+  var tabIDs: [Leaf] {
     switch self {
     case .leaf(let id):
       return [id]
@@ -55,9 +65,9 @@ indirect enum PaneLayout: Equatable {
   }
 
   /// The first leaf in reading order. Safe: every node has ≥1 leaf.
-  var firstTabID: TerminalTab.ID { tabIDs[0] }
+  var firstTabID: Leaf { tabIDs[0] }
 
-  func contains(_ id: TerminalTab.ID) -> Bool { tabIDs.contains(id) }
+  func contains(_ id: Leaf) -> Bool { tabIDs.contains(id) }
 
   // MARK: Pure transforms
 
@@ -66,14 +76,14 @@ indirect enum PaneLayout: Equatable {
   /// `ratio` is the leading child's fraction. Returns the tree unchanged if `beside` isn't a leaf here
   /// (defensive — callers pass a leaf they located).
   func inserting(
-    _ newLeaf: TerminalTab.ID, beside: TerminalTab.ID, orientation: SplitOrientation,
+    _ newLeaf: Leaf, beside: Leaf, orientation: SplitOrientation,
     newLeafFirst: Bool, ratio: CGFloat
-  ) -> PaneLayout {
+  ) -> PaneLayout<Leaf> {
     switch self {
     case .leaf(let id):
       guard id == beside else { return self }
-      let existing = PaneLayout.leaf(id)
-      let added = PaneLayout.leaf(newLeaf)
+      let existing = PaneLayout<Leaf>.leaf(id)
+      let added = PaneLayout<Leaf>.leaf(newLeaf)
       return .split(
         id: UUID(), orientation: orientation, ratio: ratio,
         first: newLeafFirst ? added : existing,
@@ -92,9 +102,9 @@ indirect enum PaneLayout: Equatable {
 
   /// Remove `id` and collapse its parent split to the surviving sibling subtree (its ratio drops out).
   /// Returns the collapsed tree — which may be a single `.leaf` when a two-pane split loses one member
-  /// (the caller then dissolves the split: a lone tab is "no split"). Returns `nil` only when the whole
+  /// (the caller then dissolves the split: a lone leaf is "no split"). Returns `nil` only when the whole
   /// (sub)tree WAS `.leaf(id)`. Returns the tree unchanged if `id` isn't present.
-  func removingLeaf(_ id: TerminalTab.ID) -> PaneLayout? {
+  func removingLeaf(_ id: Leaf) -> PaneLayout<Leaf>? {
     switch self {
     case .leaf(let leafID):
       return leafID == id ? nil : self
@@ -111,14 +121,14 @@ indirect enum PaneLayout: Equatable {
 
   /// Set the divider fraction of the split node with `splitID`. No-op if not found. The view owns the
   /// usable clamp (min-pane is a points concern); this stores the value with only a sanity bound.
-  func settingRatio(_ ratio: CGFloat, forSplit splitID: UUID) -> PaneLayout {
+  func settingRatio(_ ratio: CGFloat, forSplit splitID: UUID) -> PaneLayout<Leaf> {
     switch self {
     case .leaf:
       return self
     case .split(let sid, let o, let r, let first, let second):
       if sid == splitID {
         return .split(
-          id: sid, orientation: o, ratio: Self.sanitize(ratio), first: first, second: second)
+          id: sid, orientation: o, ratio: PaneRatio.sanitize(ratio), first: first, second: second)
       }
       return .split(
         id: sid, orientation: o, ratio: r,
@@ -126,8 +136,8 @@ indirect enum PaneLayout: Equatable {
         second: second.settingRatio(ratio, forSplit: splitID))
     }
   }
-
-  /// Keep a stored ratio strictly inside (0, 1) so a node can never be exactly collapsed in the model;
-  /// the renderer applies the real min-pane (points-based) clamp on top.
-  static func sanitize(_ ratio: CGFloat) -> CGFloat { min(0.999, max(0.001, ratio)) }
 }
+
+/// The terminal split's concrete instantiation (issue #3): leaves are tab ids. Keeps terminal call
+/// sites reading unchanged after the generic refactor (issue #23 needs `PaneLayout<SidebarID>`).
+typealias TerminalPaneLayout = PaneLayout<TerminalTab.ID>

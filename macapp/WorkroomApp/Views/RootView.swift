@@ -19,6 +19,12 @@ struct RootView: View {
   /// even if the sidebar is collapsed via the standard toggle.
   @State private var showImporter = false
 
+  /// Live preview of a workroom tab being dragged into the detail content to form a split (issue #23
+  /// follow-up). Set by `WorkroomTabBar`'s drag, read by `WorkroomSplitView` to highlight the drop edge.
+  @State private var workroomChipDrag: WorkroomPaneDrag?
+  /// The detail content area's global frame, so a chip drag can be resolved against the workroom panes.
+  @State private var detailContentFrame: CGRect = .zero
+
   /// True when the selected target can host a terminal right now: it exists, isn't missing,
   /// and isn't currently blocked by a running setup script.
   private var terminalInteractionAvailable: Bool {
@@ -205,16 +211,57 @@ struct RootView: View {
     VStack(spacing: 0) {
       if !tabs.isEmpty {
         WorkroomTabBar(
-          tabs: tabs, selectedID: store.selectedTargetID, onSelect: { selectWorkroomTab($0) })
+          tabs: tabs, selectedID: store.selectedTargetID, onSelect: { selectWorkroomTab($0) },
+          chipPaneDrag: $workroomChipDrag,
+          localize: { workroomChipLocal($0) },
+          dropTarget: { workroomChipDropTarget(at: $0) })
         Divider()
       }
       detailContent
+        // The detail content's global frame, so a chip dragged from the bar can be resolved against the
+        // workroom panes below it (issue #23 follow-up) — mirrors WorkroomTerminalsView ↔ TerminalTabStrip.
+        .background(
+          GeometryReader { geo in
+            Color.clear.preference(key: DetailContentFrameKey.self, value: geo.frame(in: .global))
+          }
+        )
     }
+    .onPreferenceChange(DetailContentFrameKey.self) { detailContentFrame = $0 }
+  }
+
+  /// The content-local point for a chip drag at `global`, or nil when the cursor is still over the bar
+  /// (→ a reorder, not a drop-into-content).
+  private func workroomChipLocal(_ global: CGPoint) -> CGPoint? {
+    guard detailContentFrame.contains(global) else { return nil }
+    return CGPoint(x: global.x - detailContentFrame.minX, y: global.y - detailContentFrame.minY)
+  }
+
+  /// The layout a chip drop targets: the active split, or a single `.leaf(selected)` so the first drop
+  /// onto the lone visible pane seeds a split.
+  private func workroomDropLayout() -> PaneLayout<SidebarID>? {
+    if let split = store.workroomSplit { return split }
+    if let sid = store.selectedTargetID { return .leaf(sid) }
+    return nil
+  }
+
+  /// Where a chip dropped at `global` lands (workroom pane + edge), using the same plan the renderer
+  /// uses, or nil if it isn't over a pane.
+  private func workroomChipDropTarget(at global: CGPoint) -> (sid: SidebarID, edge: PaneEdge)? {
+    guard let local = workroomChipLocal(global), let layout = workroomDropLayout() else {
+      return nil
+    }
+    let plan = PaneTreeLayout.plan(layout, in: CGRect(origin: .zero, size: detailContentFrame.size))
+    guard let hit = PaneTreeLayout.dropTarget(at: local, panes: plan.panes) else { return nil }
+    return (sid: hit.tab, edge: hit.edge)
   }
 
   /// Focus a workroom tab — mirrors `ProjectSidebar`'s selection setter (sets both the target and the
   /// New-Workroom project context), so every selection-driven command targets the focused workroom.
+  /// Clicking a tab that isn't a current split member returns to a single view of it (dissolve the
+  /// split); clicking a member just focuses it, keeping the split — the renderer keys the focused pane
+  /// on `selectedTargetID`, so the focused member must always be a leaf of what's rendered (issue #23 T2).
   private func selectWorkroomTab(_ sid: SidebarID) {
+    if let split = store.workroomSplit, !split.contains(sid) { store.dissolveWorkroomSplit() }
     store.selectedTargetID = sid
     store.selectedProjectID = AppStore.projectPath(of: sid)
   }
@@ -230,7 +277,30 @@ struct RootView: View {
             "\(target.title) points at a path that no longer exists.\n\(target.path)")
         )
       } else {
-        targetDetail(target)
+        // The focused target's terminal body. When the tab bar is on we ALWAYS route through
+        // `WorkroomSplitView` (a no-split case is just `.leaf(selected)`), so single↔split is a leaf-set
+        // change — never a structural swap that would re-parent the surface and blank a pane (issue #23
+        // T1, the same lesson as `WorkroomTerminalsView` always rendering through `PaneTreeView`). The
+        // title/toolbar are shared here and follow the focused member (`selectedTarget`).
+        Group {
+          if store.showWorkroomTabBar {
+            workroomSplitBody(focused: target)
+          } else {
+            targetTerminalBody(target)
+          }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .navigationTitle(target.title)
+        .navigationSubtitle(target.path)
+        .toolbar {
+          // Run/Stop/Restart for the selected root OR workroom (issue #7): the command is configured
+          // per project and both targets have a project path + a directory to run in. `projectPath(of:)`
+          // resolves for `.root`/`.workroom`, nil for a bare `.project` (never shown in the detail pane).
+          if let projectPath = AppStore.projectPath(of: store.selectedTargetID) {
+            RunCommandToolbar(target: target, projectPath: projectPath)
+          }
+          TargetDetailToolbar(path: target.path)
+        }
       }
     } else {
       ContentUnavailableView(
@@ -247,18 +317,35 @@ struct RootView: View {
     }
   }
 
-  /// A target's terminal (root or workroom), with its setup log (if any). While a setup
-  /// script runs (`log.blocking`), the log floats in a panel *over* the main pane and the
-  /// terminal is withheld; otherwise a finished/legacy log docks beneath the terminal.
-  /// Only workrooms ever have a log; for a root, `logs[target.id]` is always nil. The
-  /// title/toolbar live on the outer container so they stay put across the transition.
+  /// The workroom body when the tab bar is on: always `WorkroomSplitView`, with the layout being the
+  /// active split or a single `.leaf(selected)` (issue #23 T1). One render path → no reparent on
+  /// single↔split. Falls back to the bare terminal body if somehow there's no selection id.
   @ViewBuilder
-  private func targetDetail(_ target: TerminalTarget) -> some View {
+  private func workroomSplitBody(focused: TerminalTarget) -> some View {
+    if let selected = store.selectedTargetID {
+      WorkroomSplitView(
+        layout: store.workroomSplit ?? .leaf(selected),
+        resolve: { store.target(for: $0) },
+        focusedID: selected,
+        externalDrag: workroomChipDrag,
+        onFocus: { selectWorkroomTab($0) },
+        onSetRatio: { store.setWorkroomSplitRatio($0, forSplit: $1) },
+        onClose: { store.removeWorkroomSplitMember($0) }
+      )
+    } else {
+      targetTerminalBody(focused)
+    }
+  }
+
+  /// One target's terminal ZStack with its setup log (if any). While a setup script runs
+  /// (`log.blocking`), the log floats over the pane and the terminal is withheld — `WorkroomTerminalsView`
+  /// mounts (and `.task` creates the first terminal) only once the blocking log is dismissed. Only
+  /// workrooms ever have a log; for a root, `logs[target.id]` is nil. Title/toolbar are owned by the
+  /// caller (shared with the split path), so this is just the body.
+  @ViewBuilder
+  private func targetTerminalBody(_ target: TerminalTarget) -> some View {
     let isBlocking = store.logs[target.id]?.blocking == true
     ZStack {
-      // Base pane. While setup blocks the terminal, WorkroomTerminalsView is withheld so no
-      // terminal is created — it mounts (and `.task` creates the first one) only once the
-      // blocking log is cleared on Dismiss, revealing the terminal beneath the fading panel.
       if !isBlocking {
         VStack(spacing: 0) {
           WorkroomTerminalsView(target: target, sessions: store.terminals)
@@ -270,7 +357,6 @@ struct RootView: View {
         }
       }
 
-      // Setup log, floating over the main pane (as if over the terminal).
       if let log = store.logs[target.id], log.blocking {
         SetupOverlay(session: log) {
           withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) {
@@ -281,18 +367,16 @@ struct RootView: View {
         .zIndex(1)
       }
     }
-    .frame(maxWidth: .infinity, maxHeight: .infinity)
-    .navigationTitle(target.title)
-    .navigationSubtitle(target.path)
-    .toolbar {
-      // Run/Stop/Restart for the selected root OR workroom (issue #7): the command is configured per
-      // project and both targets have a project path + a directory to run in (the root runs it in the
-      // project directory itself). `projectPath(of:)` resolves for `.root`/`.workroom`, nil for a bare
-      // `.project` (never shown in the detail pane).
-      if let projectPath = AppStore.projectPath(of: store.selectedTargetID) {
-        RunCommandToolbar(target: target, projectPath: projectPath)
-      }
-      TargetDetailToolbar(path: target.path)
-    }
+  }
+}
+
+/// The detail content area's global frame, published so `WorkroomTabBar`'s chip drag can localise a
+/// cursor point against the workroom panes below the bar (issue #23 follow-up). Mirrors
+/// `ContentFrameKey` in `WorkroomTerminalsView`, one level up.
+private struct DetailContentFrameKey: PreferenceKey {
+  static var defaultValue: CGRect = .zero
+  static func reduce(value: inout CGRect, nextValue: () -> CGRect) {
+    let next = nextValue()
+    if next != .zero { value = next }
   }
 }

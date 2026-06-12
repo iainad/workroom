@@ -11,6 +11,9 @@ import SwiftUI
 /// the blocking log is dismissed. Only workrooms ever have a log; for a root, `logs[target.id]` is nil.
 struct TargetTerminalDetail: View {
   let target: TerminalTarget
+  /// When co-displayed in a workroom split (issue #23 follow-up), the action that removes this workroom
+  /// from the split — forwarded to the tab strip's trailing control. nil (default) for a solo target.
+  var onCloseWorkroomPane: (() -> Void)? = nil
   @EnvironmentObject var store: AppStore
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -19,7 +22,8 @@ struct TargetTerminalDetail: View {
     ZStack {
       if !isBlocking {
         VStack(spacing: 0) {
-          WorkroomTerminalsView(target: target, sessions: store.terminals)
+          WorkroomTerminalsView(
+            target: target, sessions: store.terminals, onCloseWorkroomPane: onCloseWorkroomPane)
 
           if let log = store.logs[target.id] {
             Divider()

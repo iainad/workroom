@@ -70,6 +70,13 @@ final class AppStore: ObservableObject {
   /// Session-only (resets to shown on launch); the dragged width is persisted separately by
   /// `SplitViewAutosave`.
   @Published var sidebarVisible: Bool = true
+  /// The workroom-into-workroom split (issue #23 follow-up): two+ workrooms shown side by side, each a
+  /// full `TargetTerminalDetail`. `nil` = the single `selectedTarget` (the normal case). Leaves are
+  /// `SidebarID`; the focused member IS `selectedTargetID`. Always ≥2 *live* leaves when non-nil (a lone
+  /// leaf is "no split", mirroring the terminal-split invariant). Session-only (not persisted, like the
+  /// terminal split). All edits go through the helpers in `AppStore+WorkroomSplit.swift`; stale leaves
+  /// resolve away in `resolvedSplitLeaves`, so it's self-healing. See that file for the transforms.
+  @Published var workroomSplit: PaneLayout<SidebarID>?
   /// Terminal targets whose terminal subtree is *expanded* in the sidebar (issue #30). Inverse
   /// polarity to `collapsedProjects`: terminals are collapsed by default, so the set holds only the
   /// expanded ones (empty = all collapsed). Session-only and deliberately NOT persisted — the
@@ -164,6 +171,28 @@ final class AppStore: ObservableObject {
     notifications.onTotalChange = { count in
       DockBadge.apply(count)
     }
+    // A click into a co-displayed split pane's terminal focuses that workroom (issue #23 follow-up),
+    // so commands target it. History-suppressed (the routing method) — glancing between panes isn't
+    // navigation.
+    terminals.onSurfaceFocused = { [weak self] targetID in
+      self?.focusWorkroomMemberFromSurface(targetID)
+    }
+  }
+
+  /// Route a terminal surface's first-responder focus up to the workroom selection — but only while a
+  /// workroom split is active and the focused surface belongs to one of its members. Sets
+  /// `selectedTargetID` with history recording suppressed (issue #23 T3): clicking between co-displayed
+  /// panes targets the right workroom for ⌘T/Run/notifications, without flooding ⌘[/⌘] back-forward.
+  /// A no-op outside a split (the single selected target is already focused).
+  private func focusWorkroomMemberFromSurface(_ targetID: TerminalTarget.ID) {
+    guard let split = workroomSplit,
+      let sid = Self.sidebarID(forTargetID: targetID, in: projects), split.contains(sid),
+      selectedTargetID != sid
+    else { return }
+    isNavigatingHistory = true
+    defer { isNavigatingHistory = false }
+    selectedTargetID = sid
+    selectedProjectID = Self.projectPath(of: sid)
   }
 
   var selectedProject: Project? {
@@ -624,6 +653,10 @@ final class AppStore: ObservableObject {
     // return the existing selection or nil — it never fabricates one, so a load/refresh
     // can't auto-select a root or workroom the user didn't pick (D4).
     selectedTargetID = Self.validatedSelection(selectedTargetID, in: fresh)
+    // Drop any split leaf whose workroom went away on reload (issue #23 follow-up self-heal); collapses
+    // to a survivor / dissolves below two, re-pointing selection. Runs after selection is validated so
+    // history/notifications/run-toolbar (all keyed on `selectedTargetID`) follow the survivor.
+    pruneWorkroomSplitToLiveLeaves()
     // Forget labels for projects that went away.
     let liveIDs = Set(fresh.map(\.id))
     rootRefs = rootRefs.filter { liveIDs.contains($0.key) }
@@ -791,6 +824,9 @@ final class AppStore: ObservableObject {
     logs[targetID] = nil
     // Drop the gone workroom's notifications and pull any banners it already delivered.
     systemNotifier.withdraw(tabIDs: notifications.removeForTarget(targetID))
+    // Drop the deleted workroom from the split first (it re-points selection to a survivor), then fall
+    // back to clearing selection if it was the deleted workroom (issue #23 follow-up self-heal).
+    removeWorkroomSplitMember(.workroom(project: project.path, name: workroom.name))
     if selectedTargetID == .workroom(project: project.path, name: workroom.name) {
       selectedTargetID = nil
     }

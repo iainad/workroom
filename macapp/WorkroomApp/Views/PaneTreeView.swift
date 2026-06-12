@@ -11,7 +11,7 @@ import SwiftUI
 /// shows 4 edge drop zones on the pane under the cursor and, on drop, moves/rearranges via
 /// `moveTabIntoSplit` (or pops the pane out to solo via `extractFromSplit` if dragged up to the strip).
 struct PaneTreeView: View {
-  let layout: PaneLayout
+  let layout: TerminalPaneLayout
   let target: TerminalTarget
   @ObservedObject var sessions: TerminalSessions
   /// A drag originating outside the tree (a strip tab chip dragged into the content), in content-local
@@ -61,7 +61,7 @@ struct PaneTreeView: View {
 
   /// The accent band previewing where a dragged pane will land.
   @ViewBuilder
-  private func dropHighlight(plan: PaneTreeLayout.Plan) -> some View {
+  private func dropHighlight(plan: PaneTreeLayout.Plan<TerminalTab.ID>) -> some View {
     if let drag = activeDrag,
       let hit = PaneTreeLayout.dropTarget(at: drag.location, panes: plan.panes),
       hit.tab != drag.tabID, let rect = plan.panes[hit.tab]
@@ -112,7 +112,7 @@ struct PaneTreeView: View {
     }
   }
 
-  private func commitDrag(plan: PaneTreeLayout.Plan) {
+  private func commitDrag(plan: PaneTreeLayout.Plan<TerminalTab.ID>) {
     defer { drag = nil }
     guard let drag else { return }
     if let hit = PaneTreeLayout.dropTarget(at: drag.location, panes: plan.panes),
@@ -143,7 +143,7 @@ struct PaneDividerFrame: Identifiable {
 }
 
 enum PaneTreeLayout {
-  typealias Plan = (panes: [TerminalTab.ID: CGRect], dividers: [PaneDividerFrame])
+  typealias Plan<Leaf: Hashable> = (panes: [Leaf: CGRect], dividers: [PaneDividerFrame])
 
   static var dividerThickness: CGFloat { TerminalSessions.dividerThickness }
   static var minPane: CGFloat { TerminalSessions.minPaneSize }
@@ -171,7 +171,7 @@ enum PaneTreeLayout {
   }
 
   /// Absolute frames for every leaf (by tab id) and every divider, laying `node` out in `rect`.
-  static func plan(_ node: PaneLayout, in rect: CGRect) -> Plan {
+  static func plan<Leaf: Hashable>(_ node: PaneLayout<Leaf>, in rect: CGRect) -> Plan<Leaf> {
     switch node {
     case .leaf(let id):
       return ([id: rect], [])
@@ -205,8 +205,8 @@ enum PaneTreeLayout {
 
   /// Which pane + edge a content-local `point` targets. Each pane is tiled into 4 triangles meeting at
   /// its center, so the nearest edge always wins — no dead zone (plan: "edges tile the whole pane").
-  static func dropTarget(at point: CGPoint, panes: [TerminalTab.ID: CGRect])
-    -> (tab: TerminalTab.ID, edge: PaneEdge)?
+  static func dropTarget<Leaf: Hashable>(at point: CGPoint, panes: [Leaf: CGRect])
+    -> (tab: Leaf, edge: PaneEdge)?
   {
     guard let hit = panes.first(where: { $0.value.contains(point) }) else { return nil }
     return (hit.key, nearestEdge(of: point, in: hit.value))
@@ -224,13 +224,13 @@ enum PaneTreeLayout {
   /// The pane nearest `tabID` in `direction` within `layout`: the closest pane that lies that way and
   /// overlaps on the perpendicular axis (so ⌥⌘→ from a tall left pane lands on whichever right pane
   /// shares the most rows). Pure geometry over a reference rect — `nil` if there's nothing that way.
-  static func adjacentPane(
-    to tabID: TerminalTab.ID, direction: PaneDirection, in layout: PaneLayout
-  ) -> TerminalTab.ID? {
+  static func adjacentPane<Leaf: Hashable>(
+    to tabID: Leaf, direction: PaneDirection, in layout: PaneLayout<Leaf>
+  ) -> Leaf? {
     let panes = plan(layout, in: CGRect(x: 0, y: 0, width: 1000, height: 1000)).panes
     guard let from = panes[tabID] else { return nil }
     let horizontal = direction == .left || direction == .right
-    var best: (id: TerminalTab.ID, primary: CGFloat, secondary: CGFloat)?
+    var best: (id: Leaf, primary: CGFloat, secondary: CGFloat)?
     for (id, r) in panes where id != tabID {
       let inDirection: Bool
       switch direction {

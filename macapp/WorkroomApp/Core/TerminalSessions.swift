@@ -54,7 +54,7 @@ final class TerminalSessions: ObservableObject {
   /// contiguous run in split-tree order — see `displayedTabIDs`.
   @Published private var orderByTarget: [TerminalTarget.ID: [TerminalTab.ID]] = [:]
   /// The one split layout per target, if any (always ≥2 leaves; a lone tab is "no split").
-  @Published private var splitByTarget: [TerminalTarget.ID: PaneLayout] = [:]
+  @Published private var splitByTarget: [TerminalTarget.ID: TerminalPaneLayout] = [:]
   /// The focused/selected tab per target. Selection = this tab (+ its split, if it's a member).
   @Published private var focusedTabByTarget: [TerminalTarget.ID: TerminalTab.ID] = [:]
   /// Bumped when a *visible but non-focused* pane reports activity (D3): the renderer flashes that
@@ -74,6 +74,11 @@ final class TerminalSessions: ObservableObject {
   /// Set once by `AppStore`: the tabs just removed by a `closeTab` or `reap`, so navigation history
   /// can prune their now-dead entries (issue #26 — honest back/forward enablement).
   var onTabsRemoved: ((TerminalTarget.ID, [TerminalTab.ID]) -> Void)?
+  /// Set once by `AppStore`: a surface in this target became first responder (a click into its
+  /// terminal). Routes focus up to the *workroom* selection in a workroom split (issue #23 follow-up),
+  /// so ⌘T/Run/notifications target the clicked pane's workroom. A closure (not a store reference),
+  /// mirroring `onFocusChange`, so sessions stay ignorant of `AppStore`.
+  var onSurfaceFocused: ((TerminalTarget.ID) -> Void)?
 
   /// Factory seam (plan T1): how a surface view is created for a target at a working directory.
   /// Overridable in tests so the lifecycle can be exercised without a real window/shell. The cwd
@@ -148,7 +153,7 @@ final class TerminalSessions: ObservableObject {
   }
 
   /// The target's split layout, if a split currently exists.
-  func split(for target: TerminalTarget) -> PaneLayout? { splitByTarget[target.id] }
+  func split(for target: TerminalTarget) -> TerminalPaneLayout? { splitByTarget[target.id] }
 
   /// Look up a tab by id (the pane renderer resolves leaves → surfaces through this).
   func tab(_ id: TerminalTab.ID, for target: TerminalTarget) -> TerminalTab? {
@@ -289,7 +294,7 @@ final class TerminalSessions: ObservableObject {
 
     // Base = the current split with `movedID` removed if it was in it; else the existing split when it
     // holds `destID`; else just the destination leaf (a fresh split, dissolving any unrelated one).
-    let base: PaneLayout
+    let base: TerminalPaneLayout
     if let split = splitByTarget[target.id], split.contains(movedID) {
       base = split.removingLeaf(movedID) ?? .leaf(destID)
     } else if let split = splitByTarget[target.id], split.contains(destID) {
@@ -595,10 +600,13 @@ final class TerminalSessions: ObservableObject {
     view.onProgressReport = { [weak self] active in
       self?.updateProgress(active, forTab: tabID, target: targetID)
     }
-    // A pane became first responder (click / programmatic focus): make it the selection (issue #3).
+    // A pane became first responder (click / programmatic focus): make it the selection (issue #3),
+    // and route up to the workroom selection so a click into a co-displayed split pane targets that
+    // workroom (issue #23 follow-up).
     view.onFocused = { [weak self] in
       guard let self, let target = self.target(forID: targetID) else { return }
       self.focus(tabID, for: target)
+      self.onSurfaceFocused?(targetID)
     }
 
     let projectPath = target.path

@@ -81,8 +81,8 @@ final class PaneLayoutTests: XCTestCase {
   }
 
   func testRatioSanitizeClampsOpenInterval() {
-    XCTAssertEqual(PaneLayout.sanitize(0), 0.001, accuracy: 0.0001)
-    XCTAssertEqual(PaneLayout.sanitize(1), 0.999, accuracy: 0.0001)
-    XCTAssertEqual(PaneLayout.sanitize(0.5), 0.5, accuracy: 0.0001)
+    XCTAssertEqual(PaneRatio.sanitize(0), 0.001, accuracy: 0.0001)
+    XCTAssertEqual(PaneRatio.sanitize(1), 0.999, accuracy: 0.0001)
+    XCTAssertEqual(PaneRatio.sanitize(0.5), 0.5, accuracy: 0.0001)
   }
 }

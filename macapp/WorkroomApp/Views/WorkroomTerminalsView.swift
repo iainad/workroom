@@ -12,6 +12,10 @@ import SwiftUI
 struct WorkroomTerminalsView: View {
   let target: TerminalTarget
   @ObservedObject var sessions: TerminalSessions
+  /// When this target is a workroom co-displayed in a split (issue #23 follow-up), the action that
+  /// removes it from the split — surfaced as a control on the right edge of the tab strip. nil
+  /// (default) for the normal single-target case.
+  var onCloseWorkroomPane: (() -> Void)? = nil
   @EnvironmentObject var notifications: NotificationCenterStore
   @EnvironmentObject var store: AppStore
 
@@ -66,7 +70,8 @@ struct WorkroomTerminalsView: View {
             tabs: tabs, activeID: active?.id, target: target, sessions: sessions,
             chipPaneDrag: $chipPaneDrag,
             localize: { chipLocal($0) },
-            dropTarget: { chipDropTarget(at: $0) }
+            dropTarget: { chipDropTarget(at: $0) },
+            onCloseWorkroomPane: onCloseWorkroomPane
           )
           Divider()
         }
@@ -94,7 +99,7 @@ struct WorkroomTerminalsView: View {
   }
 
   /// The layout the content area renders: the split when it's visible, else the focused solo tab.
-  private func contentLayout(active: TerminalTab) -> PaneLayout {
+  private func contentLayout(active: TerminalTab) -> TerminalPaneLayout {
     sessions.isSplitVisible(for: target)
       ? (sessions.split(for: target) ?? .leaf(active.id)) : .leaf(active.id)
   }
