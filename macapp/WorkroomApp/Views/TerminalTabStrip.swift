@@ -415,11 +415,13 @@ private struct TabCloseButton: View {
   }
 }
 
-/// The remove-from-split (✕) control for a workroom split member (issue #23 follow-up), pinned at the
-/// tab strip's right edge. A view (not an inline button) so it carries its own `onHover` — which both
-/// gives the subtle hover feedback the other strip controls have AND ensures the `.help` tooltip's
-/// tracking area is installed (a bare `.help` without any hover tracking can silently fail to show).
-private struct CloseWorkroomPaneButton: View {
+/// The remove-from-split (✕) control for a workroom split member (issue #23 follow-up). Pinned at the
+/// tab strip's right edge in the normal case, and also surfaced as a corner overlay by
+/// `TargetTerminalDetail` while a setup script blocks the strip (so a mid-setup member can still leave
+/// the split). A view (not an inline button) so it carries its own `onHover` — which both gives the
+/// subtle hover feedback the other strip controls have AND ensures the `.help` tooltip's tracking area
+/// is installed (a bare `.help` without any hover tracking can silently fail to show).
+struct CloseWorkroomPaneButton: View {
   let action: () -> Void
   @State private var hovering = false
 

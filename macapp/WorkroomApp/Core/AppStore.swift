@@ -1067,8 +1067,19 @@ final class AppStore: ObservableObject {
   /// window, or a non-frontmost app don't count as focused (issue #10, tension 2).
   func isFocused(targetID: TerminalTarget.ID, tabID: TerminalTab.ID) -> Bool {
     guard NSApp.isActive, NSApp.keyWindow != nil else { return false }
-    guard let target = selectedTarget, target.id == targetID else { return false }
+    guard let target = onScreenTarget(forID: targetID) else { return false }
     return terminals.visibleTabIDs(for: target).contains(tabID)
+  }
+
+  /// The on-screen target for `targetID`, ignoring app/window activation (so it's unit-testable): the
+  /// selected target, or — when a workroom split is shown — any co-displayed split member. The focused
+  /// member is `selectedTarget`, but the *other* members render beside it (issue #23), so their
+  /// terminals are equally on screen; without this `isFocused` would treat a visible non-selected
+  /// member's activity as unseen and post a banner for a pane the user is looking at. nil if not shown.
+  func onScreenTarget(forID targetID: TerminalTarget.ID) -> TerminalTarget? {
+    if let selected = selectedTarget, selected.id == targetID { return selected }
+    guard isWorkroomSplitVisible, let leaves = resolvedSplitLeaves() else { return nil }
+    return leaves.first { $0.target.id == targetID }?.target
   }
 
   /// Bring the app forward and select the terminal a notification came from, marking it read.

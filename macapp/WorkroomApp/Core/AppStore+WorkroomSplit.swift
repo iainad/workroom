@@ -31,9 +31,19 @@ extension AppStore {
   /// The layout the detail renders for `selected`: the split when `selected` is a member, else the
   /// workroom solo (`.leaf`). Mirrors `WorkroomTerminalsView.contentLayout`. The split is NOT discarded
   /// when a non-member is shown — `workroomSplit` persists, so reselecting a member brings it back.
+  ///
+  /// Prunes leaves whose workroom no longer resolves *before* returning, so the renderer never lays out
+  /// a rect (and a divider-to-nowhere) for a dead pane in the frame between an out-of-band deletion and
+  /// `pruneWorkroomSplitToLiveLeaves()` running in `apply(_:)`. A lone surviving leaf is "no split".
   func visibleWorkroomLayout(for selected: SidebarID) -> PaneLayout<SidebarID> {
-    if let split = workroomSplit, split.contains(selected), resolvedSplitLeaves() != nil {
-      return split
+    if let split = workroomSplit, split.contains(selected) {
+      var pruned = split
+      for sid in split.tabIDs where target(for: sid) == nil {
+        pruned = pruned.removingLeaf(sid) ?? pruned
+      }
+      if pruned.contains(selected), pruned.tabIDs.count >= 2 {
+        return pruned
+      }
     }
     return .leaf(selected)
   }
@@ -73,7 +83,12 @@ extension AppStore {
   /// *move*, not a duplicate. Focuses the inserted member. No-op for a self-drop or non-resolving leaf.
   /// Mirrors `TerminalSessions.moveTabIntoSplit`.
   func insertWorkroomSplit(_ sid: SidebarID, beside: SidebarID, edge: PaneEdge) {
-    guard sid != beside, target(for: sid) != nil, target(for: beside) != nil else { return }
+    // Reject a self-drop, a non-resolving leaf (`.project` / deleted workroom), and a workroom whose
+    // directory is gone (`isMissing`) — a missing leaf would render a "Directory not found" pane that
+    // can only be backed out of again, so don't let one into the split in the first place (#23).
+    guard sid != beside, let dropped = target(for: sid), !dropped.isMissing,
+      target(for: beside) != nil
+    else { return }
     let base: PaneLayout<SidebarID>
     if let split = workroomSplit, split.contains(sid) {
       base = split.removingLeaf(sid) ?? .leaf(beside)

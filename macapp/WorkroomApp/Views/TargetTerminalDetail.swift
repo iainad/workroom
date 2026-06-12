@@ -44,6 +44,17 @@ struct TargetTerminalDetail: View {
         }
         .transition(.opacity.combined(with: .scale(scale: 0.97, anchor: .center)))
         .zIndex(1)
+
+        // While the setup script blocks, the terminals view (and so its tab-strip ✕) is withheld —
+        // a split member mid-setup would otherwise be stuck in the split. Surface the
+        // remove-from-split control in the corner, above the overlay, so the pane can still leave
+        // the split (issue #23 follow-up; the strip handles the non-blocking empty case).
+        if let onCloseWorkroomPane {
+          CloseWorkroomPaneButton(action: onCloseWorkroomPane)
+            .padding(8)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+            .zIndex(2)
+        }
       }
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity)

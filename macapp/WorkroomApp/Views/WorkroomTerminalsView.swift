@@ -65,9 +65,13 @@ struct WorkroomTerminalsView: View {
     .frame(maxWidth: .infinity, maxHeight: .infinity)
     .onPreferenceChange(ContentFrameKey.self) { contentFrame = $0 }
     .safeAreaInset(edge: .top, spacing: 0) {
-      // No tab bar when there are no terminals: the empty state's "New Terminal" button (and ⌘T)
-      // cover adding one, so the strip and its "+" would be redundant.
-      if !tabs.isEmpty {
+      // Normally no tab bar when there are no terminals: the empty state's "New Terminal" button (and
+      // ⌘T) cover adding one, so the strip and its "+" would be redundant. But a *split member* still
+      // needs its remove-from-split ✕ — which rides on the strip's right edge — reachable after its
+      // last terminal is closed (issue #23 follow-up); otherwise an empty split pane has no way out
+      // of the split. So when this is a split member (`onCloseWorkroomPane != nil`) keep the strip
+      // even with zero tabs (it collapses to just the "+" and the close ✕).
+      if !tabs.isEmpty || onCloseWorkroomPane != nil {
         VStack(spacing: 0) {
           TerminalTabStrip(
             tabs: tabs, activeID: active?.id, target: target, sessions: sessions,

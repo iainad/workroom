@@ -94,22 +94,47 @@ private struct WorkroomPaneLeaf: View {
   let onClose: () -> Void
 
   var body: some View {
-    // The remove-from-split control rides on the tab strip's right edge (a layout sibling of the tabs,
-    // so it never overlaps them) rather than as a corner overlay — forwarded via `onCloseWorkroomPane`.
-    // `surfaceActive: focused` so only the focused workroom pane's terminal grabs first responder — a
-    // co-displayed non-focused pane must not steal focus (and retarget the selection) as it mounts.
-    TargetTerminalDetail(
-      target: target, onCloseWorkroomPane: multi ? onClose : nil, surfaceActive: focused
-    )
-    .overlay(
-      RoundedRectangle(cornerRadius: 12).strokeBorder(borderColor, lineWidth: 1.5)
-    )
-    // Same 3pt inset as a terminal pane, so a workroom's surface sits in the same place solo or split.
-    .padding(3)
-    .accessibilityElement(children: .contain)
-    .accessibilityIdentifier("workroom.pane")
-    .accessibilityLabel(Text("Workroom \(target.title)"))
-    .accessibilityAddTraits(focused && multi ? .isSelected : [])
+    content
+      .overlay(
+        RoundedRectangle(cornerRadius: 12).strokeBorder(borderColor, lineWidth: 1.5)
+      )
+      // Same 3pt inset as a terminal pane, so a workroom's surface sits in the same place solo or split.
+      .padding(3)
+      .accessibilityElement(children: .contain)
+      .accessibilityIdentifier("workroom.pane")
+      .accessibilityLabel(Text("Workroom \(target.title)"))
+      .accessibilityAddTraits(focused && multi ? .isSelected : [])
+  }
+
+  @ViewBuilder
+  private var content: some View {
+    if target.isMissing {
+      // The workroom's directory has gone away (deleted on disk). Don't mount a terminal over a dead
+      // path — show the same "Directory not found" state the solo detail uses, plus a way to remove
+      // this pane from the split. A co-displayed member must be guarded here: `RootView`'s solo
+      // `isMissing` branch only covers the *selected* target, so without this a non-focused member
+      // with a vanished path would render live terminal chrome (issue #23 follow-up).
+      ContentUnavailableView {
+        Label("Directory not found", systemImage: "questionmark.folder")
+      } description: {
+        Text("\(target.title) points at a path that no longer exists.\n\(target.path)")
+      } actions: {
+        if multi {
+          Button("Remove from split", action: onClose)
+            .accessibilityIdentifier("workroom.pane.close")
+        }
+      }
+      .frame(maxWidth: .infinity, maxHeight: .infinity)
+    } else {
+      // The remove-from-split control rides on the tab strip's right edge (a layout sibling of the
+      // tabs, so it never overlaps them) rather than as a corner overlay — forwarded via
+      // `onCloseWorkroomPane`. `surfaceActive: focused` so only the focused workroom pane's terminal
+      // grabs first responder — a co-displayed non-focused pane must not steal focus (and retarget
+      // the selection) as it mounts.
+      TargetTerminalDetail(
+        target: target, onCloseWorkroomPane: multi ? onClose : nil, surfaceActive: focused
+      )
+    }
   }
 
   private var borderColor: Color {

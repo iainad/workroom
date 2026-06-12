@@ -273,6 +273,12 @@ The pieces below were explicitly deferred — each small, none blocking.
   isn't persisted either). Add a `Defaults` key + restore-on-load if wanted.
 - **Per-pane activity border-flash** — workroom panes don't flash on background activity the way
   terminal split panes do (`activityPulse`); workroom activity still surfaces via bar-chip tinting.
+- **Queued first-responder stale-state recheck** (`Views/TerminalContainerView.swift:78`) — `applyFocus`
+  enqueues `makeFirstResponder(view)` on `DispatchQueue.main.async` and re-checks only
+  `firstResponder !== view`, not a *fresh* focus condition, so a stale enqueue could in theory flip
+  focus cross-target. Largely defused already by the `surfaceActive` gate (a non-focused workroom pane
+  passes `isFocusedPane=false` → never enqueues); this is the residual race within terminal-pane splits.
+  Fix would re-read live focus state inside the async block rather than relying on the captured value.
 
 **Priority:** P3 (polish on a shipped feature).
 

@@ -28,6 +28,20 @@ final class WorkroomSplitTests: XCTestCase {
       })
   }
 
+  /// A project where the `missing` workrooms carry a `DirectoryMissing` warning (so `target.isMissing`
+  /// is true — the workroom resolves in the list, but its directory is gone).
+  private func project(_ path: String, present: [String], missing: [String]) -> Project {
+    let live = present.map {
+      Workroom(name: $0, path: "\(path)/\($0)", vcsName: "workroom/\($0)", warnings: [])
+    }
+    let gone = missing.map {
+      Workroom(
+        name: $0, path: "\(path)/\($0)", vcsName: "workroom/\($0)",
+        warnings: [Warning(kind: "DirectoryMissing", message: "gone", path: nil, vcs: nil)])
+    }
+    return Project(path: path, vcs: "git", workrooms: live + gone)
+  }
+
   private func wr(_ name: String, in path: String = "/a") -> SidebarID {
     .workroom(project: path, name: name)
   }
@@ -89,6 +103,14 @@ final class WorkroomSplitTests: XCTestCase {
     XCTAssertNil(store.workroomSplit)
   }
 
+  func testInsertRejectsMissingWorkroom() {
+    // A workroom whose directory is gone (`isMissing`) resolves in the list but must not be draggable
+    // into a split — it would render a "Directory not found" pane you can only back out of (issue #23).
+    let store = makeStore([project("/a", present: ["main"], missing: ["gone"])])
+    store.insertWorkroomSplit(wr("gone"), beside: wr("main"), edge: .right)
+    XCTAssertNil(store.workroomSplit, "a missing workroom is rejected as a drop source")
+  }
+
   // MARK: remove / dissolve
 
   func testRemoveCollapsesThreeToTwo() {
@@ -131,6 +153,29 @@ final class WorkroomSplitTests: XCTestCase {
     XCTAssertTrue(store.isWorkroomSplitVisible)
     XCTAssertEqual(
       store.visibleWorkroomLayout(for: wr("main")).tabIDs, [wr("main"), wr("feature")])
+  }
+
+  func testVisibleWorkroomLayoutPrunesDeadLeafForRenderer() {
+    // A 3-leaf split with one workroom deleted out-of-band (no prune yet): the layout the renderer
+    // uses must already drop the dead leaf, so it never lays out a rect + divider-to-nowhere for a
+    // hole before `pruneWorkroomSplitToLiveLeaves` runs in `apply(_:)`.
+    let store = store3()
+    store.insertWorkroomSplit(wr("feature"), beside: wr("main"), edge: .right)
+    store.insertWorkroomSplit(wr("bugfix"), beside: wr("feature"), edge: .bottom)  // 3 leaves
+    store.projects = [project("/a", workrooms: ["main", "bugfix"])]  // "feature" deleted
+    let layout = store.visibleWorkroomLayout(for: wr("main"))
+    XCTAssertEqual(
+      Set(layout.tabIDs), [wr("main"), wr("bugfix")],
+      "the dead leaf is pruned from the render layout")
+  }
+
+  func testVisibleWorkroomLayoutFallsToLeafWhenPruneLeavesOne() {
+    let store = store3()
+    store.insertWorkroomSplit(wr("feature"), beside: wr("main"), edge: .right)  // [main, feature]
+    store.projects = [project("/a", workrooms: ["main"])]  // delete "feature" → one live leaf
+    XCTAssertEqual(
+      store.visibleWorkroomLayout(for: wr("main")), .leaf(wr("main")),
+      "a lone surviving leaf renders solo, not a one-pane split")
   }
 
   func testDisplayedWorkroomTargetsGroupsMembersContiguously() {
@@ -220,6 +265,43 @@ final class WorkroomSplitTests: XCTestCase {
     store.terminals.onSurfaceFocused?(store.target(for: b)!.id)
     XCTAssertEqual(
       store.selectedTargetID, a, "no split → a surface focus must not retarget the workroom")
+  }
+
+  // MARK: on-screen targets (notification suppression for co-displayed members — issue #23)
+
+  func testOnScreenTargetIncludesCoDisplayedSplitMember() {
+    // With the split shown, the focused member is `selectedTarget` AND the other members render beside
+    // it — so a co-displayed non-selected member must read as on screen, else `isFocused` posts a
+    // banner for a workroom the user is looking at.
+    let store = store3()
+    let a = wr("main")
+    let b = wr("feature")
+    store.terminals.addTab(for: store.target(for: a)!)
+    store.terminals.addTab(for: store.target(for: b)!)
+    store.insertWorkroomSplit(b, beside: a, edge: .right)  // split [a, b]; focuses b
+    store.selectedTargetID = a  // focus a → b is the co-displayed, non-selected member
+    XCTAssertEqual(
+      store.onScreenTarget(forID: store.target(for: b)!.id)?.id, store.target(for: b)!.id,
+      "the co-displayed split member is on screen")
+    XCTAssertEqual(
+      store.onScreenTarget(forID: store.target(for: a)!.id)?.id, store.target(for: a)!.id,
+      "the focused member is on screen")
+  }
+
+  func testOnScreenTargetExcludesHiddenSplitMember() {
+    let store = store3()
+    let a = wr("main")
+    let b = wr("feature")
+    store.terminals.addTab(for: store.target(for: a)!)
+    store.terminals.addTab(for: store.target(for: b)!)
+    store.insertWorkroomSplit(b, beside: a, edge: .right)  // split [a, b]
+    store.selectedTargetID = wr("bugfix")  // a non-member is selected → the split is hidden
+    XCTAssertNil(
+      store.onScreenTarget(forID: store.target(for: b)!.id),
+      "a hidden split member's panes are not on screen")
+    XCTAssertNotNil(
+      store.onScreenTarget(forID: store.target(for: wr("bugfix"))!.id),
+      "the selected solo target is on screen")
   }
 
   // MARK: leaf-agnostic geometry (drop-planning math over SidebarID — issue #23 follow-up)
