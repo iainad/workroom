@@ -56,14 +56,6 @@ final class AppStore: ObservableObject {
   @Published var workroomTabOrder: [TerminalTarget.ID] = Defaults[.workroomTabOrder] {
     didSet { Defaults[.workroomTabOrder] = workroomTabOrder }
   }
-  /// Whether the workroom tab bar rides above the terminal (issue #23). Opt-in (default off). Held
-  /// as `@Published` rather than read via `@Default` in `RootView.detail` for the same reason as
-  /// `workroomTabOrder`: a bare `@Default` write doesn't reliably re-render the `NavigationSplitView`
-  /// detail, so toggling the Settings/menu item appeared to do nothing. Persisted via `didSet`;
-  /// initialised from `Defaults`. The Settings checkbox + the View ▸ Workroom Tabs item bind this.
-  @Published var showWorkroomTabBar: Bool = Defaults[.showWorkroomTabBar] {
-    didSet { Defaults[.showWorkroomTabBar] = showWorkroomTabBar }
-  }
   /// Whether the projects sidebar column is visible. The single source of truth for the
   /// `NavigationSplitView` column visibility *and* the View ▸ Projects checkmark — a bare AppKit
   /// `toggleSidebar` has no state a menu checkmark can bind to, so it could never show a tick.
@@ -258,9 +250,6 @@ final class AppStore: ObservableObject {
   /// terminal).
   @discardableResult
   func focusWorkroomTab(at index: Int) -> Bool {
-    // The tab bar is opt-in (issue #23): with it hidden, ⌥⌘1–9 has no visible target, so pass the
-    // key through to the terminal rather than silently reselecting an unseen tab.
-    guard showWorkroomTabBar else { return false }
     let tabs = orderedWorkroomTargets()
     guard tabs.indices.contains(index) else { return false }
     selectedTargetID = tabs[index].sid
@@ -606,10 +595,6 @@ final class AppStore: ObservableObject {
   private func loadFixture() {
     let fixtures = UITestFixture.projects()
     projects = fixtures
-    // The workroom tab bar is opt-in (default off, issue #23); enable it so the bar's XCUITest can
-    // observe a tab. Only fixture mode reaches here (Release never does), so the real build's default
-    // stands — same "deterministic test state in the shared suite" pattern as the run config below.
-    showWorkroomTabBar = true
     // Seed a deterministic run command (issue #7) so the run-command UI is exercisable in fixture
     // mode (the lifecycle XCUITest + the manual verify-first probe). The path is a temp dir, so real
     // projects' Defaults are untouched. Prints a marker (proves the command parsed + launched) then

@@ -13,14 +13,10 @@ final class WorkroomsViewTests: XCTestCase {
   override func setUp() {
     super.setUp()
     Defaults[.workroomTabOrder] = []
-    // The bar is opt-in (default off, issue #23). These tests exercise its logic as if enabled;
-    // the gate itself is covered by `testFocusWorkroomTabFallsThroughWhenBarHidden`.
-    Defaults[.showWorkroomTabBar] = true
   }
 
   override func tearDown() {
     Defaults[.workroomTabOrder] = []
-    Defaults[.showWorkroomTabBar] = false
     super.tearDown()
   }
 
@@ -150,16 +146,6 @@ final class WorkroomsViewTests: XCTestCase {
     activate(store, .workroom(project: "/a", name: "main"))
     let before = store.selectedTargetID
     XCTAssertFalse(store.focusWorkroomTab(at: 8), "no Nth tab → not handled, key passes through")
-    XCTAssertEqual(store.selectedTargetID, before)
-  }
-
-  func testFocusWorkroomTabFallsThroughWhenBarHidden() {
-    let store = makeStore([project("/a", workrooms: ["main"])])
-    activate(store, .workroom(project: "/a", name: "main"))
-    let before = store.selectedTargetID
-    store.showWorkroomTabBar = false  // bar opt-in & off → ⌥⌘1–9 must pass through
-    XCTAssertFalse(
-      store.focusWorkroomTab(at: 0), "even with an active tab, a hidden bar doesn't switch")
     XCTAssertEqual(store.selectedTargetID, before)
   }
 

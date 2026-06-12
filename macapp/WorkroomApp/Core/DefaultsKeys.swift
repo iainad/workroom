@@ -68,10 +68,4 @@ extension Defaults.Keys {
   /// encoding as `sidebarSelection`). Terminals don't survive relaunch, so this is just an ordering
   /// hint applied to whatever is currently active — stale ids resolve away harmlessly.
   static let workroomTabOrder = Key<[String]>("workroomsView.tabOrder", default: [])
-
-  /// Whether the workroom tab bar rides above the terminal (issue #23). Off by default: the bar is an
-  /// opt-in power-user affordance for quick-switching between active workrooms, and most users drive
-  /// selection from the sidebar. When off, the bar never appears and ⌥⌘1–9 fall through to the
-  /// terminal. Toggled from Settings.
-  static let showWorkroomTabBar = Key<Bool>("workroomsView.showTabBar", default: false)
 }

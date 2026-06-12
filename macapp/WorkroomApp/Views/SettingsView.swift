@@ -15,10 +15,6 @@ struct SettingsView: View {
   // Bundle id of the editor for ⌘-clicked file paths; "" = the file's default app.
   @Default(.filePathEditor) private var pathEditor
   @EnvironmentObject private var updater: Updater
-  // The workroom tab bar's visibility (issue #23). Bound off the store (a `@Published`, Defaults-
-  // backed) rather than via `@Default` directly, so toggling it re-renders the tab bar — see
-  // `AppStore.showWorkroomTabBar`. Shared with the View ▸ Workroom Tabs menu item.
-  @EnvironmentObject private var store: AppStore
 
   var body: some View {
     Form {
@@ -37,8 +33,6 @@ struct SettingsView: View {
       Toggle("Global show/hide hotkey (⌘§)", isOn: $globalHotkey)
 
       Toggle("Show notifications in the menu bar", isOn: $showMenuBarItem)
-
-      Toggle("Show the workroom tab bar", isOn: $store.showWorkroomTabBar)
 
       Picker("Open file paths in", selection: $pathEditor) {
         Text("Default App").tag("")

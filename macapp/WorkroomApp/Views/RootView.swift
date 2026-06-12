@@ -204,10 +204,7 @@ struct RootView: View {
     // #23). Tapping a tab selects that target, exactly like clicking it in the sidebar. It hides
     // entirely when nothing's open. The selected target's terminal shows below regardless of whether
     // it's among the tabs (e.g. a freshly selected workroom mounts its terminal, then a tab appears).
-    // Opt-in: the `showWorkroomTabBar` setting (default off) gates it entirely. Read off the store
-    // (a `@Published`, observed via `@EnvironmentObject`) so toggling it actually re-renders the
-    // NavigationSplitView detail — a bare `@Default` read here didn't.
-    let tabs = store.showWorkroomTabBar ? store.orderedWorkroomTargets() : []
+    let tabs = store.orderedWorkroomTargets()
     VStack(spacing: 0) {
       if !tabs.isEmpty {
         WorkroomTabBar(
@@ -277,30 +274,24 @@ struct RootView: View {
             "\(target.title) points at a path that no longer exists.\n\(target.path)")
         )
       } else {
-        // The focused target's terminal body. When the tab bar is on we ALWAYS route through
-        // `WorkroomSplitView` (a no-split case is just `.leaf(selected)`), so single↔split is a leaf-set
-        // change — never a structural swap that would re-parent the surface and blank a pane (issue #23
-        // T1, the same lesson as `WorkroomTerminalsView` always rendering through `PaneTreeView`). The
-        // title/toolbar are shared here and follow the focused member (`selectedTarget`).
-        Group {
-          if store.showWorkroomTabBar {
-            workroomSplitBody(focused: target)
-          } else {
-            targetTerminalBody(target)
+        // The focused target's terminal body — ALWAYS rendered through `WorkroomSplitView` (a no-split
+        // case is just `.leaf(selected)`), so single↔split is a leaf-set change, never a structural swap
+        // that would re-parent the surface and blank a pane (issue #23, the same lesson as
+        // `WorkroomTerminalsView` always rendering through `PaneTreeView`). Title/toolbar follow the
+        // focused member (`selectedTarget`).
+        workroomSplitBody(focused: target)
+          .frame(maxWidth: .infinity, maxHeight: .infinity)
+          .navigationTitle(target.title)
+          .navigationSubtitle(target.path)
+          .toolbar {
+            // Run/Stop/Restart for the selected root OR workroom (issue #7): the command is configured
+            // per project and both targets have a project path + a directory to run in. `projectPath(of:)`
+            // resolves for `.root`/`.workroom`, nil for a bare `.project` (never shown in the detail pane).
+            if let projectPath = AppStore.projectPath(of: store.selectedTargetID) {
+              RunCommandToolbar(target: target, projectPath: projectPath)
+            }
+            TargetDetailToolbar(path: target.path)
           }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .navigationTitle(target.title)
-        .navigationSubtitle(target.path)
-        .toolbar {
-          // Run/Stop/Restart for the selected root OR workroom (issue #7): the command is configured
-          // per project and both targets have a project path + a directory to run in. `projectPath(of:)`
-          // resolves for `.root`/`.workroom`, nil for a bare `.project` (never shown in the detail pane).
-          if let projectPath = AppStore.projectPath(of: store.selectedTargetID) {
-            RunCommandToolbar(target: target, projectPath: projectPath)
-          }
-          TargetDetailToolbar(path: target.path)
-        }
       }
     } else {
       ContentUnavailableView(

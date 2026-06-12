@@ -38,7 +38,6 @@ struct WorkroomApp: App {
     Settings {
       SettingsView()
         .environmentObject(updater)
-        .environmentObject(store)
     }
 
     // System menu bar item (issue #33): the Workroom glyph + pending count, with a popover listing
@@ -331,9 +330,9 @@ extension FocusedValues {
 /// regardless of which pane has focus.
 struct WorkroomCommands: Commands {
   @ObservedObject var updater: Updater
-  /// The shared store, so the View-menu toggles can both *drive* and *reflect* view state — their
-  /// checkmarks track `sidebarVisible` / `showWorkroomTabBar` live (a `Commands` body re-evaluates
-  /// when an `@ObservedObject` it holds changes).
+  /// The shared store, so the View ▸ Projects toggle can both *drive* and *reflect* the sidebar's
+  /// visibility — its checkmark tracks `sidebarVisible` live (a `Commands` body re-evaluates when an
+  /// `@ObservedObject` it holds changes).
   @ObservedObject var store: AppStore
   @FocusedValue(\.workroomSelected) private var workroomSelected
   @FocusedValue(\.hasTerminal) private var hasTerminal
@@ -381,10 +380,6 @@ struct WorkroomCommands: Commands {
     CommandGroup(replacing: .sidebar) {
       Toggle("Projects", isOn: $store.sidebarVisible)
         .keyboardShortcut("s", modifiers: [.command, .control])
-
-      // The workroom tab bar (issue #23), sitting under Projects as the other view-structure control.
-      // A checkmark reflects the opt-in `showWorkroomTabBar` state; mirrored by the Settings checkbox.
-      Toggle("Workroom Tabs", isOn: $store.showWorkroomTabBar)
     }
 
     CommandGroup(after: .sidebar) {
