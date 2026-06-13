@@ -107,7 +107,9 @@ struct WorkroomTabBar: View {
     // Hug the chips' height so the horizontal ScrollView doesn't grab vertical slack.
     .fixedSize(horizontal: false, vertical: true)
     .frame(maxWidth: .infinity, alignment: .leading)
-    .padding(.vertical, 6)
+    // Breathing room above (under the window toolbar); a little below, before the rule + terminal.
+    .padding(.top, 5)
+    .padding(.bottom, 4)
   }
 
   /// Whether to draw a hairline on the leading edge of tab `index`, separating it from its left
@@ -124,8 +126,8 @@ struct WorkroomTabBar: View {
     return true
   }
 
-  /// A rounded outline + accent underline bracketing the workroom-split members' contiguous run, so the
-  /// grouping is visible even while you're viewing a non-member workroom (the split persists). Mirrors
+  /// A rounded outline bracketing the workroom-split members' contiguous run, so the grouping is
+  /// visible even while you're viewing a non-member workroom (the split persists). Mirrors
   /// `TerminalTabStrip.splitWell` — an outline, not a fill, so it doesn't compete with the active-chip
   /// fill. Hidden during a drag; only for a real split (`displayedWorkroomTargets` keeps members
   /// contiguous, so the run is one block).
@@ -133,12 +135,6 @@ struct WorkroomTabBar: View {
     if draggingID == nil, let run = splitRunRect() {
       RoundedRectangle(cornerRadius: 7)
         .strokeBorder(Color.primary.opacity(0.16), lineWidth: 1)
-        .overlay(alignment: .bottom) {
-          RoundedRectangle(cornerRadius: 1)
-            .fill(Color.accentColor.opacity(0.55))
-            .frame(height: 2)
-            .padding(.horizontal, 3)
-        }
         .frame(width: run.width)
         .offset(x: run.x)
     }
@@ -246,7 +242,7 @@ private struct WorkroomTabChip: View {
           .help("Directory not found")
       }
       Text(primaryLabel)
-        .font(.callout)
+        .font(.body)
         .lineLimit(1)
         .foregroundStyle(hasActivity ? Color.accentColor : Color.primary)
       // House glyph for a root, between the project name and its branch (so the two read together).

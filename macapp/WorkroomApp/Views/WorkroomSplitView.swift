@@ -95,11 +95,11 @@ private struct WorkroomPaneLeaf: View {
 
   var body: some View {
     content
-      .overlay(
-        RoundedRectangle(cornerRadius: 12).strokeBorder(borderColor, lineWidth: 1.5)
-      )
-      // Same 3pt inset as a terminal pane, so a workroom's surface sits in the same place solo or split.
-      .padding(3)
+      // No frame around the workroom pane itself — the bordered terminals inside do the framing, and
+      // the focused member already reads from its focused terminal's accent border + the selected tab
+      // chip. Keep the 2pt inset (the inter-pane gutter), so a surface sits in the same place solo or
+      // split.
+      .padding(2)
       .accessibilityElement(children: .contain)
       .accessibilityIdentifier("workroom.pane")
       .accessibilityLabel(Text("Workroom \(target.title)"))
@@ -136,16 +136,13 @@ private struct WorkroomPaneLeaf: View {
       )
     }
   }
-
-  private var borderColor: Color {
-    guard multi else { return .clear }
-    return focused ? Color.accentColor.opacity(0.6) : Color.primary.opacity(0.08)
-  }
 }
 
 /// A draggable divider that writes a new ratio for one split node. A near-twin of `PaneTreeView`'s
 /// private `SplitDivider` (kept separate so the terminal renderer stays untouched), reusing the shared
-/// `PaneTreeLayout.clampRatio`/`dividerThickness` math.
+/// `PaneTreeLayout.clampRatio`/`dividerThickness` math. Unlike `SplitDivider` it draws **no** separator
+/// rule — each workroom pane already has its own rounded border, so a line in the gap would double up;
+/// this is just the (invisible) resize hit-zone, surfaced only by the resize cursor on hover.
 private struct WorkroomSplitDivider: View {
   let orientation: SplitOrientation
   let ratio: CGFloat
@@ -156,13 +153,6 @@ private struct WorkroomSplitDivider: View {
   var body: some View {
     Rectangle()
       .fill(Color.secondary.opacity(0.0001))
-      .overlay(
-        Rectangle()
-          .fill(Color(nsColor: .separatorColor))
-          .frame(
-            width: orientation == .horizontal ? 1 : nil,
-            height: orientation == .vertical ? 1 : nil)
-      )
       .contentShape(Rectangle())
       .gesture(
         DragGesture(coordinateSpace: .global)

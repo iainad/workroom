@@ -130,7 +130,8 @@ struct TerminalTabStrip: View {
         CloseWorkroomPaneButton(action: onCloseWorkroomPane)
       }
     }
-    .padding(.vertical, 4)
+    .padding(.top, 4)
+    .padding(.bottom, 2)
   }
 
   /// The "new terminal" (+) button. Lives inside the scrolling tab row, immediately after the last tab
@@ -157,22 +158,16 @@ struct TerminalTabStrip: View {
     .accessibilityIdentifier("NewTerminal")
   }
 
-  /// A rounded *outline* + accent underline bracketing the split's contiguous chip run, so it's easy
-  /// to see which tabs are grouped/split (issue #3). Deliberately an outline, not a filled backing: a
-  /// fill occupies the same channel as the active-chip fill, so any visible strength made a
-  /// grouped-but-inactive chip read as focused. The border groups without competing with selection.
-  /// Hidden during a drag (group-aware strip drag is Phase 2), and only shown for a real split (≥2).
+  /// A rounded *outline* bracketing the split's contiguous chip run, so it's easy to see which tabs
+  /// are grouped/split (issue #3). Deliberately an outline, not a filled backing: a fill occupies the
+  /// same channel as the active-chip fill, so any visible strength made a grouped-but-inactive chip
+  /// read as focused. The border groups without competing with selection. Hidden during a drag
+  /// (group-aware strip drag is Phase 2), and only shown for a real split (≥2).
   @ViewBuilder
   private func splitWell(_ tabs: [TerminalTab]) -> some View {
     if draggingID == nil, let run = splitRunRect(tabs) {
       RoundedRectangle(cornerRadius: 7)
         .strokeBorder(Color.primary.opacity(0.16), lineWidth: 1)
-        .overlay(alignment: .bottom) {
-          RoundedRectangle(cornerRadius: 1)
-            .fill(Color.accentColor.opacity(0.55))
-            .frame(height: 2)
-            .padding(.horizontal, 3)
-        }
         .frame(width: run.width)
         .offset(x: run.x)
     }

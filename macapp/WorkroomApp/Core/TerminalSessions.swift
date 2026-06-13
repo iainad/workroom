@@ -90,8 +90,10 @@ final class TerminalSessions: ObservableObject {
   /// Smallest usable pane edge (points). A split is refused when it would shrink a pane below this; the
   /// renderer applies the same minimum as its divider clamp.
   static let minPaneSize: CGFloat = 120
-  /// Divider track thickness (points), shared by the fit guard and the renderer.
-  static let dividerThickness: CGFloat = 7
+  /// Inter-pane gutter thickness (points), shared by the fit guard and the renderer. No separator
+  /// rule is drawn anymore, so this is just the gap between panes and the width of the (invisible)
+  /// resize hit-zone — kept tight, since the panes' own rounded borders mark the boundary.
+  static let dividerThickness: CGFloat = 4
 
   private var appearanceObserver: NSObjectProtocol?
 

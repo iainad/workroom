@@ -215,6 +215,7 @@ struct RootView: View {
           chipPaneDrag: $workroomChipDrag,
           localize: { workroomChipLocal($0) },
           dropTarget: { workroomChipDropTarget(at: $0) })
+        // A hairline directly beneath the tabs, separating the bar from the terminal below.
         Divider()
       }
       detailContent

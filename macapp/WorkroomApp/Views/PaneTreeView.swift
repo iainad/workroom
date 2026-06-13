@@ -303,11 +303,11 @@ private struct PaneLeafView: View {
           .animation(reduceMotion ? nil : .easeInOut(duration: 0.15), value: focused)
       )
       .overlay(alignment: .top) { handle }
-      // The same 3pt inset solo and split, so a tab doesn't shift its surface when it joins or
+      // The same 2pt inset solo and split, so a tab doesn't shift its surface when it joins or
       // leaves a split — in a split this is the inter-pane gutter; solo, it's an invisible inset
       // that keeps the surface in the exact same place. (The focus border draws inside the bounds,
       // so it never moves the surface; only this padding does.)
-      .padding(3)
+      .padding(2)
       .onHover { hovering = $0 }
       .onChange(of: sessions.activityPulses[tabID]) { _, _ in
         guard multiPane, !focused else { return }
@@ -358,20 +358,19 @@ private struct PaneLeafView: View {
   }
 
   private var borderColor: Color {
-    guard multiPane else { return .clear }
-    // A toned accent for the focused pane (and the activity flash), with a faint neutral hairline
-    // on the others — so focus reads as "the accent one" against bordered siblings rather than as a
-    // loud blue ring against nothing. (Solo panes get no border at all — handled by the guard.)
-    if focused { return Color.accentColor.opacity(0.6) }
-    if flashing { return Color.accentColor.opacity(0.6) }
+    // The focused terminal gets the solid, theme-following `focused` tint — solo or split alike (and
+    // an unfocused pane briefly flashes it on activity). Non-focused panes keep a faint neutral
+    // hairline that still frames the surface.
+    if focused || flashing { return .focused }
     return Color.primary.opacity(0.08)
   }
 }
 
 // MARK: - Divider
 
-/// A draggable divider that writes a new ratio for one split node. Mirrors `ScriptLogPanel`'s resize
-/// handle: an invisible but hit-testable track with a 1pt hairline and a resize cursor on hover.
+/// A draggable divider that writes a new ratio for one split node. Draws **no** separator rule — each
+/// terminal pane already has its own rounded border, so a line in the gutter would only double up;
+/// it's just an invisible, hit-testable track surfaced by the resize cursor on hover.
 private struct SplitDivider: View {
   let orientation: SplitOrientation
   let ratio: CGFloat
@@ -382,13 +381,6 @@ private struct SplitDivider: View {
   var body: some View {
     Rectangle()
       .fill(Color.secondary.opacity(0.0001))
-      .overlay(
-        Rectangle()
-          .fill(Color(nsColor: .separatorColor))
-          .frame(
-            width: orientation == .horizontal ? 1 : nil,
-            height: orientation == .vertical ? 1 : nil)
-      )
       .contentShape(Rectangle())
       .gesture(
         DragGesture(coordinateSpace: .global)

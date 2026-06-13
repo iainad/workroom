@@ -1,5 +1,20 @@
 import AppKit
 import Defaults
+import SwiftUI
+
+extension Color {
+  /// The focus indicator for a terminal pane's border — a solid colour that follows the app
+  /// appearance rather than the system accent blue (issue #23 follow-up). A soft mid-graphite that
+  /// stays gentle against both light and dark terminal backgrounds while reading as "the focused
+  /// one" next to the faint hairline on unfocused panes. Resolved through a dynamic `NSColor` so it
+  /// tracks `NSApp.appearance` (which `ThemePreference` drives), light or dark.
+  static let focused = Color(
+    nsColor: NSColor(name: "TerminalFocus") { appearance in
+      appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+        ? NSColor(srgbRed: 0.58, green: 0.59, blue: 0.63, alpha: 1)
+        : NSColor(srgbRed: 0.50, green: 0.51, blue: 0.54, alpha: 1)
+    })
+}
 
 /// The user's appearance choice. Persisted via `Defaults[.theme]`; `.system` (the default)
 /// follows the OS appearance, while `.light`/`.dark` force a scheme. `PreferRawRepresentable`

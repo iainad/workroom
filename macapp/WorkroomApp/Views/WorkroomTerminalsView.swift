@@ -72,16 +72,13 @@ struct WorkroomTerminalsView: View {
       // of the split. So when this is a split member (`onCloseWorkroomPane != nil`) keep the strip
       // even with zero tabs (it collapses to just the "+" and the close ✕).
       if !tabs.isEmpty || onCloseWorkroomPane != nil {
-        VStack(spacing: 0) {
-          TerminalTabStrip(
-            tabs: tabs, activeID: active?.id, target: target, sessions: sessions,
-            chipPaneDrag: $chipPaneDrag,
-            localize: { chipLocal($0) },
-            dropTarget: { chipDropTarget(at: $0) },
-            onCloseWorkroomPane: onCloseWorkroomPane
-          )
-          Divider()
-        }
+        TerminalTabStrip(
+          tabs: tabs, activeID: active?.id, target: target, sessions: sessions,
+          chipPaneDrag: $chipPaneDrag,
+          localize: { chipLocal($0) },
+          dropTarget: { chipDropTarget(at: $0) },
+          onCloseWorkroomPane: onCloseWorkroomPane
+        )
       }
     }
     // Create the first terminal once the pane appears (and for each new target), then reconcile
