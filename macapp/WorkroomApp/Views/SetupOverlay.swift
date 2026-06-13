@@ -13,6 +13,7 @@ struct SetupOverlay: View {
   @ObservedObject var session: ScriptLogSession
   var onDismiss: () -> Void
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @Environment(\.colorScheme) private var colorScheme
   /// Drives the enter animation. Flipped true in `onAppear` so the spring plays reliably
   /// regardless of how the containing detail pane was mounted (a `.transition` alone won't
   /// animate when the pane appears already-blocking from a fresh target selection).
@@ -25,9 +26,11 @@ struct SetupOverlay: View {
       FakeTerminalBackdrop()
         .opacity(shown ? 1 : 0)
 
-      // A dim over the faux terminal so the green recedes and the card pops forward.
+      // A dim over the faux terminal so the backdrop recedes and the card pops forward.
+      // Lighter in light mode: the "paper" CRT (below) is already pale, so a heavy black
+      // scrim would only muddy it — the card's shadow carries the separation there.
       Rectangle()
-        .fill(Color.black.opacity(shown ? 0.25 : 0))
+        .fill(Color.black.opacity(shown ? (colorScheme == .light ? 0.08 : 0.25) : 0))
         .ignoresSafeArea()
 
       card
@@ -72,18 +75,56 @@ struct SetupOverlay: View {
   }
 }
 
-/// A fake green-phosphor CRT terminal drawn behind `SetupOverlay`'s panel so it reads as
-/// floating over a terminal. Purely decorative — no real terminal runs while setup is in
-/// progress (issue #18). The content is an affectionate riff on the MU/TH/UR 6000 ("MOTHER")
-/// interface from *Alien* (1979): dull phosphor green, scanlines, a slight defocus blur and a
-/// faint flicker so it sits in the background. Static, non-interactive, hidden from a11y.
+/// A fake CRT terminal drawn behind `SetupOverlay`'s panel so it reads as floating over a
+/// terminal. Purely decorative — no real terminal runs while setup is in progress (issue #18).
+/// The content is an affectionate riff on the MU/TH/UR 6000 ("MOTHER") interface from
+/// *Alien* (1979): scanlines and a slight defocus blur so it sits in the background.
+/// Static, non-interactive, hidden from a11y.
+///
+/// The tube follows the app appearance (issue #37): in dark mode it's the classic dull
+/// phosphor green on near-black; in light mode it becomes a warm "paper" terminal — dark-green
+/// ink on cream with faint light scanlines and a soft warm vignette — so it reads as a sunlit
+/// printout rather than a black slab sitting behind a light card. See `palette`.
 private struct FakeTerminalBackdrop: View {
   private enum Kind { case system, prompt, reply }
 
-  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @Environment(\.colorScheme) private var colorScheme
 
-  /// Dull phosphor green, à la a 1979 monochrome CRT well past its prime.
-  private static let phosphor = Color(red: 0.34, green: 0.72, blue: 0.42)
+  /// The CRT's colors for the current appearance — see the type doc for the two looks.
+  private struct Palette {
+    let tube: Color  // the glass: what's behind the text
+    let phosphor: Color  // system + prompt text; replies are this dimmed
+    let replyOpacity: Double
+    let glow: Color  // text shadow: a phosphor halo (dark) or a faint ink bleed (light)
+    let glowRadius: CGFloat
+    let scanline: Color
+    let vignette: Color  // outer edge tint, to suggest a curved tube
+  }
+
+  private var palette: Palette {
+    switch colorScheme {
+    case .light:
+      let ink = Color(red: 0.11, green: 0.33, blue: 0.17)  // dark forest-green "ink"
+      return Palette(
+        tube: Color(red: 0.94, green: 0.91, blue: 0.82),  // warm cream paper
+        phosphor: ink,
+        replyOpacity: 0.6,
+        glow: ink.opacity(0.15),  // a faint ink bleed, not a glow
+        glowRadius: 1.0,
+        scanline: .white.opacity(0.35),  // faint light scanlines
+        vignette: Color(red: 0.42, green: 0.36, blue: 0.26).opacity(0.22))  // soft warm edges
+    default:
+      let green = Color(red: 0.34, green: 0.72, blue: 0.42)  // dull 1979 phosphor green
+      return Palette(
+        tube: Color(red: 0.01, green: 0.035, blue: 0.02),  // near-black, faint green cast
+        phosphor: green,
+        replyOpacity: 0.5,
+        glow: green.opacity(0.35),  // soft phosphor glow
+        glowRadius: 1.5,
+        scanline: .black.opacity(0.2),
+        vignette: .black.opacity(0.45))
+    }
+  }
 
   // MOTHER never had a prompt char; the "> " is our nod to a green terminal prompt.
   private static let script: [(Kind, String)] = [
@@ -119,79 +160,67 @@ private struct FakeTerminalBackdrop: View {
   ]
 
   var body: some View {
-    Group {
-      if reduceMotion {
-        crt
-      } else {
-        // A faint flicker — the tube never sits perfectly still.
-        TimelineView(.periodic(from: .now, by: 1.0 / 24.0)) { context in
-          crt.opacity(Self.flickerOpacity(context.date))
-        }
-      }
-    }
-    .allowsHitTesting(false)
-    .accessibilityHidden(true)
+    crt
+      .allowsHitTesting(false)
+      .accessibilityHidden(true)
   }
 
   private var crt: some View {
-    ZStack {
-      // Near-black with a faint green cast, like warmed-up phosphor.
-      Color(red: 0.01, green: 0.035, blue: 0.02)
+    let palette = palette
+    return ZStack {
+      // The tube glass: near-black green in dark mode, warm cream in light mode.
+      palette.tube
 
       VStack(alignment: .leading, spacing: 3) {
         ForEach(Array(Self.script.enumerated()), id: \.offset) { _, entry in
-          line(entry.0, entry.1)
+          line(entry.0, entry.1, palette)
         }
         Spacer(minLength: 0)
       }
       .font(.system(.callout, design: .monospaced))
       .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
       .padding(20)
-      .shadow(color: Self.phosphor.opacity(0.35), radius: 1.5)  // soft phosphor glow
+      .shadow(color: palette.glow, radius: palette.glowRadius)
       .blur(radius: 0.6)  // a touch out of focus
     }
-    .overlay(Scanlines())
-    // Vignette: darken the edges/corners so it reads as a curved tube in the background.
+    .overlay(Scanlines(color: palette.scanline))
+    // Vignette: tint the edges/corners so it reads as a curved tube in the background.
     .overlay(
-      EllipticalGradient(colors: [.clear, .black.opacity(0.45)], center: .center)
+      EllipticalGradient(colors: [.clear, palette.vignette], center: .center)
         .allowsHitTesting(false)
     )
   }
 
   @ViewBuilder
-  private func line(_ kind: Kind, _ text: String) -> some View {
+  private func line(_ kind: Kind, _ text: String, _ palette: Palette) -> some View {
     switch kind {
     case .system:
       Text(text.isEmpty ? " " : text)
-        .foregroundStyle(Self.phosphor)
+        .foregroundStyle(palette.phosphor)
         .fontWeight(.semibold)
     case .prompt:
       // A trailing empty prompt becomes the blinking-cursor line.
       Text(text.isEmpty ? "> █" : "> \(text)")
-        .foregroundStyle(Self.phosphor)
+        .foregroundStyle(palette.phosphor)
     case .reply:
       Text(text.isEmpty ? " " : text)
-        .foregroundStyle(Self.phosphor.opacity(0.5))
+        .foregroundStyle(palette.phosphor.opacity(palette.replyOpacity))
     }
-  }
-
-  /// Smooth pseudo-random flicker in ~[0.92, 1.0] — summed sines so it never repeats obviously.
-  private static func flickerOpacity(_ date: Date) -> Double {
-    let t = date.timeIntervalSinceReferenceDate
-    let noise = (sin(t * 13.0) + sin(t * 27.3) + sin(t * 41.7)) / 3.0  // [-1, 1]
-    return 0.92 + 0.08 * (noise * 0.5 + 0.5)
   }
 }
 
-/// Horizontal CRT scanlines: thin dark lines every few points, drawn over the terminal.
+/// Horizontal CRT scanlines: thin lines every few points, drawn over the terminal. Dark on
+/// the dark tube, faint and light on the cream "paper" tube — the caller picks via `color`.
 private struct Scanlines: View {
+  var color: Color
+
   var body: some View {
     Canvas { context, size in
       var y = 0.0
       while y < size.height {
         context.fill(
           Path(CGRect(x: 0, y: y, width: size.width, height: 1)),
-          with: .color(.black.opacity(0.2)))
+          with: .color(color))
         y += 3
       }
     }
