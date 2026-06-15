@@ -14,6 +14,13 @@ extension Color {
         ? NSColor(srgbRed: 0.58, green: 0.59, blue: 0.63, alpha: 1)
         : NSColor(srgbRed: 0.50, green: 0.51, blue: 0.54, alpha: 1)
     })
+
+  /// The scrim laid over unfocused terminal panes so the active one reads at a glance. It's the terminal's
+  /// own background colour — `.textBackgroundColor`, the exact system colour `GhosttyApp` writes as the
+  /// surface `background` — so the scrim is invisible *over the background* (same colour) and only washes
+  /// the pane's text toward it. The background itself barely shifts in any mode; the text carries the
+  /// focus signal. (A pure white/black scrim overshot dark mode, pushing the dark-grey BG toward black.)
+  static let terminalDim = Color(nsColor: .textBackgroundColor)
 }
 
 /// The user's appearance choice. Persisted via `Defaults[.theme]`; `.system` (the default)

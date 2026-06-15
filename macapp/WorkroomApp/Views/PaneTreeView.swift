@@ -296,6 +296,20 @@ private struct PaneLeafView: View {
 
   var body: some View {
     TerminalContainerView(view: view, isFocusedPane: focused)
+      // Dim every pane that isn't the focused one so the active terminal reads instantly — across both
+      // splits and co-displayed workrooms (an unfocused workroom passes `surfaceActive: false`, so all
+      // its panes arrive here `focused == false`). A solo terminal is always logically focused, so it
+      // never dims. A scrim (not `.opacity`) because the libghostty Metal surface composites its own
+      // layer. The scrim is the terminal's own background colour (`.terminalDim`) so it washes the text
+      // toward the background — the BG itself barely changes in any mode. An activity flash lifts the
+      // dim so the pulse is visible on a backgrounded pane.
+      .overlay(
+        RoundedRectangle(cornerRadius: 12)
+          .fill(Color.terminalDim.opacity(dimmed ? 0.5 : 0))
+          .allowsHitTesting(false)
+          .animation(reduceMotion ? nil : .easeInOut(duration: 0.1), value: flashing)
+          .animation(reduceMotion ? nil : .easeInOut(duration: 0.1), value: focused)
+      )
       .overlay(
         RoundedRectangle(cornerRadius: 12)
           .strokeBorder(borderColor, lineWidth: 1.5)
@@ -356,6 +370,10 @@ private struct PaneLeafView: View {
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.15), value: hovering)
     }
   }
+
+  /// Dim a pane that's neither focused nor mid activity-flash. The flash exemption lets a pulse on a
+  /// backgrounded pane briefly un-dim itself (paired with the focus-tint border flash).
+  private var dimmed: Bool { !focused && !flashing }
 
   private var borderColor: Color {
     // The focused terminal gets the solid, theme-following `focused` tint — solo or split alike (and
