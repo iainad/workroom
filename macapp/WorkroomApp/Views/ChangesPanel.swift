@@ -202,8 +202,10 @@ private struct PendingPRAction: Identifiable {
 /// One changed-file row: a colored change-kind letter (M/A/D/…), the filename, then its parent
 /// directory dimmed (issue #24 feedback). Clicking opens the file in the configured app (Settings →
 /// "Open file paths in"; falls back to the file's default app), resolving the repo-relative path
-/// against the workroom directory. The directory yields first when space is tight (truncates from
-/// the head). The change kind is spelled out in the accessibility label so it isn't color-only.
+/// against the workroom directory — and opens it *inside the workroom's editor window* (the folder
+/// is passed as the project), so it doesn't land in whatever editor window happened to be frontmost.
+/// The directory yields first when space is tight (truncates from the head). The change kind is
+/// spelled out in the accessibility label so it isn't color-only.
 private struct ChangedFileRow: View {
   let file: ChangedFile
   /// The workroom directory the repo-relative `file.path` is resolved against. `nil` ⇒ not openable.
@@ -213,7 +215,9 @@ private struct ChangedFileRow: View {
   var body: some View {
     let (dir, name) = ChangesPanel.splitPath(file.path)
     Button {
-      if let directory { TerminalLinkOpener.openFilePath(file.path, cwd: directory) }
+      if let directory {
+        TerminalLinkOpener.openFilePath(file.path, cwd: directory, project: directory)
+      }
     } label: {
       HStack(spacing: 6) {
         Text(letter)

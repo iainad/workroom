@@ -54,18 +54,62 @@ enum TerminalLinkOpener {
   /// a shell — so a maliciously-named file (e.g. `a$(touch x).txt`, which filenames may legally
   /// contain) can't be re-parsed into a command. We use the `open` CLI rather than
   /// `NSWorkspace.open(_:)` because the latter returns a bare `-50` for some files.
-  private static func openFile(_ file: ResolvedFile) {
+  private static func openFile(_ file: ResolvedFile, project: String? = nil) {
     let editorBundleID = Defaults[.filePathEditor]
     let installed =
       !editorBundleID.isEmpty
       && NSWorkspace.shared.urlForApplication(withBundleIdentifier: editorBundleID) != nil
     let zedCLI = (installed && editorBundleID == EditorBundleID.zed) ? zedCLIPath() : nil
-    let invocation = launchInvocation(
-      file: file, editorBundleID: editorBundleID, editorInstalled: installed, zedCLIPath: zedCLI)
-    let task = Process()
-    task.executableURL = URL(fileURLWithPath: invocation.executable)
-    task.arguments = invocation.arguments
-    do { try task.run() } catch { NSLog("Workroom: failed to open \(file.path): \(error)") }
+    let vscodeCLI = (installed && editorBundleID == EditorBundleID.vscode) ? vscodeCLIPath() : nil
+    let invocations = launchInvocations(
+      file: file, project: project, editorBundleID: editorBundleID, editorInstalled: installed,
+      vscodeCLIPath: vscodeCLI, zedCLIPath: zedCLI)
+    for invocation in invocations {
+      let task = Process()
+      task.executableURL = URL(fileURLWithPath: invocation.executable)
+      task.arguments = invocation.arguments
+      do { try task.run() } catch { NSLog("Workroom: failed to open \(file.path): \(error)") }
+    }
+  }
+
+  /// The launch plan for opening `file`, optionally **inside** `project` (the workroom directory).
+  ///
+  /// With a `project` and a folder-capable editor CLI, we open the **workroom folder + the file in
+  /// one window** so the file lands in (or focuses) the workroom's window instead of whatever editor
+  /// window was frontmost — and the editor reuses an already-open folder window rather than
+  /// duplicating it. Support varies by editor:
+  ///   • VS Code / Zed — one CLI call opens the folder and seeks to the file's line.
+  ///   • Xcode — `xed --line` works only on a lone file, so it's two calls: open the folder *first*
+  ///     (so the file attaches to that window), then the file.
+  /// Falls back to the plain file-only `launchInvocation` when there's no project, no chosen editor,
+  /// the editor's CLI is missing, or it's the file's default app (which has no folder concept).
+  static func launchInvocations(
+    file: ResolvedFile, project: String?, editorBundleID: String?, editorInstalled: Bool,
+    vscodeCLIPath: String?, zedCLIPath: String?
+  ) -> [(executable: String, arguments: [String])] {
+    func fileOnly() -> [(executable: String, arguments: [String])] {
+      [
+        launchInvocation(
+          file: file, editorBundleID: editorBundleID, editorInstalled: editorInstalled,
+          zedCLIPath: zedCLIPath)
+      ]
+    }
+    guard let project, let id = editorBundleID, !id.isEmpty, editorInstalled else {
+      return fileOnly()
+    }
+    switch id {
+    case EditorBundleID.vscode:
+      if let cli = vscodeCLIPath { return [(cli, [project, "--goto", positionSuffixed(file)])] }
+    case EditorBundleID.zed:
+      if let cli = zedCLIPath { return [(cli, [project, positionSuffixed(file)])] }
+    case EditorBundleID.xcode:
+      let fileArgs = file.line.map { ["--line", String($0), file.path] } ?? [file.path]
+      return [("/usr/bin/xed", [project]), ("/usr/bin/xed", fileArgs)]
+    default:
+      break
+    }
+    // Chosen editor can't be driven to a folder (CLI missing / unknown) → at least open the file.
+    return fileOnly()
   }
 
   /// The command to launch for `file`: an editor-specific invocation that seeks to `file.line` when
@@ -110,12 +154,30 @@ enum TerminalLinkOpener {
     column.map { "\(path):\(line):\($0)" } ?? "\(path):\(line)"
   }
 
+  /// `path`, `path:line`, or `path:line:col` — the position-suffix form that VS Code's `--goto` and
+  /// Zed's CLI both accept. Just the path when no line was parsed.
+  static func positionSuffixed(_ file: ResolvedFile) -> String {
+    guard let line = file.line else { return file.path }
+    return file.column.map { "\(file.path):\(line):\($0)" } ?? "\(file.path):\(line)"
+  }
+
   /// Zed's bundled CLI helper (`Zed.app/Contents/MacOS/cli`) — the same binary the `zed` PATH
   /// command symlinks to. Invoked by absolute path so line-seeking works without the CLI on PATH.
   private static func zedCLIPath() -> String? {
     guard let app = NSWorkspace.shared.urlForApplication(withBundleIdentifier: EditorBundleID.zed)
     else { return nil }
     let cli = app.appendingPathComponent("Contents/MacOS/cli").path
+    return FileManager.default.isExecutableFile(atPath: cli) ? cli : nil
+  }
+
+  /// VS Code's bundled CLI (`Visual Studio Code.app/Contents/Resources/app/bin/code`) — the same
+  /// binary the `code` PATH command points at. Lets us open a folder + file (and seek) in one call;
+  /// the `vscode://` URL scheme can't target a folder. Invoked by absolute path, no PATH needed.
+  private static func vscodeCLIPath() -> String? {
+    guard
+      let app = NSWorkspace.shared.urlForApplication(withBundleIdentifier: EditorBundleID.vscode)
+    else { return nil }
+    let cli = app.appendingPathComponent("Contents/Resources/app/bin/code").path
     return FileManager.default.isExecutableFile(atPath: cli) ? cli : nil
   }
 
@@ -144,9 +206,13 @@ enum TerminalLinkOpener {
   /// Open the file at `path` (absolute or `cwd`-relative) in the configured editor / default app.
   /// The plain-click entry point — used by the Changes panel (a single click), where there's no
   /// modifier involved; the terminal's ⌘-click handler delegates here too.
-  static func openFilePath(_ path: String, cwd: String?) {
+  ///
+  /// Pass `project` (the workroom directory) to open the file *inside that folder's editor window*
+  /// rather than whatever window is frontmost — see `launchInvocations`. The Changes panel sets it;
+  /// terminal ⌘-click leaves it nil (its tracked cwd isn't necessarily the workroom root).
+  static func openFilePath(_ path: String, cwd: String?, project: String? = nil) {
     guard let resolved = resolveExistingFile(path, cwd: cwd) else { return }
-    openFile(resolved)
+    openFile(resolved, project: project)
   }
 
   /// Does `word` resolve to an existing file? Drives the ⌘-hover pointing-hand cursor affordance.
