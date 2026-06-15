@@ -572,6 +572,13 @@ struct WorkroomCommands: Commands {
     CommandGroup(replacing: .newItem) {}
 
     CommandGroup(after: .newItem) {
+      Button("New Project…") {
+        AppStore.shared.requestAddProject = true
+      }
+      .keyboardShortcut("o", modifiers: .command)
+
+      Divider()
+
       Button("New Terminal") {
         AppStore.shared.newTerminalInSelectedTarget()
       }
@@ -586,6 +593,8 @@ struct WorkroomCommands: Commands {
       .keyboardShortcut("w", modifiers: .command)
       .disabled(hasTerminal != true)
 
+      Divider()
+
       // Reveal the selected target's directory in Finder (moved off the detail toolbar). Acts on the
       // current selection like the terminal items above; reads `store.selectedTarget` directly so the
       // enabled state tracks selection live (the `@ObservedObject store` re-evaluates this body).
@@ -596,11 +605,6 @@ struct WorkroomCommands: Commands {
         }
       }
       .disabled(store.selectedTarget == nil || store.selectedTarget?.isMissing == true)
-
-      Button("Add Project…") {
-        AppStore.shared.requestAddProject = true
-      }
-      .keyboardShortcut("o", modifiers: .command)
 
       // Gate the close-terminal confirmation (default on). A set-and-forget preference, so a divider
       // sets it apart from the File actions above (like the Quit toggle); no shortcut. Binds the same
@@ -637,17 +641,17 @@ struct WorkroomCommands: Commands {
       // monitor consumes them, so no double-fire — like the Run menu). Disabled when there's nothing
       // to cycle between (≤1 tab).
       Divider()
-      Button("Previous Terminal Tab") { AppStore.shared.cycleTerminalTab(forward: false) }
-        .keyboardShortcut(.leftArrow, modifiers: [.command, .option])
-        .disabled(multipleTerminalTabs != true)
       Button("Next Terminal Tab") { AppStore.shared.cycleTerminalTab(forward: true) }
         .keyboardShortcut(.rightArrow, modifiers: [.command, .option])
         .disabled(multipleTerminalTabs != true)
-      Button("Previous Workroom Tab") { AppStore.shared.cycleWorkroomTab(forward: false) }
-        .keyboardShortcut(.leftArrow, modifiers: [.command, .option, .shift])
-        .disabled(multipleWorkroomTabs != true)
+      Button("Previous Terminal Tab") { AppStore.shared.cycleTerminalTab(forward: false) }
+        .keyboardShortcut(.leftArrow, modifiers: [.command, .option])
+        .disabled(multipleTerminalTabs != true)
       Button("Next Workroom Tab") { AppStore.shared.cycleWorkroomTab(forward: true) }
         .keyboardShortcut(.rightArrow, modifiers: [.command, .option, .shift])
+        .disabled(multipleWorkroomTabs != true)
+      Button("Previous Workroom Tab") { AppStore.shared.cycleWorkroomTab(forward: false) }
+        .keyboardShortcut(.leftArrow, modifiers: [.command, .option, .shift])
         .disabled(multipleWorkroomTabs != true)
 
       Divider()
