@@ -49,7 +49,11 @@ struct WorkroomTerminalsView: View {
             Color.clear.preference(key: ContentFrameKey.self, value: geo.frame(in: .global))
           }
         )
-        .padding(6)
+        // Tighter top inset so the terminal sits close under the tab strip; keep the 6pt side/bottom
+        // gap to the window edges.
+        .padding(.horizontal, 6)
+        .padding(.bottom, 6)
+        .padding(.top, 1)
       } else {
         ContentUnavailableView {
           Label("No terminal", systemImage: "terminal")

@@ -182,12 +182,11 @@ struct WorkroomTabBar: View {
   }
 }
 
-/// A single Workrooms View tab chip: a project-qualified label with run / unread / active styling.
-/// Workroom chips read "project / name"; root chips show the project name, then a house glyph, then
-/// the branch/ref (reusing `RootPresentation`) — the house sits between the name and the branch so it
-/// reads as "this project's root, on <branch>". The full path is the tooltip, so two same-named
-/// workrooms across projects stay distinct. Reads the store for unread + run-command state; the bar
-/// wraps it with the gestures.
+/// A single Workrooms View tab chip: a leading glyph, the project name, then run / unread / active
+/// styling. A workroom chip leads with a cube glyph and trails its own name in secondary text; a root
+/// chip leads with a house glyph (its branch is dropped from the chip; it lives in the inspector). The
+/// full path is the tooltip, so two same-named workrooms across projects stay distinct. Reads the
+/// store for unread + run-command state; the bar wraps it with the gestures.
 private struct WorkroomTabChip: View {
   let sid: SidebarID
   let target: TerminalTarget
@@ -205,15 +204,19 @@ private struct WorkroomTabChip: View {
     return false
   }
 
-  /// "project / workroom" for a workroom; the project name alone for a root (its branch rides as a
-  /// secondary label after the house glyph).
+  /// The project name — the chip's primary label for every kind of target. A workroom's own name
+  /// rides alongside as `workroomName` (secondary text); a root is marked by its house glyph.
   private var primaryLabel: String {
     switch sid {
-    case .workroom(let project, let name):
-      return "\((project as NSString).lastPathComponent) / \(name)"
-    case .root(let project), .project(let project):
+    case .workroom(let project, _), .root(let project), .project(let project):
       return (project as NSString).lastPathComponent
     }
+  }
+
+  /// A workroom's own name (nil for a root/project) — rendered as trailing secondary text.
+  private var workroomName: String? {
+    if case .workroom(_, let name) = sid { return name }
+    return nil
   }
 
   /// A root's branch/bookmark (nil for a workroom), reusing the sidebar's root presentation.
@@ -226,40 +229,44 @@ private struct WorkroomTabChip: View {
     let hasActivity = notifications.count(target: target.id) > 0
     let hasRunTab = store.runTabID(for: target.id) != nil
     let runRunning = store.isRunCommandRunning(for: target.id)
+    // Icons stay vertically centered (center-aligned outer HStack); only the two texts share a
+    // baseline, via the inner `.firstTextBaseline` group below.
     HStack(spacing: 6) {
-      // Run-command dot (issue #7), same glyph as the terminal strip + sidebar: green while running,
-      // dim once it has exited. Only shown when this target has a dedicated run terminal.
-      if hasRunTab {
-        Image(systemName: "play.circle.fill")
-          .font(.system(size: 10))
-          .foregroundStyle(runRunning ? Color.green : Color.secondary)
-          .help(runRunning ? "Run command running" : "Run command stopped")
-      }
+      // Leading glyph: a house marks a project root, a cube an isolated workroom — set before the name.
+      // Its tint carries the VCS dirty signal (orange) in place of a separate status dot.
+      Image(systemName: isRoot ? "house" : "cube")
+        .font(.system(size: 10))
+        .foregroundStyle(VCSStatusPresentation.iconTint(store.workroomStatuses[sid] ?? .unresolved))
       if target.isMissing {
         Image(systemName: "exclamationmark.triangle.fill")
           .font(.system(size: 10))
           .foregroundStyle(.orange)
           .help("Directory not found")
       }
-      Text(primaryLabel)
-        .font(.body)
-        .lineLimit(1)
-        .foregroundStyle(hasActivity ? Color.accentColor : Color.primary)
-      // House glyph for a root, between the project name and its branch (so the two read together).
-      if isRoot {
-        Image(systemName: "house")
-          .font(.system(size: 10))
-          .foregroundStyle(.secondary)
-      }
-      if let branchLabel {
-        Text(branchLabel)
-          .font(.caption)
+      // The project name, and (for a workroom) its own name — baseline-aligned so the smaller
+      // secondary name sits on the project name's text baseline, not its vertical center.
+      HStack(alignment: .firstTextBaseline, spacing: 6) {
+        Text(primaryLabel)
+          .font(.body)
           .lineLimit(1)
-          .foregroundStyle(.secondary)
+          .foregroundStyle(hasActivity ? Color.accentColor : Color.primary)
+        // The workroom's own name, secondary — replaces the old "/ name" suffix in the primary text.
+        if let workroomName {
+          Text(workroomName)
+            .font(.caption)
+            .lineLimit(1)
+            .foregroundStyle(.secondary)
+        }
       }
-      // Compact VCS status (issue #24): the dirty dot only — CI lives in the inspector, not the chip.
-      VCSStatusCluster(
-        status: store.workroomStatuses[sid] ?? .unresolved, compact: true, showCI: false)
+      // VCS dirty status is carried by the leading house/cube tint above (no separate dot here).
+      // Run-command dot (issue #7), trailing-most — only shown while the run command is actually
+      // running (green); hidden once it has a run tab but isn't running.
+      if hasRunTab, runRunning {
+        Image(systemName: "play.circle.fill")
+          .font(.system(size: 10))
+          .foregroundStyle(Color.green)
+          .help("Run command running")
+      }
     }
     .padding(.horizontal, 14)
     .padding(.vertical, 7)
@@ -310,7 +317,7 @@ private struct WorkroomTabChip: View {
   }
 
   private func accessibilityLabel(hasActivity: Bool, running: Bool) -> String {
-    var parts = [primaryLabel]
+    var parts = [workroomName.map { "\(primaryLabel), workroom \($0)" } ?? primaryLabel]
     if let branchLabel { parts.append("on \(branchLabel)") }
     let vcs = VCSStatusPresentation.accessibilityLabel(store.workroomStatuses[sid] ?? .unresolved)
     if !vcs.isEmpty { parts.append(vcs) }

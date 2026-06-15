@@ -28,29 +28,28 @@ struct ProjectSidebar: View {
   /// disclosure caret (root/workroom, only at ≥2 terminals) or the terminal glyph, and is always
   /// reserved so the labels beside it line up whether or not a caret is shown.
   private let caretWidth: CGFloat = 14
-  /// Every row sits flush to the sidebar edges — no leading/trailing inset and no per-level indent.
-  /// Hierarchy is carried by the rows' icons and buttons (the project's trailing chevron, the root's
-  /// house, the workroom's leading disclosure chevron, the terminal glyph) rather than by indentation.
-  /// One uniform inset for all rows also stops SwiftUI giving tagged (selectable) rows a different
-  /// inset than plain ones, so the leading-icon and label columns align to the pixel.
-  private let rowInsets = EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0)
+  /// Per-level leading indent so the tree reads as a hierarchy: projects sit at `rowInsets.leading`,
+  /// their root/workroom children one `levelIndent` deeper (`childRowInsets`), and a target's terminal
+  /// rows deeper again — the terminal base matches its root/workroom, then the in-row `caretWidth`
+  /// glyph column carries the final step (so the terminal glyph lines up under the root/workroom
+  /// label). Vertical insets are unchanged: 4 for the selectable rows, a tighter 2 for the smaller
+  /// terminal rows. (`6 + 12`: the base sidebar margin plus one 12pt level step.)
+  private let rowInsets = EdgeInsets(top: 4, leading: 6, bottom: 4, trailing: 0)
+  private let childRowInsets = EdgeInsets(top: 4, leading: 6 + 6, bottom: 4, trailing: 0)
+  private let terminalRowInsets = EdgeInsets(top: 3, leading: 6 + 6, bottom: 3, trailing: 0)
 
-  /// Both the root and the workrooms are selectable targets (clicking a *project* toggles
-  /// its expansion instead). The List selection is the store's selected target id; setting
-  /// it also follows the New-Workroom context project.
-  private var selection: Binding<SidebarID?> {
-    Binding(
-      get: { store.selectedTargetID },
-      set: { newValue in
-        store.selectedTargetID = newValue
-        switch newValue {
-        case .root(let path), .workroom(let path, _):
-          store.selectedProjectID = path
-        default:
-          break
-        }
-      }
-    )
+  /// Select a target (root or workroom) on tap — sets the store's selected target id and follows the
+  /// New-Workroom context project. Selection is driven by tap rather than the `List`'s own
+  /// `selection:` because the plain list style (needed to size the compact terminal rows) draws its
+  /// own full-width selection bar that would double up with the rows' custom rounded `rowHighlight`.
+  private func selectTarget(_ id: SidebarID) {
+    store.selectedTargetID = id
+    switch id {
+    case .root(let path), .workroom(let path, _):
+      store.selectedProjectID = path
+    default:
+      break
+    }
   }
 
   var body: some View {
@@ -85,31 +84,40 @@ struct ProjectSidebar: View {
   /// house, workroom caret, terminal glyph), not indentation. A flat structure also keeps List
   /// selection and keyboard navigation simple across the levels.
   private var tree: some View {
-    List(selection: selection) {
+    List {
       ForEach(store.projects) { project in
         projectRow(project)
           .listRowInsets(rowInsets)
+          .listRowSeparator(.hidden)
           .listRowBackground(rowHighlight(.project(project.path), selected: false))
         if isExpanded(project.path) {
           // The root is always the first child, before any workrooms; each selectable row is
           // followed by its terminal subtree (rendered only when expanded with ≥2 terminals).
           let rid = SidebarID.root(project: project.path)
           rootRow(project)
-            .tag(rid)
-            .listRowInsets(rowInsets)
+            .listRowInsets(childRowInsets)
+            .listRowSeparator(.hidden)
             .listRowBackground(rowHighlight(rid, selected: store.selectedTargetID == rid))
           terminalSubtree(for: project.rootTarget, parent: rid)
           ForEach(project.workrooms) { workroom in
             let wid = SidebarID.workroom(project: project.path, name: workroom.name)
             workroomRow(workroom, in: project)
-              .tag(wid)
-              .listRowInsets(rowInsets)
+              .listRowInsets(childRowInsets)
+              .listRowSeparator(.hidden)
               .listRowBackground(rowHighlight(wid, selected: store.selectedTargetID == wid))
             terminalSubtree(for: workroom.target(inProject: project.path), parent: wid)
           }
         }
       }
     }
+    // Plain style (not the NavigationSplitView sidebar default): the `.sidebar` style forces a
+    // comfortable ~28pt row-height floor and ignores small `listRowInsets` + `defaultMinListRowHeight`,
+    // so the compact terminal rows couldn't shrink. Plain sizes each row by its content + insets.
+    // Selection/hover are already hand-rolled via `listRowBackground`, so no native sidebar styling is
+    // lost; `scrollContentBackground(.hidden)` keeps the window's sidebar material showing through.
+    .listStyle(.plain)
+    .scrollContentBackground(.hidden)
+    .environment(\.defaultMinListRowHeight, 1)
     .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: store.collapsedProjects)
     .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: store.expandedTerminalTargets)
   }
@@ -124,7 +132,8 @@ struct ProjectSidebar: View {
         let selected =
           store.selectedTargetID == parent && terminals.focusedTab(for: target)?.id == tab.id
         terminalRow(tab, target: target, parent: parent)
-          .listRowInsets(rowInsets)
+          .listRowInsets(terminalRowInsets)
+          .listRowSeparator(.hidden)
           .listRowBackground(terminalHighlight(tab.id, selected: selected))
       }
     }
@@ -202,9 +211,9 @@ struct ProjectSidebar: View {
   }
 
   /// The always-present project-root row: the first child under each project. Reads like a workroom
-  /// (shared caret column, then the current branch/bookmark), with a small house glyph immediately
-  /// right of the label to mark it as the root — so roots and workrooms share one left edge.
-  /// Selectable (opens a terminal at the project directory); never deletable.
+  /// (a leading house glyph marking it as the root, then the current branch/bookmark) — so roots and
+  /// workrooms share one left edge. Selectable (opens a terminal at the project directory); never
+  /// deletable.
   @ViewBuilder
   private func rootRow(_ project: Project) -> some View {
     let id = SidebarID.root(project: project.path)
@@ -212,7 +221,7 @@ struct ProjectSidebar: View {
     let style = RootPresentation.make(store.rootRefs[project.id] ?? .unresolved)
     let status = store.workroomStatuses[id] ?? .unresolved
     HStack(spacing: 6) {
-      terminalDisclosure(for: target)
+      leadingSlot(for: target, id: id, root: true)
       Text(style.label)
         .font(.callout)
         .lineLimit(1)
@@ -223,18 +232,15 @@ struct ProjectSidebar: View {
         // out of that vibrancy dimming, which left roots bright on blur (issue #43). Only the
         // de-emphasized detached/none states take an explicit `.secondary`.
         .modifier(RootLabelTint(dim: style.dim))
-      // House marks this row as the project root, sitting right after the label (issue #30).
-      Image(systemName: "house")
-        .font(.system(size: 10))
-        .foregroundStyle(.secondary)
       if style.ahead {
         Image(systemName: "arrow.up")
           .font(.system(size: 9, weight: .semibold))
           .foregroundStyle(.secondary)
       }
-      // VCS status for the project root (issue #24), same placement as the workroom rows.
-      // No CI in the projects tree — CI lives in the inspector's Changes/Pull Request sections.
-      VCSStatusCluster(status: status, showCI: false)
+      // VCS status for the project root (issue #24), same placement as the workroom rows. The dirty
+      // dot is dropped (`showDot: false`) — the leading house glyph's tint carries that signal — so
+      // only ahead/behind remains here. No CI in the projects tree (it's in the inspector).
+      VCSStatusCluster(status: status, showCI: false, showDot: false)
       Spacer(minLength: 0)
       UnreadDot(count: notifications.count(target: target.id))
       if target.isMissing {
@@ -254,8 +260,10 @@ struct ProjectSidebar: View {
         RowRunButton(target: target)
       }
     }.contentShape(Rectangle())
+      .onTapGesture { selectTarget(id) }
       .help(style.tooltip)
       .accessibilityElement(children: .ignore)
+      .accessibilityAddTraits(.isButton)
       .accessibilityLabel(
         [
           target.isMissing ? "\(style.accessibility), folder not found" : style.accessibility,
@@ -274,17 +282,17 @@ struct ProjectSidebar: View {
     let targetID = target.id
     let unread = notifications.count(target: targetID)
     HStack(spacing: 6) {
-      // Shared caret column, then the name — the same left edge as the root row above (which adds
-      // its house glyph after the label), so roots and workrooms read as aligned siblings.
-      terminalDisclosure(for: target)
-      // lineLimit so a long name yields to the VCS badges (the dot must always be visible) —
-      // truncation priority: dot never, name first (issue #24).
+      // Leading identity glyph (a cube for a workroom), swapped for the expand/collapse chevron on
+      // hover when the row has ≥2 terminals — the same left edge as the root row, so roots and
+      // workrooms read as aligned siblings.
+      leadingSlot(for: target, id: id, root: false)
+      // lineLimit so a long name yields to the VCS badges — truncation priority: name first (#24).
       Text(workroom.name).font(.callout).lineLimit(1).truncationMode(.tail)
-      // VCS status sub-cluster: after the name, before the Spacer — distinct from the trailing
-      // actions cluster below (unread/warnings/run), so dirty dots scan as a column (issue #24).
+      // VCS status sub-cluster: after the name, before the Spacer. The dirty dot is dropped
+      // (`showDot: false`) — the leading cube glyph's tint carries that signal — leaving ahead/behind.
       VCSStatusCluster(
         status: store.workroomStatuses[id] ?? .unresolved,
-        showCI: false)
+        showCI: false, showDot: false)
       Spacer()
       UnreadDot(count: unread)
       ForEach(workroom.warnings, id: \.kind) { warning in
@@ -313,7 +321,9 @@ struct ProjectSidebar: View {
           .accessibilityIdentifier("sidebar.workroom.\(workroom.name).run")
       }
     }.contentShape(Rectangle())
+      .onTapGesture { selectTarget(id) }
       .accessibilityIdentifier("sidebar.workroom.\(workroom.name)")
+      .accessibilityAddTraits(.isButton)
       .onHover { inside in
         if inside { hovered = id } else if hovered == id { hovered = nil }
       }
@@ -326,20 +336,27 @@ struct ProjectSidebar: View {
       }
   }
 
-  /// The shared leading caret for a root/workroom row (issue #30): a chevron that expands/collapses
-  /// the target's terminal subtree, shown only once it has ≥2 terminals — below that the column is an
-  /// empty spacer so sibling rows stay aligned. Its own `Button` toggles expansion without selecting
-  /// the row (a button inside a selectable `List` row swallows the tap).
+  /// The leading icon column for a root/workroom row (issue #30): the identity glyph — a house for the
+  /// project root, a cube for a workroom. When the row owns ≥2 terminals it's expandable, and
+  /// hovering the row swaps the glyph for the expand/collapse chevron — so the chevron shows only when
+  /// it's both usable and the row is the pointer's focus. The chevron's own `Button` toggles expansion
+  /// without selecting the row (a button inside a selectable `List` row swallows the tap). Both occupy
+  /// `caretWidth` (centered), so sibling rows share one left edge and the glyph/chevron sit on the same
+  /// vertical axis as the terminal-row glyph below.
   @ViewBuilder
-  private func terminalDisclosure(for target: TerminalTarget) -> some View {
-    if terminals.tabs(for: target).count >= 2 {
+  private func leadingSlot(for target: TerminalTarget, id: SidebarID, root: Bool) -> some View {
+    if terminals.tabs(for: target).count >= 2, hovered == id {
       TerminalDisclosureButton(
         expanded: store.isTerminalsExpanded(target.id), width: caretWidth
       ) {
         store.toggleTerminals(for: target.id)
       }
     } else {
-      Color.clear.frame(width: caretWidth, height: 1)
+      // The glyph's tint carries the VCS dirty signal (orange) in place of a separate status dot.
+      Image(systemName: root ? "house" : "cube")
+        .font(.system(size: 10))
+        .foregroundStyle(VCSStatusPresentation.iconTint(store.workroomStatuses[id] ?? .unresolved))
+        .frame(width: caretWidth, height: 18, alignment: .center)
     }
   }
 
@@ -364,7 +381,7 @@ struct ProjectSidebar: View {
         .foregroundStyle(.secondary)
         .frame(width: caretWidth, alignment: .center)
       Text(tab.title)
-        .font(.callout)
+        .font(.footnote)
         .foregroundStyle(.secondary)
         .lineLimit(1)
         .truncationMode(.middle)
@@ -383,26 +400,29 @@ struct ProjectSidebar: View {
           store.requestCloseTerminalTab(tab.id, for: target)
         }
       }
-    }.contentShape(Rectangle())
-      .onTapGesture { store.revealTerminal(tab.id, at: parent) }
-      .accessibilityAddTraits(.isButton)
-      .accessibilityLabel(tab.title)
-      .accessibilityAction { store.revealTerminal(tab.id, at: parent) }
-      .accessibilityIdentifier("sidebar.terminal.\(tab.title)")
-      .onHover { inside in
-        if inside {
-          hoveredTerminal = tab.id
-        } else if hoveredTerminal == tab.id {
-          hoveredTerminal = nil
-        }
+    }
+    // A small indent so the expanded terminal rows read as children of their root/workroom row.
+    .padding(.leading, 8)
+    .contentShape(Rectangle())
+    .onTapGesture { store.revealTerminal(tab.id, at: parent) }
+    .accessibilityAddTraits(.isButton)
+    .accessibilityLabel(tab.title)
+    .accessibilityAction { store.revealTerminal(tab.id, at: parent) }
+    .accessibilityIdentifier("sidebar.terminal.\(tab.title)")
+    .onHover { inside in
+      if inside {
+        hoveredTerminal = tab.id
+      } else if hoveredTerminal == tab.id {
+        hoveredTerminal = nil
       }
-      .contextMenu {
-        Button(role: .destructive) {
-          store.requestCloseTerminalTab(tab.id, for: target)
-        } label: {
-          Label("Close \(tab.title)", systemImage: "xmark")
-        }
+    }
+    .contextMenu {
+      Button(role: .destructive) {
+        store.requestCloseTerminalTab(tab.id, for: target)
+      } label: {
+        Label("Close \(tab.title)", systemImage: "xmark")
       }
+    }
   }
 
   /// Total notifications for a project: its root plus every workroom. Lets the (possibly

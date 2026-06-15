@@ -17,6 +17,15 @@ extension VCSStatusPresentation.Semantic {
   }
 }
 
+extension VCSStatusPresentation {
+  /// Tint for a leading identity glyph (the sidebar/tab house or workroom cube) that now carries the
+  /// dirty/conflict signal in place of a separate status dot: orange when dirty, red on conflict,
+  /// otherwise the default `.secondary` (clean/unknown read as no change).
+  static func iconTint(_ s: WorkroomStatus) -> Color {
+    dot(s)?.semantic.color ?? .secondary
+  }
+}
+
 /// The shared, compact VCS status cluster (issue #24): a dirty/conflict/unknown dot, optional
 /// ahead/behind counts, and an optional CI glyph. Used identically by the sidebar rows and the
 /// workroom tab chip (the chip uses `compact` to drop the ahead/behind text). Clean renders
@@ -30,16 +39,20 @@ struct VCSStatusCluster: View {
   /// Whether to show the CI glyph. CI comes from `gh`; callers pass `false` when the GitHub CLI
   /// isn't available so a stale CI badge can't linger (issue #24).
   var showCI: Bool = true
+  /// Whether to show the dirty/conflict/unknown status dot. The sidebar rows + workroom tabs pass
+  /// `false` — there the dirty signal is carried by the leading house/cube glyph's tint instead
+  /// (see `VCSStatusPresentation.iconTint`), so a separate dot would double up.
+  var showDot: Bool = true
 
   var body: some View {
-    let dot = VCSStatusPresentation.dot(status)
+    let dot = showDot ? VCSStatusPresentation.dot(status) : nil
     let ab = compact ? nil : VCSStatusPresentation.aheadBehind(status)
     let ci = showCI ? VCSStatusPresentation.ci(status) : nil
     if dot != nil || ab != nil || ci != nil {
       HStack(spacing: 4) {
         if let dot {
           Image(systemName: dot.symbol)
-            .font(.system(size: 9))
+            .font(.system(size: 7))
             .foregroundStyle(dot.semantic.color)
         }
         if let ab {
@@ -76,7 +89,7 @@ struct VCSAggregateDot: View {
   var body: some View {
     if let dot = VCSStatusPresentation.dot(status) {
       Image(systemName: dot.symbol)
-        .font(.system(size: 9))
+        .font(.system(size: 7))
         .foregroundStyle(dot.semantic.color)
         .accessibilityLabel("project \(dot.accessibility)")
         .help("Project: \(dot.accessibility)")
