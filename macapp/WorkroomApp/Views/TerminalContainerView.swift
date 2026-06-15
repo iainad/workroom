@@ -50,6 +50,10 @@ struct TerminalContainerView: NSViewRepresentable {
   // container, and a stray `setVisible(false)` landing after the re-home left the pane blank (issue #3).
 
   private func mount(in container: NSView) {
+    // Set before any re-home: `addSubview` below fires `viewDidMoveToWindow`, where the focused surface
+    // claims first responder off this flag (the switch-focus-loss fix). Must reflect *this* render's
+    // focus, not the previous one.
+    view.wantsFocus = isFocusedPane
     if view.superview === container {
       view.frame = container.bounds
       view.setVisible(true)
@@ -72,7 +76,9 @@ struct TerminalContainerView: NSViewRepresentable {
 
   /// Make the focused pane first responder, but only when it isn't already (so re-rendering a focused
   /// solo pane, or a divider drag, doesn't churn the responder chain). Never steals focus for a
-  /// non-focused pane.
+  /// non-focused pane. This covers the same-window-reuse path; the freshly-mounted-container path (where
+  /// `container.window` is still nil when this async runs) is covered by the surface's own
+  /// `viewDidMoveToWindow`, driven by the `wantsFocus` flag `mount` sets.
   private func applyFocus(in container: NSView) {
     guard isFocusedPane else { return }
     DispatchQueue.main.async {

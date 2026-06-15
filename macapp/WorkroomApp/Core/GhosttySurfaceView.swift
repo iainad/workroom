@@ -295,6 +295,14 @@ final class GhosttySurfaceView: NSView {
     ) { [weak self] _ in self?.updateWindowVisibility() }
     updateWindowVisibility()
     updateMetalLayerSize()
+    // Claim first responder the moment the focused pane's surface lands in a window. On a tab/target
+    // switch the active tab gets a freshly-mounted container that often isn't in the window yet when the
+    // host's `applyFocus` runs, so that one-shot async `makeFirstResponder` silently bailed and the
+    // terminal never took focus (you had to switch away and back). This runs exactly when the window
+    // becomes available, so it can't race. Gated by `wantsFocus` so non-focused split panes don't grab.
+    if wantsFocus, window.firstResponder !== self {
+      window.makeFirstResponder(self)
+    }
   }
 
   override func setFrameSize(_ newSize: NSSize) {
@@ -338,6 +346,13 @@ final class GhosttySurfaceView: NSView {
   }
 
   // MARK: Focus
+
+  /// Set by the host (`TerminalContainerView`) from `isFocusedPane`: this is the pane that should hold
+  /// keyboard focus. When true, the surface claims first responder the instant it enters a window (see
+  /// `viewDidMoveToWindow`) — the deterministic counterpart to the host's `applyFocus`, which only fires
+  /// `makeFirstResponder` when the container is *already* in a window and so raced (and silently lost) on
+  /// a tab/target switch. Non-focused split panes keep it false so they never steal focus.
+  var wantsFocus = false
 
   override var acceptsFirstResponder: Bool { true }
 
