@@ -162,6 +162,15 @@ final class TerminalSessions: ObservableObject {
     tabsByTarget[target.id]?[id]
   }
 
+  /// The surface view for a tab, located by target + tab id without a `TerminalTarget` value. Lets
+  /// the run-command graceful-stop paths (issue #7) reach a live process by id alone — e.g. on quit,
+  /// where `AppStore` iterates `runStates` keyed by `TerminalTarget.ID`.
+  func view(
+    forTab tabID: TerminalTab.ID, inTarget targetID: TerminalTarget.ID
+  ) -> GhosttySurfaceView? {
+    tabsByTarget[targetID]?[tabID]?.view
+  }
+
   /// The focused tab (selection), falling back to the first tab in strip order.
   func focusedTab(for target: TerminalTarget) -> TerminalTab? {
     let dict = tabsByTarget[target.id] ?? [:]

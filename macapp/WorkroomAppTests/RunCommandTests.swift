@@ -88,6 +88,11 @@ final class RunCommandTests: XCTestCase {
     let cmd = try! XCTUnwrap(captured.last as? String)
     XCTAssertTrue(cmd.contains("'echo hi'"), "command not single-quoted: \(cmd)")
     XCTAssertTrue(cmd.contains("-lic"), "not an interactive login shell: \(cmd)")
+    // Captures the run command's pid so Stop/Restart can resolve its process group (getpgid) and
+    // SIGINT it like a typed Ctrl-C (issue #7): the wrapper writes $$ to a per-run file, then exec's
+    // a child shell to run the command (so compound commands work + everything stays in the group).
+    XCTAssertTrue(cmd.contains("echo $$ >"), "wrapper doesn't capture the pid: \(cmd)")
+    XCTAssertTrue(cmd.contains("workroom-run-"), "no per-run pid file path: \(cmd)")
   }
 
   func testStartIsNoOpWithoutCommand() {
@@ -319,9 +324,10 @@ final class RunCommandTests: XCTestCase {
     XCTAssertEqual(store.runTabID(for: t.id), freshTab, "must not respawn a new tab")
   }
 
-  /// Stop is graceful first, hard kill second (OV-D): the 1st press keeps the pane (Ctrl-C in flight),
-  /// the 2nd closes the tab for a process that ignores SIGINT.
-  func testStopEscalatesToHardKillOnSecondPress() {
+  /// Stop is graceful (issue #7, Option B): 1st press Ctrl-C keeps the pane (shutdown in flight); 2nd
+  /// press closes the run tab — waiting for a live process to exit first (see the live-wait tests
+  /// below). The test surface has no real PTY (`hasLiveProcess` false), so here the close is immediate.
+  func testStopEscalatesToCloseOnSecondPress() {
     let store = makeStore([project("/a", workrooms: ["main"])])
     store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
     let t = target(store, "/a", "main")
@@ -368,5 +374,110 @@ final class RunCommandTests: XCTestCase {
     XCTAssertFalse(store.canRunCommand(for: missing, inProject: "/a"), "missing → no run controls")
     XCTAssertFalse(
       store.canRunCommand(for: present, inProject: "/b"), "no command → no run controls")
+  }
+
+  // MARK: Graceful teardown (issue #7, Option B) — a live run command (e.g. Puma) gets a Ctrl-C and
+  // a wait for it to actually exit before its surface is freed, so it isn't orphaned by the bare PTY
+  // hangup (SIGHUP, which Puma ignores) → "A server is already running" on the next start. Tests run
+  // without a real PTY, so `liveProcessOverrideForTesting` stands in for a live child process.
+
+  /// A small async settle so a scheduled `pollUntilExited` tick (asyncAfter 0.1s) runs before asserting.
+  private func settle(_ seconds: TimeInterval = 0.25) {
+    let done = expectation(description: "settle")
+    DispatchQueue.main.asyncAfter(deadline: .now() + seconds) { done.fulfill() }
+    wait(for: [done], timeout: seconds + 1)
+  }
+
+  func testSecondStopWaitsForLiveProcessThenCloses() {
+    let store = makeStore([project("/a", workrooms: ["main"])])
+    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    let t = target(store, "/a", "main")
+    store.startRunCommand(for: t)
+    let tab = try! XCTUnwrap(store.runTabID(for: t.id))
+    let view = try! XCTUnwrap(runView(store, t))
+    view.liveProcessOverrideForTesting = true  // a dev server still running
+
+    store.stopRunCommand(for: t)  // 1st press → Ctrl-C
+    store.stopRunCommand(for: t)  // 2nd press → close, but must WAIT (don't free a live surface)
+    XCTAssertEqual(
+      store.runTabID(for: t.id), tab, "2nd Stop must not close while the process is alive")
+
+    view.liveProcessOverrideForTesting = false  // process exits
+    settle()
+    XCTAssertNil(store.runTabID(for: t.id), "tab closes once the process has exited")
+    XCTAssertFalse(store.isRunCommandRunning(for: t.id))
+  }
+
+  func testRequestCloseWaitsForLiveRunCommand() {
+    let previous = Defaults[.confirmOnCloseTerminal]
+    Defaults[.confirmOnCloseTerminal] = false  // skip the modal (can't run in a unit test)
+    defer { Defaults[.confirmOnCloseTerminal] = previous }
+
+    let store = makeStore([project("/a", workrooms: ["main"])])
+    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    let t = target(store, "/a", "main")
+    store.startRunCommand(for: t)
+    let tab = try! XCTUnwrap(store.runTabID(for: t.id))
+    let view = try! XCTUnwrap(runView(store, t))
+    view.liveProcessOverrideForTesting = true
+
+    store.requestCloseTerminalTab(tab, for: t)
+    XCTAssertEqual(store.runTabID(for: t.id), tab, "closing waits for the live run process to exit")
+
+    view.liveProcessOverrideForTesting = false
+    settle()
+    XCTAssertNil(store.runTabID(for: t.id), "tab closes once the process has exited")
+  }
+
+  func testGracefullyStopAllWaitsForEveryLiveCommandThenCompletes() {
+    let store = makeStore([project("/a", workrooms: ["main", "two"])])
+    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    let t1 = target(store, "/a", "main")
+    let t2 = target(store, "/a", "two")
+    store.startRunCommand(for: t1)
+    store.startRunCommand(for: t2)
+    let v1 = try! XCTUnwrap(runView(store, t1))
+    let v2 = try! XCTUnwrap(runView(store, t2))
+    v1.liveProcessOverrideForTesting = true
+    v2.liveProcessOverrideForTesting = true
+    XCTAssertTrue(store.hasLiveRunCommand)
+
+    var completed = false
+    store.gracefullyStopAllRunCommands(timeout: 2) { completed = true }
+    XCTAssertFalse(completed, "waits while processes are alive")
+
+    v1.liveProcessOverrideForTesting = false  // only one exited
+    settle(0.2)
+    XCTAssertFalse(completed, "still waiting on the second run command")
+
+    v2.liveProcessOverrideForTesting = false  // both exited
+    settle(0.2)
+    XCTAssertTrue(completed, "completes once every run command has exited")
+  }
+
+  func testGracefullyStopAllCompletesImmediatelyWhenNothingLive() {
+    let store = makeStore([project("/a", workrooms: ["main"])])
+    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    store.startRunCommand(for: target(store, "/a", "main"))  // no override → no live PTY
+    XCTAssertFalse(store.hasLiveRunCommand)
+
+    var completed = false
+    store.gracefullyStopAllRunCommands(timeout: 2) { completed = true }
+    XCTAssertTrue(completed, "no live process → completes synchronously")
+  }
+
+  func testGracefullyStopAllFallsBackAfterTimeout() {
+    let store = makeStore([project("/a", workrooms: ["main"])])
+    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    let t = target(store, "/a", "main")
+    store.startRunCommand(for: t)
+    let v = try! XCTUnwrap(runView(store, t))
+    v.liveProcessOverrideForTesting = true  // a wedged server that never exits
+
+    var completed = false
+    store.gracefullyStopAllRunCommands(timeout: 0.2) { completed = true }
+    XCTAssertFalse(completed)
+    settle(0.5)
+    XCTAssertTrue(completed, "a wedged process still proceeds after the timeout (SIGHUP fallback)")
   }
 }

@@ -52,9 +52,9 @@ APP_SIGN_FLAGS ?=
 app-run: app-build ## Build (Debug) and launch the dev app, replacing any running dev instance
 	cd macapp || exit 1; \
 	pkill -x "$(APP_NAME)" 2>/dev/null || true; \
-	for _ in 1 2 3 4 5 6 7 8 9 10; do \
-	  pgrep -x "$(APP_NAME)" >/dev/null 2>&1 || break; \
-	  sleep 0.2; \
+	i=0; \
+	while pgrep -x "$(APP_NAME)" >/dev/null 2>&1 && [ $$i -lt 40 ]; do \
+	  sleep 0.2; i=$$((i + 1)); \
 	done; \
 	echo "Launching $(APP_BUNDLE)"; \
 	open "$(APP_BUNDLE)"

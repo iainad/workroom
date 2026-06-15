@@ -191,6 +191,7 @@ final class AppStore: ObservableObject {
       // later unexpected respawn or first-press hard kill (review #1).
       if let runTab = self.runStates[targetID]?.tab, ids.contains(runTab) {
         self.runStates[targetID] = nil
+        self.clearRunPidFile(for: targetID)  // forget the captured pid (issue #7)
       }
     }
     // Mirror the aggregate unread count onto the Dock icon badge (issue #32). Owned here, not in a
@@ -415,14 +416,126 @@ final class AppStore: ObservableObject {
   /// (zsh/bash/sh/dash/ksh) get `-lic` with POSIX single-quote escaping (shell path quoted too —
   /// Codex #8); a non-POSIX `$SHELL` (fish/nu/csh) falls back to a login `/bin/sh -lc`, whose
   /// interactive rc won't load — a documented limitation (issue #7, fold #7).
-  private func runCommandLine(_ raw: String) -> String {
+  private func runCommandLine(_ raw: String, pidPath: String) -> String {
     let shell = ShellEnvironment.loginShell()
-    let quotedCommand = CommandLineInstaller.shellQuoted(raw)
     let name = (shell as NSString).lastPathComponent
-    if ["zsh", "bash", "sh", "dash", "ksh"].contains(name) {
-      return "\(CommandLineInstaller.shellQuoted(shell)) -lic \(quotedCommand)"
+    let isPOSIX = ["zsh", "bash", "sh", "dash", "ksh"].contains(name)
+    let runner = isPOSIX ? shell : "/bin/sh"
+    // Capture the run command's pid so the app can resolve its process group (`getpgid`, in Swift)
+    // and SIGINT the whole group — exactly what a typed Ctrl-C does (SIGINT to the PTY's foreground
+    // group), the only thing that reliably stops these servers (the synthetic terminal Ctrl-C never
+    // reached the PTY from a toolbar/sidebar action; issue #7). The GROUP matters: bin/dev-style
+    // launchers fork through bundle/dotenv/rails to a leaf server that can end up a different pid AND
+    // outlive the launcher — but it stays in this group, which (captured at launch) the app reaps on
+    // child-exit. `exec "$3" -c "$2"` runs the command ($2) via a child shell so compound commands
+    // (`cd web && npm run dev`, `FOO=bar rails s`, pipes) work. ($1=pid file, $3=runner shell.)
+    let script = "echo $$ > \"$1\"; exec \"$3\" -c \"$2\""
+    let quotedScript = CommandLineInstaller.shellQuoted(script)
+    let quotedPid = CommandLineInstaller.shellQuoted(pidPath)
+    let quotedCommand = CommandLineInstaller.shellQuoted(raw)
+    let quotedRunner = CommandLineInstaller.shellQuoted(runner)
+    let outer = isPOSIX ? "\(CommandLineInstaller.shellQuoted(shell)) -lic" : "/bin/sh -lc"
+    return "\(outer) \(quotedScript) workroom-run \(quotedPid) \(quotedCommand) \(quotedRunner)"
+  }
+
+  /// Per-target temp file holding the run command's pid (written by the run wrapper, read to resolve
+  /// + signal its process group). Generated fresh per start/respawn; cleared when the run exits or
+  /// its tab is removed so a reused pid can never be signalled.
+  private var runPidFiles: [TerminalTarget.ID: String] = [:]
+
+  /// A fresh per-run pid-file path. Does NOT store it — the caller assigns `runPidFiles[target]`
+  /// AFTER the tab is (re)created, because `respawnRunTab` closes the old tab first and that fires
+  /// `onTabsRemoved` → `clearRunPidFile`, which would otherwise wipe a path stored too early (the
+  /// re-run-can't-be-stopped bug, issue #7).
+  private func makeRunPidPath() -> String {
+    (NSTemporaryDirectory() as NSString)
+      .appendingPathComponent("workroom-run-\(UUID().uuidString).pid")
+  }
+
+  /// The pid the run wrapper captured for a target (its `echo $$`).
+  private func runPid(for targetID: TerminalTarget.ID) -> pid_t? {
+    guard let path = runPidFiles[targetID],
+      let raw = try? String(contentsOfFile: path, encoding: .utf8),
+      let pid = pid_t(raw.trimmingCharacters(in: .whitespacesAndNewlines)), pid > 1
+    else { return nil }
+    return pid
+  }
+
+  /// The run command's SESSION id, captured at launch via `getsid`. A process group isn't enough:
+  /// bin/dev-style launchers fork the leaf server into a *different* process group than the launcher,
+  /// so a captured group can miss it (issue #7). The SESSION is stable across those forks — every
+  /// process the run command spawns stays in the one session `login` created for it (unless it
+  /// daemonizes via setsid, which dev servers don't — a typed Ctrl-C stops them, proving it). The
+  /// session id stays valid after its leader exits, so it reaps a server that outlived the launcher.
+  private var runSessions: [TerminalTarget.ID: pid_t] = [:]
+
+  /// Poll the just-spawned run wrapper's pid file and record its session id while it's still alive, so
+  /// a later Stop / child-exit can SIGINT the whole session (issue #7). The launcher lives through the
+  /// server's boot, so a brief poll always catches it.
+  private func captureRunSession(
+    for targetID: TerminalTarget.ID, pidPath: String, attempt: Int = 0
+  ) {
+    if let raw = try? String(contentsOfFile: pidPath, encoding: .utf8),
+      let pid = pid_t(raw.trimmingCharacters(in: .whitespacesAndNewlines)), pid > 1
+    {
+      let sid = getsid(pid)
+      if sid > 1 { runSessions[targetID] = sid }
+      return
     }
-    return "/bin/sh -lc \(quotedCommand)"
+    guard attempt < 30 else { return }
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+      self?.captureRunSession(for: targetID, pidPath: pidPath, attempt: attempt + 1)
+    }
+  }
+
+  /// Live pids belonging to run session `sid`. macOS `pkill` has no `-s` (session) flag, so we
+  /// enumerate every pid (`proc_listallpids`) and keep those whose `getsid` matches — the generic way
+  /// to find everything a run command spawned, whatever process group its launcher forked the leaf
+  /// server into (issue #7). Returns empty for the app's own session, so a reap can never hit the app
+  /// itself or another terminal.
+  private func runSessionMembers(_ sid: pid_t) -> [pid_t] {
+    guard sid > 1, sid != getsid(0) else { return [] }  // never our own (the app's) session
+    let n = proc_listallpids(nil, 0)
+    guard n > 0 else { return [] }
+    var pids = [pid_t](repeating: 0, count: Int(n) + 64)
+    let bytes = proc_listallpids(&pids, Int32(pids.count) * Int32(MemoryLayout<pid_t>.size))
+    guard bytes > 0 else { return [] }
+    var members: [pid_t] = []
+    for i in 0..<min(Int(bytes) / MemoryLayout<pid_t>.size, pids.count) where pids[i] > 1 {
+      if getsid(pids[i]) == sid { members.append(pids[i]) }
+    }
+    return members
+  }
+
+  /// Send `sig` to every process in run session `sid` — a session-scoped signal: SIGINT is a Ctrl-C
+  /// (graceful), SIGKILL the last-resort reap when graceful didn't take in time. Guarded (via
+  /// `runSessionMembers`) to a run command's own isolated `login` session.
+  private func signalRunSession(_ sid: pid_t, _ sig: Int32) {
+    for pid in runSessionMembers(sid) { _ = kill(pid, sig) }
+  }
+
+  /// SIGINT every process in session `sid` — a session-scoped Ctrl-C (issue #7).
+  private func reapRunSession(_ sid: pid_t) { signalRunSession(sid, SIGINT) }
+
+  /// SIGINT the target's run command — the reliable replacement for the synthetic terminal Ctrl-C
+  /// (issue #7), and exactly what a typed Ctrl-C does. Signals the whole SESSION so it catches a leaf
+  /// server forked into another process group; used by Stop/Restart and, on child-exit, to reap a
+  /// server that outlived the launcher. Refreshes the session from the live pid when possible.
+  private func interruptRun(for targetID: TerminalTarget.ID) {
+    let pid = runPid(for: targetID)
+    if let pid, getsid(pid) > 1 { runSessions[targetID] = getsid(pid) }  // refresh while alive
+    // Session-scoped Ctrl-C — stable across bin/dev's forks — plus the captured pid directly (fast path).
+    reapRunSession(runSessions[targetID] ?? -1)
+    if let pid { _ = kill(pid, SIGINT) }
+  }
+
+  /// Forget (and delete) a target's captured pid file + group once its run has exited/closed, so a
+  /// later reuse of that pid/group can't be signalled.
+  private func clearRunPidFile(for targetID: TerminalTarget.ID) {
+    runSessions[targetID] = nil
+    if let path = runPidFiles.removeValue(forKey: targetID) {
+      try? FileManager.default.removeItem(atPath: path)
+    }
   }
 
   /// Start the project's run command in `target`'s directory, in a dedicated run terminal. No-op
@@ -436,9 +549,13 @@ final class AppStore: ObservableObject {
       terminals.focus(existing, for: target)
       return
     }
-    let line = runCommandLine(config.command.trimmingCharacters(in: .whitespacesAndNewlines))
+    let pidPath = makeRunPidPath()
+    let line = runCommandLine(
+      config.command.trimmingCharacters(in: .whitespacesAndNewlines), pidPath: pidPath)
     let tab = terminals.addRunTab(for: target, command: line, cwd: target.path)
     runStates[target.id] = .running(tab: tab.id, interrupted: false)
+    runPidFiles[target.id] = pidPath  // after the tab exists, so cleanup can't wipe it
+    captureRunSession(for: target.id, pidPath: pidPath)  // record the session for reliable stop
     // Child-exit flips run-state to stopped; the pane stays open (wait_after_command). The captured
     // `target` value is stable for the workroom's lifetime (a delete reaps everything anyway).
     tab.view.onChildExited = { [weak self] _ in self?.markRunExited(for: target) }
@@ -458,10 +575,14 @@ final class AppStore: ObservableObject {
       return
     }
     let config = runConfig(forProject: project.path)
-    let line = runCommandLine(config.command.trimmingCharacters(in: .whitespacesAndNewlines))
+    let pidPath = makeRunPidPath()
+    let line = runCommandLine(
+      config.command.trimmingCharacters(in: .whitespacesAndNewlines), pidPath: pidPath)
     let tab = terminals.respawnRunTab(
       replacing: oldTab, for: target, command: line, cwd: target.path)
     runStates[target.id] = .running(tab: tab.id, interrupted: false)
+    runPidFiles[target.id] = pidPath  // after respawnRunTab's closeTab cleanup, so it survives
+    captureRunSession(for: target.id, pidPath: pidPath)  // record the session for reliable stop
     tab.view.onChildExited = { [weak self] _ in self?.markRunExited(for: target) }
   }
 
@@ -543,9 +664,15 @@ final class AppStore: ObservableObject {
     switch runStates[target.id] {
     case .running(let tab, let interrupted):
       if interrupted {
-        terminals.closeTab(tab, for: target)  // 2nd press → hard kill; onTabsRemoved clears state
-      } else if let view = terminals.tab(tab, for: target)?.view {
-        view.sendInterrupt()  // 1st press → graceful Ctrl-C
+        // 2nd press → close the run tab, but wait for the process to actually exit first (the SIGINT
+        // from the 1st press is in flight). A bare close frees the surface mid-shutdown — a PTY hangup
+        // (SIGHUP) the dev server ignores — orphaning it on its port + pidfile ("A server is already
+        // running" next start). onTabsRemoved clears state on close.
+        closingRunTab(tab, for: target.id) { [weak self] in
+          self?.terminals.closeTab(tab, for: target)
+        }
+      } else {
+        interruptRun(for: target.id)  // 1st press → SIGINT the run process directly (issue #7)
         runStates[target.id] = .running(tab: tab, interrupted: true)
       }
     case .restarting(let tab):
@@ -564,7 +691,7 @@ final class AppStore: ObservableObject {
   func restartRunCommand(for target: TerminalTarget) {
     switch runStates[target.id] {
     case .running(let tab, _):
-      terminals.tab(tab, for: target)?.view.sendInterrupt()
+      interruptRun(for: target.id)  // SIGINT the run process directly (issue #7)
       runStates[target.id] = .restarting(tab: tab)  // await child-exit → close + respawn
     case .restarting:
       break  // already restarting → don't double-send Ctrl-C
@@ -585,15 +712,148 @@ final class AppStore: ObservableObject {
   private func markRunExited(for target: TerminalTarget) {
     switch runStates[target.id] {
     case .running(let tab, _):
+      // The PTY child exited — but a server may have forked free of it and still be alive (bin/dev;
+      // issue #7). SIGINT the whole session, then wait it out and SIGKILL any straggler, so a forked
+      // server can't linger and trip "A server is already running" on the next start.
+      let sid = runSessions[target.id] ?? -1
+      interruptRun(for: target.id)
+      clearRunPidFile(for: target.id)
       runStates[target.id] = .stopped(tab: tab)
+      waitForSessionsExit(sid > 1 ? [sid] : [], deadline: Date().addingTimeInterval(6)) {}
     case .restarting:
+      // The launcher exited, but the server it forked may still be shutting down (Puma drains its
+      // workers, then frees its port + pidfile). Respawning now would boot the new instance into the
+      // old one's still-held port/pidfile ("A server is already running"; the intermittent issue #7
+      // restart bug). So wait for the whole session to actually exit — SIGKILL on timeout — before
+      // respawning. Generic: works for any run command, not just ones that honour SIGINT promptly.
+      let sid = runSessions[target.id] ?? -1
+      interruptRun(for: target.id)
+      // Old launcher pid no longer needed; the respawn captures a fresh one.
+      clearRunPidFile(for: target.id)
+      // Defer off libghostty's child-exit callback stack first (a synchronous respawn frees the old
+      // surface re-entrantly — a use-after-free crash), then do the session wait. Re-read the state at
+      // each hop so a tab the user closed in between isn't double-closed (review #1).
       DispatchQueue.main.async { [weak self] in
-        guard let self, case .restarting(let tab) = self.runStates[target.id] else { return }
-        self.respawnRunCommand(replacing: tab, for: target)  // new tab keeps the split slot (#40)
+        guard let self, case .restarting = self.runStates[target.id] else { return }
+        self.waitForSessionsExit(sid > 1 ? [sid] : [], deadline: Date().addingTimeInterval(6)) {
+          guard case .restarting(let tab) = self.runStates[target.id] else { return }
+          self.respawnRunCommand(replacing: tab, for: target)  // new tab keeps the split slot (#40)
+        }
       }
     case .armed, .stopped, .none:
       break
     }
+  }
+
+  // MARK: Run command — graceful teardown (issue #7, Option B)
+
+  /// The target's run surface if a child process is still alive in it, else nil. Used by the
+  /// teardown paths to decide whether a Ctrl-C + wait is needed before freeing it.
+  private func liveRunView(for targetID: TerminalTarget.ID) -> GhosttySurfaceView? {
+    guard let tabID = runStates[targetID]?.tab,
+      let view = terminals.view(forTab: tabID, inTarget: targetID),
+      view.hasLiveProcess
+    else { return nil }
+    return view
+  }
+
+  /// Whether any run command still has a live process — gates the quit handler's graceful wait.
+  var hasLiveRunCommand: Bool {
+    runStates.keys.contains { liveRunView(for: $0) != nil }
+  }
+
+  /// SIGINT the run process of each given target (issue #7) and run `then` once they've all exited —
+  /// or after `timeout`, the fallback where the caller's free then delivers the old SIGHUP (no worse
+  /// than before). Polls `processHasExited` on the main runloop; NEVER frees a surface itself, so it
+  /// can't race libghostty's teardown (the same reason quit avoids a mass-free). The surfaces are
+  /// captured for the wait, keeping them alive to poll. The command stays in the foreground — no
+  /// backgrounding — so a dev server's keyboard shortcuts / `binding.pry` keep working.
+  private func gracefullyStopRuns(
+    _ targetIDs: [TerminalTarget.ID], timeout: TimeInterval = 6, then: @escaping () -> Void
+  ) {
+    var views: [GhosttySurfaceView] = []
+    var sids: [pid_t] = []
+    for id in targetIDs {
+      guard let view = liveRunView(for: id) else { continue }
+      interruptRun(for: id)  // session-scoped Ctrl-C (and the captured pid)
+      views.append(view)
+      if let sid = runSessions[id], sid > 1 { sids.append(sid) }
+    }
+    guard !views.isEmpty else {
+      then()
+      return
+    }
+    pollUntilExited(views, sessions: sids, deadline: Date().addingTimeInterval(timeout), then: then)
+  }
+
+  /// Wait until both the surfaces' PTY children have exited AND every run session has drained (no live
+  /// member), then run `then`. On `deadline` (a graceful Ctrl-C didn't take in time) SIGKILL whatever
+  /// remains in those sessions, so a forked-free server is guaranteed dead before the caller frees the
+  /// surface / quits — what makes teardown reliable for ANY run command, not just SIGINT-honouring ones
+  /// (issue #7). Polling the surface (not just the session) keeps it unit-testable without a real PTY.
+  private func pollUntilExited(
+    _ views: [GhosttySurfaceView], sessions sids: [pid_t], deadline: Date,
+    then: @escaping () -> Void
+  ) {
+    let surfacesDone = views.allSatisfy { !$0.hasLiveProcess }
+    let sessionsDone = sids.allSatisfy { runSessionMembers($0).isEmpty }
+    if surfacesDone && sessionsDone {
+      then()
+      return
+    }
+    if Date() >= deadline {
+      // Last resort — guarantee death before the caller frees the surface.
+      for sid in sids { signalRunSession(sid, SIGKILL) }
+      then()
+      return
+    }
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+      self?.pollUntilExited(views, sessions: sids, deadline: deadline, then: then)
+    }
+  }
+
+  /// Poll until none of `sids` has a live member — i.e. everything the run command spawned has exited —
+  /// then run `then`. On `deadline`, SIGKILL whatever remains so the old server is guaranteed dead
+  /// before the caller respawns (the reliable, generic Restart/Stop ordering; issue #7). The empty-set
+  /// case completes synchronously, so callers must already be off any libghostty callback stack.
+  private func waitForSessionsExit(
+    _ sids: [pid_t], deadline: Date, then: @escaping () -> Void
+  ) {
+    let live = sids.filter { !runSessionMembers($0).isEmpty }
+    if live.isEmpty {
+      then()
+      return
+    }
+    if Date() >= deadline {
+      // Last resort — guarantee death before the caller respawns.
+      for sid in live { signalRunSession(sid, SIGKILL) }
+      then()
+      return
+    }
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+      self?.waitForSessionsExit(sids, deadline: deadline, then: then)
+    }
+  }
+
+  /// If `tabID` is the target's run command with a live process, Ctrl-C it and wait for it to exit
+  /// before running `proceed` (the actual close/teardown); otherwise run `proceed` now. Ordinary
+  /// shell tabs (which don't exit on Ctrl-C) and already-exited run tabs fall straight through, so
+  /// only a live dev server pays the wait.
+  private func closingRunTab(
+    _ tabID: TerminalTab.ID, for targetID: TerminalTarget.ID, then proceed: @escaping () -> Void
+  ) {
+    guard runStates[targetID]?.tab == tabID, liveRunView(for: targetID) != nil else {
+      proceed()
+      return
+    }
+    gracefullyStopRuns([targetID], then: proceed)
+  }
+
+  /// SIGINT all live run commands and wait for them to exit (bounded) before `completion`. Called from
+  /// the quit handler so dev servers clean up instead of being orphaned by the OS hangup on exit
+  /// (SIGHUP). Signals the captured pids directly — never frees a surface.
+  func gracefullyStopAllRunCommands(timeout: TimeInterval = 6, completion: @escaping () -> Void) {
+    gracefullyStopRuns(Array(runStates.keys), timeout: timeout, then: completion)
   }
 
   /// Arm a just-created workroom to auto-run its project's command as its first terminal (issue #7).
@@ -896,15 +1156,13 @@ final class AppStore: ObservableObject {
   /// surface the error.
   func deleteWorkroom(_ workroom: Workroom, in project: Project) {
     let targetID = TerminalTarget.workroomID(project: project.path, name: workroom.name)
-    // Optimistic: drop it from the model now, reap its terminals/log, clear selection.
+    // Capture the live run surface (if any) BEFORE tearing anything down: we Ctrl-C it and let the
+    // dev server exit before reaping the surface + deleting the worktree, so it isn't orphaned by the
+    // bare reap (a PTY hangup — SIGHUP — which Puma ignores) and left running against a deleted
+    // directory (issue #7).
+    // Optimistic: drop it from the sidebar model + selection/split/status now (snappy UI). The
+    // terminals stay alive for the graceful stop; reap + VCS teardown follow once the process exits.
     removeWorkroomLocally(workroom, in: project)
-    terminals.reap(targetID)
-    // `reap` only fires `onTabsRemoved` (which clears run state) when tabs existed; a workroom armed
-    // for auto-run but deleted before its pane mounted has none, so clear directly too (issue #7).
-    runStates[targetID] = nil
-    logs[targetID] = nil
-    // Drop the gone workroom's notifications and pull any banners it already delivered.
-    systemNotifier.withdraw(tabIDs: notifications.removeForTarget(targetID))
     // Drop the deleted workroom from the split first (it re-points selection to a survivor), then fall
     // back to clearing selection if it was the deleted workroom (issue #23 follow-up self-heal).
     removeWorkroomSplitMember(.workroom(project: project.path, name: workroom.name))
@@ -914,8 +1172,27 @@ final class AppStore: ObservableObject {
     // Drop the gone workroom's VCS/CI status so a stale badge can't linger (issue #24).
     workroomStatuses[.workroom(project: project.path, name: workroom.name)] = nil
 
-    // Teardown continues in the background. We still collect its output so a failure
-    // can be surfaced in an alert.
+    let finishTeardown = { [weak self] in
+      guard let self else { return }
+      self.terminals.reap(targetID)
+      // `reap` only fires `onTabsRemoved` (which clears run state) when tabs existed; a workroom armed
+      // for auto-run but deleted before its pane mounted has none, so clear directly too (issue #7).
+      self.runStates[targetID] = nil
+      self.clearRunPidFile(for: targetID)
+      self.logs[targetID] = nil
+      // Drop the gone workroom's notifications and pull any banners it already delivered.
+      self.systemNotifier.withdraw(tabIDs: self.notifications.removeForTarget(targetID))
+      self.startWorkroomTeardown(workroom, in: project)
+    }
+    // SIGINT the run process and wait for it to exit before reaping + deleting the worktree (so the
+    // dev server isn't left running against a deleted directory); no live run command → immediate.
+    gracefullyStopRuns([targetID], then: finishTeardown)
+  }
+
+  /// Run the VCS teardown (worktree/workspace removal) in the background, surfacing any failure with
+  /// its captured output in an alert. Split out of `deleteWorkroom` so the run command can stop first
+  /// (issue #7) — the worktree must not be deleted while its dev server still holds the directory.
+  private func startWorkroomTeardown(_ workroom: Workroom, in project: Project) {
     Task {
       let log = ScriptLogSession(title: "Tearing down \(workroom.name)", phase: "teardown")
       do {
@@ -986,7 +1263,15 @@ final class AppStore: ObservableObject {
     // (issue #7).
     guard Defaults[.confirmOnCloseTerminal], !UITestFixture.isActive, !tab.view.processHasExited
     else {
-      terminals.closeTab(tabID, for: target)
+      // No confirmation needed: UI tests close synchronously (teardown must not block); everyone
+      // else still stops a live run command gracefully first so its dev server isn't orphaned.
+      if UITestFixture.isActive {
+        terminals.closeTab(tabID, for: target)
+      } else {
+        closingRunTab(tabID, for: target.id) { [weak self] in
+          self?.terminals.closeTab(tabID, for: target)
+        }
+      }
       return
     }
     let alert = NSAlert()
@@ -1003,7 +1288,14 @@ final class AppStore: ObservableObject {
     if alert.suppressionButton?.state == .on {
       Defaults[.confirmOnCloseTerminal] = false
     }
-    if confirmed { terminals.closeTab(tabID, for: target) }
+    if confirmed {
+      // Stop a live run command (Ctrl-C + wait) before freeing the surface, so the dev server
+      // exits cleanly rather than being orphaned by the bare hangup (issue #7). Non-run / exited
+      // tabs close immediately.
+      closingRunTab(tabID, for: target.id) { [weak self] in
+        self?.terminals.closeTab(tabID, for: target)
+      }
+    }
   }
 
   /// Focus the terminal tab at `index` (0-based, left-to-right across solo + split panes) in the

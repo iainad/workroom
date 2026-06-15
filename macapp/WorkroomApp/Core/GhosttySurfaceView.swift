@@ -511,25 +511,18 @@ final class GhosttySurfaceView: NSView {
     surface.map { ghostty_surface_process_exited($0) } ?? false
   }
 
-  /// Send Ctrl-C to the running program — a graceful SIGINT to the foreground process group. Drives
-  /// a synthetic ⌃C key event through the normal `keyDown` path (→ `ghostty_surface_key`), exactly as
-  /// a real keypress does, which delivers immediately. NOT `ghostty_surface_text` (bracketed paste
-  /// would make the 0x03 a literal byte) and NOT `ghostty_surface_write_buffer` (it enqueues and only
-  /// flushes on the next surface event, so a Stop click with no follow-up input wouldn't fire). Backs
-  /// the run command's Stop (issue #7). No-op until the surface exists. keyCode 8 = ANSI "C".
-  ///
-  /// Skips when the child has already exited: there's nothing to interrupt, and routing a synthetic key
-  /// through `keyDown` then would trip the "press any key to close" guard and close the run tab instead
-  /// — e.g. a Stop pressed in the gap between the process exiting and `markRunExited` firing (review #6).
-  func sendInterrupt() {
-    guard surface != nil, !processHasExited,
-      let event = NSEvent.keyEvent(
-        with: .keyDown, location: .zero, modifierFlags: .control,
-        timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window?.windowNumber ?? 0,
-        context: nil, characters: "\u{03}", charactersIgnoringModifiers: "c", isARepeat: false,
-        keyCode: 8)
-    else { return }
-    keyDown(with: event)
+  /// Test seam: forces `hasLiveProcess` (tests run with `spawnsSurface: false`, so there's no real
+  /// PTY to report a live child). Production leaves this nil and reads libghostty.
+  var liveProcessOverrideForTesting: Bool?
+
+  /// Whether a child process is still running in this surface — vs. already exited with the pane held
+  /// open by `wait_after_command`, or no surface yet. The run-command graceful stop (issue #7) keys
+  /// off this: only a LIVE process needs a Ctrl-C + wait-for-exit before its surface is freed, so that
+  /// a dev server (e.g. Puma) cleans up its pidfile/port instead of being orphaned by a bare
+  /// surface-free (a PTY hangup → SIGHUP, which Puma ignores → "A server is already running" later).
+  var hasLiveProcess: Bool {
+    if let liveProcessOverrideForTesting { return liveProcessOverrideForTesting }
+    return surface != nil && !processHasExited
   }
 
   private func armProgressTimeout() {

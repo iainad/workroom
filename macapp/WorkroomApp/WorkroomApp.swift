@@ -67,6 +67,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
   private var showHideHotkey: GlobalHotkey?
   /// Observes the `globalHotkey` setting so toggling it takes effect immediately.
   private var hotkeyObservation: Task<Void, Never>?
+  /// Catches SIGTERM so a signalled quit stops run commands gracefully (issue #7). Retained so the
+  /// `DispatchSource` stays alive for the process's lifetime.
+  private var sigtermSource: DispatchSourceSignal?
 
   deinit { hotkeyObservation?.cancel() }
 
@@ -164,6 +167,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         self?.updateGlobalHotkey()
       }
     }
+
+    installSigtermHandler()
+  }
+
+  /// Stop run commands gracefully on SIGTERM, then exit. macOS routes only a real ⌘Q / Quit
+  /// Apple-event through `applicationShouldTerminate`, NOT a signal — so without this, a `kill`,
+  /// `pkill`, or `make app-run` replacing the dev instance would skip the graceful stop and orphan
+  /// the dev server (a PTY hangup Puma ignores → "A server is already running" later, issue #7). A
+  /// `DispatchSource` handler runs on the main queue, so it can safely touch the store (a raw signal
+  /// handler can't); `SIG_IGN` disables the default terminate so the source receives it instead. We
+  /// `exit()` rather than `NSApp.terminate` to avoid re-entering the quit confirmation, and only
+  /// after the run commands are gone — the OS then reclaims libghostty as on any quit. SIGKILL /
+  /// force-quit still can't be caught by anything.
+  private func installSigtermHandler() {
+    signal(SIGTERM, SIG_IGN)
+    let source = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
+    source.setEventHandler {
+      // The source fires on the main queue, so we're main-actor-isolated in practice (same pattern
+      // as the NSEvent monitor above) — assert it so we can touch the store synchronously.
+      MainActor.assumeIsolated {
+        AppStore.shared.gracefullyStopAllRunCommands(timeout: 4) {
+          exit(EXIT_SUCCESS)
+        }
+      }
+    }
+    source.resume()
+    sigtermSource = source
   }
 
   /// Register or tear down the global ⌘§ hotkey to match the `globalHotkey` setting.
@@ -222,22 +252,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
   /// this on the main thread. Closing a window doesn't quit the app, so this fires only on a quit.
   @MainActor
   func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-    // UI-test fixture runs quit cleanly (no modal) so XCUITest teardown never blocks on the dialog.
-    guard Defaults[.confirmOnQuit], !UITestFixture.isActive else { return .terminateNow }
-    let alert = NSAlert()
-    alert.messageText = "Quit Workroom?"
-    alert.informativeText = "Quitting closes all terminals and stops any running processes."
-    alert.addButton(withTitle: "Quit")
-    alert.addButton(withTitle: "Cancel")
-    alert.showsSuppressionButton = true
-    alert.suppressionButton?.title = "Don't ask me again"
-    let shouldQuit = alert.runModal() == .alertFirstButtonReturn
-    // Ticking the box stops future confirmations — whether they Quit or Cancel, the checkbox
-    // means "stop asking". Writes the same key the menu/Settings toggles bind to.
-    if alert.suppressionButton?.state == .on {
-      Defaults[.confirmOnQuit] = false
+    // UI-test fixture quits cleanly (no modal, no waiting) so XCUITest teardown never blocks.
+    if UITestFixture.isActive { return .terminateNow }
+    if Defaults[.confirmOnQuit] {
+      let alert = NSAlert()
+      alert.messageText = "Quit Workroom?"
+      alert.informativeText = "Quitting closes all terminals and stops any running processes."
+      alert.addButton(withTitle: "Quit")
+      alert.addButton(withTitle: "Cancel")
+      alert.showsSuppressionButton = true
+      alert.suppressionButton?.title = "Don't ask me again"
+      let shouldQuit = alert.runModal() == .alertFirstButtonReturn
+      // Ticking the box stops future confirmations — whether they Quit or Cancel, the checkbox
+      // means "stop asking". Writes the same key the menu/Settings toggles bind to.
+      if alert.suppressionButton?.state == .on {
+        Defaults[.confirmOnQuit] = false
+      }
+      guard shouldQuit else { return .terminateCancel }
     }
-    return shouldQuit ? .terminateNow : .terminateCancel
+    return stopRunCommandsThenTerminate(sender)
+  }
+
+  /// Ctrl-C any live run commands and let them exit before the process dies, so dev servers clean up
+  /// (release their port + pidfile) instead of being orphaned by the OS hangup on exit — a SIGHUP
+  /// that Puma ignores, surfacing as "A server is already running" on the next launch (issue #7).
+  /// Sends only key events — never frees a surface — so the no-mass-free-on-quit rationale in
+  /// `applicationWillTerminate` still holds. Bounded so a wedged server can't block the quit.
+  @MainActor
+  private func stopRunCommandsThenTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply
+  {
+    let store = AppStore.shared
+    guard store.hasLiveRunCommand else { return .terminateNow }
+    store.gracefullyStopAllRunCommands(timeout: 5) {
+      sender.reply(toApplicationShouldTerminate: true)
+    }
+    return .terminateLater
   }
 
   /// Re-show the main window when the app is reactivated with no visible window (e.g. the user
@@ -256,6 +305,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
   /// libghostty's memory and closes the PTYs, so every child shell/server gets SIGHUP exactly as a
   /// manual `ghostty_surface_free` would deliver. (The per-workroom delete path still reaps a single
   /// steady-state surface — that's not a mass-free racing termination.)
+  ///
+  /// Run commands are the exception that SIGHUP doesn't safely cover: a dev server like Puma ignores
+  /// the hangup and is left orphaned on its port/pidfile. So `applicationShouldTerminate` Ctrl-Cs
+  /// every live run command and waits for it to exit *before* returning — sending key events only,
+  /// never freeing a surface, so the no-mass-free rationale above still holds (issue #7, Option B).
   @MainActor
   func applicationWillTerminate(_ notification: Notification) {}
 }
