@@ -134,11 +134,19 @@ final class NotificationCenterStore: ObservableObject {
   func clear() { items.removeAll() }
 }
 
-/// Pure gate for whether an event that was recorded should also raise a native banner: only
-/// when the app is NOT frontmost (in-app badges always carry the foreground case). Extracted
-/// so the rule is unit-testable without `NSApp` (decision 1.2).
+/// Pure gates for how a recorded event should surface, split by app activation so the rules are
+/// unit-testable without `NSApp` (decision 1.2). The two are mutually exclusive for a recorded
+/// event: backgrounded ⇒ native banner; foregrounded ⇒ in-app (toast or sidebar flash) + sound.
 enum NotificationGate {
+  /// Raise a native banner only when the app is NOT frontmost (in-app surfaces carry the
+  /// foreground case).
   static func shouldPostBanner(recorded: Bool, appActive: Bool) -> Bool {
     recorded && !appActive
+  }
+
+  /// Present the event in-app (toast/flash + sound) only while the app IS frontmost — the
+  /// foreground counterpart of `shouldPostBanner` (issue #31).
+  static func shouldPresentInApp(recorded: Bool, appActive: Bool) -> Bool {
+    recorded && appActive
   }
 }

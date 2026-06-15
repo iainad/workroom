@@ -34,6 +34,22 @@ final class NotificationRoutingTests: XCTestCase {
     XCTAssertFalse(NotificationGate.shouldPostBanner(recorded: false, appActive: false))
   }
 
+  func testInAppOnlyWhenForegrounded() {
+    XCTAssertTrue(NotificationGate.shouldPresentInApp(recorded: true, appActive: true))
+    XCTAssertFalse(NotificationGate.shouldPresentInApp(recorded: true, appActive: false))
+    XCTAssertFalse(NotificationGate.shouldPresentInApp(recorded: false, appActive: true))
+  }
+
+  /// For a recorded event the two surfaces are mutually exclusive and exhaustive: exactly one of
+  /// banner (backgrounded) / in-app (foregrounded) fires.
+  func testInAppAndBannerAreComplementaryWhenRecorded() {
+    for appActive in [true, false] {
+      XCTAssertNotEqual(
+        NotificationGate.shouldPostBanner(recorded: true, appActive: appActive),
+        NotificationGate.shouldPresentInApp(recorded: true, appActive: appActive))
+    }
+  }
+
   // MARK: Native request mapping (SystemNotifier.payload)
 
   func testPayloadIdentifierIsTabAndCarriesIDs() {

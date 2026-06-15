@@ -131,6 +131,19 @@ final class AppStore: ObservableObject {
   /// In-memory notification spine driving the badges + inspector (issue #10). Owned here,
   /// mirroring `terminals`; views observe it directly via `@EnvironmentObject`.
   let notifications = NotificationCenterStore()
+
+  /// Bottom-right toast queue (issue #31): the foreground, inspector-*closed* surface for a new
+  /// notification. FIFO, capped at `maxToasts` (a new toast beyond the cap pushes the oldest out);
+  /// each toast carries the `WorkroomNotification` it mirrors so a tap can route via `openTerminal`.
+  /// Rendered by `ToastStack`, overlaid bottom-right in `RootView`.
+  @Published var toasts: [WorkroomNotification] = []
+  /// The id of a notification to flash in the inspector's Notifications list — set when one arrives
+  /// while the inspector is *open* (issue #31). Self-clearing after the flash so a later open can't
+  /// re-flash a stale row; read by `NotificationsList`.
+  @Published var flashNotifID: UUID?
+  /// Max simultaneously-visible toasts; beyond this the oldest is dropped so a chatty emitter can't
+  /// overflow the window (matches the "stack a few, drop oldest" decision).
+  private static let maxToasts = 4
   /// Posts native banners. Behind a protocol for testability; the real one wraps
   /// `UNUserNotificationCenter`.
   let systemNotifier: SystemNotifying = SystemNotifier()
@@ -1438,9 +1451,10 @@ final class AppStore: ObservableObject {
 
   // MARK: Notifications
 
-  /// Record a terminal's activity, then post a native banner only if the app is backgrounded
-  /// (foreground gets in-app badges only — decision 1.2). `record` drops the event entirely
-  /// when the user is already looking at that terminal.
+  /// Record a terminal's activity, then surface it: backgrounded ⇒ a native banner; foregrounded ⇒
+  /// an in-app toast (inspector closed) or a sidebar row flash (inspector open), plus the arrival
+  /// sound (issue #31). `record` drops the event entirely when the user is already looking at that
+  /// terminal, so none of these fire for the focused terminal.
   private func handleActivity(
     targetID: TerminalTarget.ID, tabID: TerminalTab.ID, activity: TerminalActivity
   ) {
@@ -1458,13 +1472,44 @@ final class AppStore: ObservableObject {
         targetID: targetID, tabID: tabID, source: notificationSource(forTargetID: targetID),
         activity: activity, focused: seen)
     else { return }
-    guard NotificationGate.shouldPostBanner(recorded: true, appActive: NSApp.isActive) else {
-      return
-    }
-    Task { @MainActor in
-      if await systemNotifier.ensureAuthorized() {
-        systemNotifier.post(note)
+    if NotificationGate.shouldPresentInApp(recorded: true, appActive: NSApp.isActive) {
+      // App is focused: sound on every arrival, then either flash the row (inspector open) or pop a
+      // toast (inspector closed). The two surfaces are exclusive — never both at once.
+      NotificationSound.play()
+      if Defaults[.showNotifications] {
+        flashNotification(note.id)
+      } else {
+        enqueueToast(note)
       }
+    } else if NotificationGate.shouldPostBanner(recorded: true, appActive: NSApp.isActive) {
+      Task { @MainActor in
+        if await systemNotifier.ensureAuthorized() {
+          systemNotifier.post(note)
+        }
+      }
+    }
+  }
+
+  /// Append a toast for a freshly-recorded notification, dropping the oldest once past the cap
+  /// (issue #31). `internal` so the queue behaviour is unit-testable without `NSApp`.
+  func enqueueToast(_ note: WorkroomNotification) {
+    toasts.append(note)
+    if toasts.count > Self.maxToasts {
+      toasts.removeFirst(toasts.count - Self.maxToasts)
+    }
+  }
+
+  /// Remove a toast by id — on tap (after `openTerminal`), on auto-dismiss, or when its underlying
+  /// notification is dismissed elsewhere (`ToastStack` prunes those).
+  func dismissToast(_ id: UUID) { toasts.removeAll { $0.id == id } }
+
+  /// Flag a notification for a one-shot flash in the open inspector, then clear the flag shortly
+  /// after so re-opening the inspector later can't re-flash the same (still-present) row. The row's
+  /// own animation runs on appear/change of this id (see `NotificationsList`).
+  private func flashNotification(_ id: UUID) {
+    flashNotifID = id
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+      if self?.flashNotifID == id { self?.flashNotifID = nil }
     }
   }
 

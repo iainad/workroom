@@ -30,7 +30,7 @@ struct NotificationsList: View {
       List {
         // Newest first; the store appends chronologically.
         ForEach(notifications.items.reversed()) { item in
-          NotificationRow(item: item) {
+          NotificationRow(item: item, flash: store.flashNotifID == item.id) {
             store.openTerminal(targetID: item.targetID, tabID: item.tabID, notifID: item.id)
             onActivate?()
           }
@@ -46,8 +46,13 @@ struct NotificationsList: View {
 /// clickable target it is; a plain `.buttonStyle(.plain)` row gave no hover feedback.
 private struct NotificationRow: View {
   let item: WorkroomNotification
+  /// True when this row just arrived while the inspector was open — flashes once to draw the eye
+  /// (issue #31), mirroring the per-pane activity flash in `PaneLeafView`.
+  var flash: Bool = false
   let onOpen: () -> Void
   @State private var hovering = false
+  @State private var flashing = false
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   var body: some View {
     Button(action: onOpen) {
@@ -56,12 +61,27 @@ private struct NotificationRow: View {
         .padding(.horizontal, 6)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
-          RoundedRectangle(cornerRadius: 5).fill(Color.primary.opacity(hovering ? 0.08 : 0))
+          RoundedRectangle(cornerRadius: 5).fill(rowFill)
+            .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: flashing)
         )
         .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
     .onHover { hovering = $0 }
+    // A new row mounts with `flash == true`; an already-mounted row flashes if the flag flips on.
+    .onAppear { if flash { runFlash() } }
+    .onChange(of: flash) { _, now in if now { runFlash() } }
+  }
+
+  /// Accent tint while flashing, else the usual subtle hover fill.
+  private var rowFill: Color {
+    flashing ? Color.accentColor.opacity(0.25) : Color.primary.opacity(hovering ? 0.08 : 0)
+  }
+
+  /// One-shot highlight: on, then off after a beat (mirrors `PaneLeafView`'s 0.6s flash).
+  private func runFlash() {
+    flashing = true
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { flashing = false }
   }
 
   // No read/unread state to indicate (read ⇒ dismissed), so there's no leading dot. A titleless

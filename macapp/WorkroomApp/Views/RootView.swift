@@ -147,6 +147,9 @@ struct RootView: View {
       RightInspector()
         .inspectorColumnWidth(min: 260, ideal: 300, max: 420)
     }
+    // Foreground toasts (issue #31): pinned bottom-right of the window, over the split + inspector.
+    // Only ever populated while the inspector is closed, so it never overlaps the open inspector.
+    .overlay(alignment: .bottomTrailing) { ToastStack() }
     .onAppear { applyAppearance() }
     .onChange(of: theme) { _ in applyAppearance() }
     // Keep the root branch labels reasonably current: refresh when the app regains
