@@ -57,16 +57,19 @@ struct PullRequestPanel: View {
     if status?.prCheckedAt == nil {
       inspectorMessage("Checking\u{2026}")
     } else if let status {
-      // GitHub status for the branch: the PR (or "no PR") *and* its CI checks, since CI exists for
-      // a branch with or without a PR (this is its only home — it's not in the Changes section).
+      // GitHub status for the branch: the PR (or "no PR"), and — only when there's an actual PR —
+      // its CI checks. CI is gated to PR presence and links to the PR's Checks tab; a branch with
+      // no PR shows just "No pull request" (no CI row).
       VStack(alignment: .leading, spacing: 8) {
         if let pr = status.pr {
           prRows(pr)
+          // `gh run list` gives no URL of its own, but the PR's web URL + "/checks" is the
+          // canonical checks page.
+          if let ci = VCSStatusPresentation.ci(status) {
+            ciRow(ci, checksURL: URL(string: pr.url + "/checks"))
+          }
         } else {
           noPullRequestRow
-        }
-        if let ci = VCSStatusPresentation.ci(status) {
-          ciRow(ci)
         }
       }
       .padding(12)
@@ -113,14 +116,35 @@ struct PullRequestPanel: View {
     .accessibilityLabel("No pull request")
   }
 
-  private func ciRow(_ ci: VCSStatusPresentation.CIGlyph) -> some View {
-    HStack(spacing: 5) {
-      Image(systemName: ci.symbol).foregroundStyle(ci.semantic.color)
-      Text(ci.accessibility).foregroundStyle(.secondary)
+  @ViewBuilder
+  private func ciRow(_ ci: VCSStatusPresentation.CIGlyph, checksURL: URL?) -> some View {
+    if let checksURL {
+      // Tappable like the PR status row above — opens the Checks tab in the browser, with the same
+      // open-in-browser chevron affordance.
+      Button {
+        openURL(checksURL)
+      } label: {
+        HStack(spacing: 5) {
+          Image(systemName: ci.symbol).foregroundStyle(ci.semantic.color)
+          Text(ci.accessibility).foregroundStyle(.secondary)
+          Image(systemName: "arrow.up.right").font(.caption).foregroundStyle(.secondary)
+          Spacer(minLength: 0)
+        }
+        .font(.callout)
+        .contentShape(Rectangle())
+      }
+      .buttonStyle(.plain)
+      .help("Open CI checks in browser")
+      .accessibilityLabel("\(ci.accessibility), open checks in browser")
+    } else {
+      HStack(spacing: 5) {
+        Image(systemName: ci.symbol).foregroundStyle(ci.semantic.color)
+        Text(ci.accessibility).foregroundStyle(.secondary)
+      }
+      .font(.callout)
+      .accessibilityElement(children: .ignore)
+      .accessibilityLabel(ci.accessibility)
     }
-    .font(.callout)
-    .accessibilityElement(children: .ignore)
-    .accessibilityLabel(ci.accessibility)
   }
 
 }
