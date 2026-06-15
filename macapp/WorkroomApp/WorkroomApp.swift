@@ -621,6 +621,17 @@ struct WorkroomCommands: Commands {
         .keyboardShortcut("]", modifiers: .command)
         .disabled(canNavigateForward != true)
 
+      // Scroll the focused terminal to the top/bottom of its scrollback (issue #42). ⌘↑/⌘↓ — the
+      // menu key-equivalent fires before the terminal, so it works even in an enhanced-keyboard TUI.
+      // Disabled when no terminal is focused.
+      Divider()
+      Button("Scroll to Top") { AppStore.shared.scrollFocusedTerminalToTop() }
+        .keyboardShortcut(.upArrow, modifiers: .command)
+        .disabled(hasTerminal != true)
+      Button("Scroll to Bottom") { AppStore.shared.scrollFocusedTerminalToBottom() }
+        .keyboardShortcut(.downArrow, modifiers: .command)
+        .disabled(hasTerminal != true)
+
       // Cycle terminal tabs (⌥⌘←/→) and workroom tabs (⇧⌥⌘←/→) (issue #29). The keys are caught by
       // the AppDelegate monitor so they fire before the terminal; shown here for discoverability (the
       // monitor consumes them, so no double-fire — like the Run menu). Disabled when there's nothing

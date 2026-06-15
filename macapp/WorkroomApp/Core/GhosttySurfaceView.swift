@@ -106,6 +106,13 @@ final class GhosttySurfaceView: NSView {
   private var scrollbarMetrics: (total: UInt64, offset: UInt64, len: UInt64)?
   private var scrollbarFadeWork: DispatchWorkItem?
 
+  // "Scroll to bottom" overlay (issue #42): a small circular button pinned bottom-right, shown only
+  // while the viewport is scrolled back from the live bottom (the same condition that flashes the
+  // scrollbar). Faded at rest, opaque on hover. Complements the ⌘↑/⌘↓ shortcuts in `keyDown`.
+  private let goToBottomSize: CGFloat = 28
+  private let goToBottomInset: CGFloat = 12
+  private let goToBottomButton = GoToBottomButton()
+
   // OSC 9;4 progress safety timer (issue #28 follow-up): a program that reports it's working but never
   // sends REMOVE — or a long-idle TUI — would otherwise pin the busy indicator on forever. It's a
   // "declared busy but went silent" backstop, not a fixed time-since-last-report cutoff: while the
@@ -125,6 +132,7 @@ final class GhosttySurfaceView: NSView {
     wantsLayer = true
     setupTrackingArea()
     setupScrollbar()
+    setupGoToBottomButton()
     setupDragAndDrop()
     setAccessibilityRole(.textArea)
     // Stable id so UI tests can count on-screen panes (a surface only appears in the a11y tree while
@@ -205,8 +213,10 @@ final class GhosttySurfaceView: NSView {
       ghostty_surface_set_display_id(surface, displayID)
     }
     applyOcclusionState()
-    // Keep the overlay scrollbar above the surface's Metal content.
+    // Keep the overlay scrollbar and go-to-bottom button above the surface's Metal content.
     addSubview(scrollbarThumb, positioned: .above, relativeTo: nil)
+    addSubview(goToBottomButton, positioned: .above, relativeTo: nil)
+    layoutGoToBottomButton()
   }
 
   private func destroySurface() {
@@ -310,6 +320,7 @@ final class GhosttySurfaceView: NSView {
     if pendingSurfaceCreation { createSurface() }
     updateMetalLayerSize()
     layoutScrollbar()
+    layoutGoToBottomButton()
   }
 
   override func viewDidChangeBackingProperties() {
@@ -394,6 +405,7 @@ final class GhosttySurfaceView: NSView {
     super.viewDidChangeEffectiveAppearance()
     applyColorScheme(isDark: Self.isCurrentAppearanceDark())
     updateScrollbarColor()
+    goToBottomButton.applyColors()
   }
 
   // MARK: Overlay scrollbar
@@ -407,14 +419,33 @@ final class GhosttySurfaceView: NSView {
     addSubview(scrollbarThumb)
   }
 
+  // MARK: Go-to-bottom button (issue #42)
+
+  private func setupGoToBottomButton() {
+    goToBottomButton.isHidden = true
+    goToBottomButton.onClick = { [weak self] in self?.scrollToBottom() }
+    addSubview(goToBottomButton)
+  }
+
+  private func layoutGoToBottomButton() {
+    // Bottom-right, just inside the overlay scrollbar's right edge (non-flipped: y is from the bottom).
+    goToBottomButton.frame = CGRect(
+      x: bounds.width - goToBottomSize - goToBottomInset,
+      y: goToBottomInset,
+      width: goToBottomSize, height: goToBottomSize)
+  }
+
   /// Called by `GhosttyRuntimeAdapter` on `GHOSTTY_ACTION_SCROLLBAR`. All values are in rows;
   /// `offset` is the viewport top's distance from the top of the scrollback (live == `total - len`).
   func updateScrollbar(total: UInt64, offset: UInt64, len: UInt64) {
     scrollbarMetrics = (total, offset, len)
     layoutScrollbar()
+    let scrolledBack = Self.isScrolledBack(total: total, offset: offset, len: len)
+    // The go-to-bottom button is present exactly while scrolled back from the live bottom (issue #42).
+    goToBottomButton.isHidden = !scrolledBack
     // Only surface the indicator while scrolled back through history — not on every line of live
     // output (which would flash it constantly during a build).
-    if Self.scrollbarShouldFlash(total: total, offset: offset, len: len) { flashScrollbar() }
+    if scrolledBack { flashScrollbar() }
   }
 
   private func layoutScrollbar() {
@@ -449,10 +480,17 @@ final class GhosttySurfaceView: NSView {
     return CGRect(x: bounds.width - width - inset, y: y, width: width, height: thumbHeight)
   }
 
+  /// True when the viewport is scrolled back above the live bottom (there's scrollback AND the
+  /// viewport top isn't at `total - len`). Drives both the scrollbar flash and the go-to-bottom
+  /// button's visibility (issue #42). Pure predicate for tests.
+  static func isScrolledBack(total: UInt64, offset: UInt64, len: UInt64) -> Bool {
+    total > len && offset < total - len
+  }
+
   /// Flash the indicator only while scrolled back, not at the live bottom (so live output doesn't
   /// flash it constantly). Extracted as a pure predicate for tests.
   static func scrollbarShouldFlash(total: UInt64, offset: UInt64, len: UInt64) -> Bool {
-    total > len && offset < total - len
+    isScrolledBack(total: total, offset: offset, len: len)
   }
 
   private func flashScrollbar() {
@@ -610,6 +648,7 @@ final class GhosttySurfaceView: NSView {
     // ⌘-modified: app shortcuts are handled by the menu / ⌘1-9 monitor (A3); everything else goes
     // to the terminal with no text payload.
     if flags.contains(.command) {
+      if handleScrollKeyEquivalent(event) { return }
       if isAppShortcut(event) { return }
       var keyEvent = buildKeyEvent(from: event, action: action)
       keyEvent.text = nil
@@ -693,6 +732,7 @@ final class GhosttySurfaceView: NSView {
     guard window?.firstResponder === self || window?.firstResponder === inputContext else {
       return false
     }
+    if handleScrollKeyEquivalent(event) { return true }
     if isAppShortcut(event) { return false }
     let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
     guard flags.contains(.command) || flags.contains(.control) || flags.contains(.option) else {
@@ -739,6 +779,39 @@ final class GhosttySurfaceView: NSView {
     // navigation (issue #26); ⌘R is Run (issue #7) — all reserved so the menu key-equivalent fires
     // instead of the terminal. Plain ⌘N has no Workroom command, so it passes through to the terminal.
     return ["t", "w", "o", "d", "q", "h", "m", ",", "[", "]", "r"].contains(key)
+  }
+
+  /// ⌘↑ / ⌘↓ jump the viewport to the top / bottom of the scrollback (issue #42). libghostty has no
+  /// default binding for these, so we intercept them before forwarding the keystroke — that way they
+  /// work even while a TUI in an enhanced keyboard mode (Claude/Codex) is running. Command-only (any
+  /// extra modifier falls through to the terminal). Returns true when it consumed the event.
+  private func handleScrollKeyEquivalent(_ event: NSEvent) -> Bool {
+    guard surface != nil else { return false }
+    let flags = event.modifierFlags.intersection([.command, .shift, .option, .control])
+    guard flags == .command else { return false }
+    switch event.keyCode {
+    case 126:
+      performScrollBindingAction("scroll_to_top")
+      return true  // ↑
+    case 125:
+      performScrollBindingAction("scroll_to_bottom")
+      return true  // ↓
+    default: return false
+    }
+  }
+
+  /// Jump the viewport to the top / bottom of the scrollback (issue #42). Public so the Go menu can
+  /// drive the focused surface; the ⌘↑/⌘↓ shortcuts reach these via `handleScrollKeyEquivalent`, and
+  /// the overlay button calls `scrollToBottom()`.
+  func scrollToTop() { performScrollBindingAction("scroll_to_top") }
+  func scrollToBottom() { performScrollBindingAction("scroll_to_bottom") }
+
+  /// Run a libghostty keybind action by name (e.g. `scroll_to_top`, `scroll_to_bottom`) on this
+  /// surface, bypassing the keymap. Used for the ⌘↑/⌘↓ shortcuts and the go-to-bottom button.
+  private func performScrollBindingAction(_ name: String) {
+    guard let surface else { return }
+    let count = name.utf8.count
+    name.withCString { _ = ghostty_surface_binding_action(surface, $0, UInt(count)) }
   }
 
   private func buildKeyEvent(from event: NSEvent, action: ghostty_input_action_e)
@@ -1230,4 +1303,85 @@ extension GhosttySurfaceView: NSTextInputClient {
 /// events — clicks, drags, and selection pass straight through to the terminal beneath it.
 private final class ScrollbarThumbView: NSView {
   override func hitTest(_ point: NSPoint) -> NSView? { nil }
+}
+
+/// The "scroll to bottom" overlay button (issue #42): a circular chevron pinned bottom-right, faded at
+/// rest and opaque on hover. Unlike the scrollbar thumb it DOES take clicks (its bounds hit-test to
+/// itself), but it's small and only present while scrolled back, so it doesn't fight terminal selection.
+private final class GoToBottomButton: NSView {
+  var onClick: (() -> Void)?
+
+  private let restAlpha: CGFloat = 0.4
+  private let chevron = NSImageView()
+  private var hoverTracking: NSTrackingArea?
+
+  init() {
+    super.init(frame: .zero)
+    wantsLayer = true
+    layer?.cornerCurve = .continuous
+    alphaValue = restAlpha
+
+    chevron.image = NSImage(
+      systemSymbolName: "chevron.down", accessibilityDescription: "Scroll to bottom"
+    )?
+    .withSymbolConfiguration(.init(pointSize: 12, weight: .semibold))
+    chevron.imageScaling = .scaleNone
+    chevron.translatesAutoresizingMaskIntoConstraints = false
+    addSubview(chevron)
+    NSLayoutConstraint.activate([
+      chevron.centerXAnchor.constraint(equalTo: centerXAnchor),
+      chevron.centerYAnchor.constraint(equalTo: centerYAnchor),
+    ])
+
+    toolTip = "Scroll to bottom"
+    setAccessibilityRole(.button)
+    setAccessibilityLabel("Scroll to bottom")
+    applyColors()
+  }
+
+  @available(*, unavailable)
+  required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+
+  override func layout() {
+    super.layout()
+    layer?.cornerRadius = bounds.height / 2
+  }
+
+  /// Theme the circle + chevron for the current light/dark appearance.
+  func applyColors() {
+    let dark = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+    layer?.backgroundColor =
+      (dark ? NSColor(white: 0.22, alpha: 0.92) : NSColor(white: 0.97, alpha: 0.96)).cgColor
+    layer?.borderWidth = 1
+    layer?.borderColor =
+      (dark ? NSColor(white: 1, alpha: 0.14) : NSColor(white: 0, alpha: 0.12)).cgColor
+    chevron.contentTintColor =
+      dark ? NSColor(white: 0.92, alpha: 1) : NSColor(white: 0.2, alpha: 1)
+  }
+
+  override func updateTrackingAreas() {
+    super.updateTrackingAreas()
+    if let hoverTracking { removeTrackingArea(hoverTracking) }
+    let area = NSTrackingArea(
+      rect: bounds, options: [.mouseEnteredAndExited, .activeInActiveApp], owner: self)
+    addTrackingArea(area)
+    hoverTracking = area
+  }
+
+  override func mouseEntered(with event: NSEvent) { animateAlpha(to: 1) }
+  override func mouseExited(with event: NSEvent) { animateAlpha(to: restAlpha) }
+
+  private func animateAlpha(to value: CGFloat) {
+    NSAnimationContext.runAnimationGroup { context in
+      context.duration = 0.15
+      animator().alphaValue = value
+    }
+  }
+
+  // Act on mouse-up inside bounds (standard button behavior), swallowing the press so it never reaches
+  // the terminal beneath as a click/selection.
+  override func mouseDown(with event: NSEvent) {}
+  override func mouseUp(with event: NSEvent) {
+    if bounds.contains(convert(event.locationInWindow, from: nil)) { onClick?() }
+  }
 }

@@ -93,4 +93,14 @@ final class ScrollbarGeometryTests: XCTestCase {
     XCTAssertTrue(GhosttySurfaceView.scrollbarShouldFlash(total: 400, offset: 0, len: 200))
     XCTAssertFalse(GhosttySurfaceView.scrollbarShouldFlash(total: 200, offset: 0, len: 200))
   }
+
+  func testIsScrolledBackDrivesGoToBottomButton() {
+    // The go-to-bottom button shows exactly while scrolled back from the live bottom (issue #42):
+    // hidden at the live bottom and when there's nothing to scroll; shown anywhere above the bottom.
+    XCTAssertFalse(GhosttySurfaceView.isScrolledBack(total: 400, offset: 200, len: 200))  // live
+    XCTAssertTrue(GhosttySurfaceView.isScrolledBack(total: 400, offset: 199, len: 200))  // 1 row up
+    XCTAssertTrue(GhosttySurfaceView.isScrolledBack(total: 400, offset: 0, len: 200))  // top
+    // No scrollback (buffer == viewport) → nothing below, so the button stays hidden.
+    XCTAssertFalse(GhosttySurfaceView.isScrolledBack(total: 200, offset: 0, len: 200))
+  }
 }

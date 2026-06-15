@@ -1338,6 +1338,18 @@ final class AppStore: ObservableObject {
     return true
   }
 
+  /// The focused pane's surface for the selected target (the focused tab is the focused pane), or nil
+  /// when nothing's selected / no terminal exists. Drives the Go menu's scroll items (issue #42).
+  private var focusedSurface: GhosttySurfaceView? {
+    guard let target = selectedTarget else { return nil }
+    return terminals.focusedTab(for: target)?.view
+  }
+
+  /// Scroll the focused terminal to the top / bottom of its scrollback (issue #42). Driven by the Go
+  /// menu's "Scroll to Top"/"Scroll to Bottom" items; ⌘↑/⌘↓ also reach the surface directly.
+  func scrollFocusedTerminalToTop() { focusedSurface?.scrollToTop() }
+  func scrollFocusedTerminalToBottom() { focusedSurface?.scrollToBottom() }
+
   /// Split the focused pane by opening a new terminal beside it: ⌘D to the right, ⇧⌘D below
   /// (issue #3). The new terminal inherits the focused pane's working directory.
   func splitFocusedRight() {
