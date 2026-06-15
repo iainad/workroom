@@ -83,9 +83,14 @@ struct RightInspector: View {
           }
         }
       } label: {
-        Image(systemName: "ellipsis").font(.system(size: 12)).foregroundStyle(.secondary)
+        Image(systemName: "ellipsis").font(.system(size: 11)).foregroundStyle(.secondary)
       }
-      .menuStyle(.borderlessButton)
+      // `.menuStyle(.button)` (NOT `.borderlessButton`) renders the trigger as a SwiftUI button, so
+      // `InspectorMenuButtonStyle` can give it the same rounded hover fill + comfortable click
+      // target as the other header buttons. A `.borderlessButton` menu is AppKit-backed and never
+      // reports hover. Clicking still drops the native menu — consistent with the rest of the app.
+      .menuStyle(.button)
+      .buttonStyle(InspectorMenuButtonStyle())
       .menuIndicator(.hidden)
       .fixedSize()
       .disabled(store.prActionInFlight)
@@ -365,19 +370,57 @@ struct InspectorHeaderButton: View {
       Image(systemName: systemImage)
         .font(.system(size: 11))
         .foregroundStyle(destructive && hovering ? Color.red : Color.secondary)
-        .padding(4)
-        .background(
-          RoundedRectangle(cornerRadius: 5)
-            .fill(
-              (destructive ? Color.red : Color.primary)
-                .opacity(hovering ? (destructive ? 0.18 : 0.1) : 0))
-        )
+        .inspectorHeaderButtonChrome(hovering: hovering, destructive: destructive)
     }
     .buttonStyle(.plain)
     .onHover { hovering = $0 }
     .help(help)
     .accessibilityLabel(help)
     .disabled(disabled)
+  }
+}
+
+extension View {
+  /// Shared chrome for the inspector's three section-header icon buttons — Changes' Refresh,
+  /// Notifications' Clear (both `InspectorHeaderButton`), and Pull Request's actions menu
+  /// (`InspectorMenuButtonStyle`). A **fixed** hover-fill size (not glyph + padding) keeps the fill
+  /// identical across the differently-shaped glyphs (the wide ellipsis vs. the narrow refresh/trash),
+  /// centred in a larger **fixed** click target so all three match exactly. `contentShape` makes the
+  /// whole target clickable/hoverable, not just the glyph.
+  fileprivate func inspectorHeaderButtonChrome(hovering: Bool, destructive: Bool = false)
+    -> some View
+  {
+    self
+      .frame(width: 22, height: 22)
+      .background(
+        RoundedRectangle(cornerRadius: 5)
+          .fill(
+            (destructive ? Color.red : Color.primary)
+              .opacity(hovering ? (destructive ? 0.18 : 0.1) : 0))
+      )
+      .frame(width: 28, height: 26)
+      .contentShape(Rectangle())
+  }
+}
+
+/// Button style for the Pull Request header's actions `Menu`, used via `.menuStyle(.button)` so the
+/// trigger is a SwiftUI button (a `.borderlessButton` menu is AppKit-backed and never reports
+/// hover). It mirrors `InspectorHeaderButton`: a centred glyph, the same rounded hover fill, and the
+/// same comfortable click target so all three header buttons match.
+private struct InspectorMenuButtonStyle: ButtonStyle {
+  func makeBody(configuration: Configuration) -> some View {
+    HoverFill(configuration: configuration)
+  }
+
+  private struct HoverFill: View {
+    let configuration: ButtonStyle.Configuration
+    @State private var hovering = false
+
+    var body: some View {
+      configuration.label
+        .inspectorHeaderButtonChrome(hovering: hovering || configuration.isPressed)
+        .onHover { hovering = $0 }
+    }
   }
 }
 

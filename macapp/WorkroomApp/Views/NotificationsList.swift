@@ -30,23 +30,44 @@ struct NotificationsList: View {
       List {
         // Newest first; the store appends chronologically.
         ForEach(notifications.items.reversed()) { item in
-          Button {
+          NotificationRow(item: item) {
             store.openTerminal(targetID: item.targetID, tabID: item.tabID, notifID: item.id)
             onActivate?()
-          } label: {
-            row(item)
           }
-          .buttonStyle(.plain)
         }
       }
       .listStyle(.inset)
     }
   }
+}
 
-  private func row(_ item: WorkroomNotification) -> some View {
-    // No read/unread state to indicate (read ⇒ dismissed), so there's no leading dot. A titleless
-    // notification leads with its body rather than a placeholder; one with neither shows just its
-    // source + time.
+/// One notification row. Tapping opens the terminal it came from (`onOpen`). Carries a subtle
+/// rounded hover fill — like the Changes panel's file rows (`ChangedFileRow`) — so it reads as the
+/// clickable target it is; a plain `.buttonStyle(.plain)` row gave no hover feedback.
+private struct NotificationRow: View {
+  let item: WorkroomNotification
+  let onOpen: () -> Void
+  @State private var hovering = false
+
+  var body: some View {
+    Button(action: onOpen) {
+      content
+        .padding(.vertical, 4)
+        .padding(.horizontal, 6)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+          RoundedRectangle(cornerRadius: 5).fill(Color.primary.opacity(hovering ? 0.08 : 0))
+        )
+        .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .onHover { hovering = $0 }
+  }
+
+  // No read/unread state to indicate (read ⇒ dismissed), so there's no leading dot. A titleless
+  // notification leads with its body rather than a placeholder; one with neither shows just its
+  // source + time.
+  private var content: some View {
     let headline = item.title.isEmpty ? (item.body ?? "") : item.title
     let subtext = item.title.isEmpty ? nil : item.body
     return HStack(alignment: .top, spacing: 8) {
@@ -77,7 +98,5 @@ struct NotificationsList: View {
       }
       Spacer(minLength: 0)
     }
-    .padding(.vertical, 2)
-    .contentShape(Rectangle())
   }
 }
