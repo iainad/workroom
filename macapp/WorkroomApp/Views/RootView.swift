@@ -294,6 +294,25 @@ struct RootView: View {
               RunCommandToolbar(target: target, projectPath: projectPath)
             }
             TargetDetailToolbar(path: target.path)
+            // Right-sidebar (inspector) toggle — declared last in the detail column's toolbar so it
+            // lands at the window's true top-right edge (the macOS convention for an inspector toggle).
+            // The split-view-level toolbar's `.primaryAction` items dock to the sidebar column instead
+            // (that's where the bell sits), so the trailing edge belongs to this detail toolbar. Toggles
+            // the same `showNotifications` inspector the bell does.
+            ToolbarItem(placement: .primaryAction) {
+              Button {
+                showNotifications.toggle()
+              } label: {
+                // Fills while the inspector is open so the on/off state reads at a glance, mirroring
+                // the leading sidebar toggle.
+                Image(systemName: "sidebar.right")
+                  .symbolVariant(showNotifications ? .fill : .none)
+              }
+              .help(showNotifications ? "Hide right sidebar" : "Show right sidebar")
+              .accessibilityLabel("Right sidebar")
+              .accessibilityValue(showNotifications ? "shown" : "hidden")
+              .accessibilityIdentifier("toolbar.toggleInspector")
+            }
           }
       }
     } else {

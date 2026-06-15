@@ -586,6 +586,17 @@ struct WorkroomCommands: Commands {
       .keyboardShortcut("w", modifiers: .command)
       .disabled(hasTerminal != true)
 
+      // Reveal the selected target's directory in Finder (moved off the detail toolbar). Acts on the
+      // current selection like the terminal items above; reads `store.selectedTarget` directly so the
+      // enabled state tracks selection live (the `@ObservedObject store` re-evaluates this body).
+      // Disabled with no selection or a missing directory.
+      Button("Reveal in Finder") {
+        if let path = store.selectedTarget?.path {
+          NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
+        }
+      }
+      .disabled(store.selectedTarget == nil || store.selectedTarget?.isMissing == true)
+
       Button("Add Project…") {
         AppStore.shared.requestAddProject = true
       }

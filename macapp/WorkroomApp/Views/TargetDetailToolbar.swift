@@ -2,10 +2,11 @@ import AppKit
 import Defaults
 import SwiftUI
 
-/// The detail pane's toolbar for a selected target: an "Open in…" editor menu (whose primary
-/// action reopens in the last-picked editor), Reveal in Finder, and Copy Path. Lifted out of
-/// `RootView.targetDetail` so the scene root stays focused on layout. (The notifications bell
-/// lives beside back/forward in `RootView`'s split-view toolbar so it shows even with no target.)
+/// The detail pane's toolbar for a selected target: an "Open in…" editor menu whose primary
+/// action reopens in the last-picked editor. Lifted out of `RootView.targetDetail` so the scene
+/// root stays focused on layout. (The notifications bell lives beside back/forward in `RootView`'s
+/// split-view toolbar so it shows even with no target. "Reveal in Finder" moved to the File menu —
+/// see `WorkroomCommands`; "Copy Path" was dropped.)
 struct TargetDetailToolbar: ToolbarContent {
   let path: String
 
@@ -49,21 +50,6 @@ struct TargetDetailToolbar: ToolbarContent {
         }
         .help("Open in \(remembered.name)")
       }
-
-      Button {
-        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
-      } label: {
-        Label("Reveal in Finder", systemImage: "folder")
-      }
-      .help("Reveal in Finder")
-
-      Button {
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(path, forType: .string)
-      } label: {
-        Label("Copy Path", systemImage: "doc.on.doc")
-      }
-      .help("Copy path")
     }
   }
 }
