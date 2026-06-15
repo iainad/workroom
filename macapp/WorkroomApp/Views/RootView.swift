@@ -222,6 +222,12 @@ struct RootView: View {
         Divider()
       }
       detailContent
+        // Always fill the remaining height so the tab bar above stays pinned to the top. The
+        // terminal branch fills on its own, but the empty states (Nothing selected / Directory not
+        // found) size to their content — without this the VStack would shrink to fit and center,
+        // dropping the tab bar to the vertical middle when a workroom has terminals but nothing is
+        // selected (issue #23 follow-up).
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         // The detail content's global frame, so a chip dragged from the bar can be resolved against the
         // workroom panes below it (issue #23 follow-up) — mirrors WorkroomTerminalsView ↔ TerminalTabStrip.
         .background(
