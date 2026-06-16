@@ -49,6 +49,21 @@ final class ThemeService {
     ThemeFamily(name: "Kanagawa", dark: "Kanagawa Wave", light: "Kanagawa Lotus"),
     ThemeFamily(name: "Kanso", dark: "Kanso Zen", light: "Kanso Pearl"),
     ThemeFamily(name: "Monokai Pro", dark: "Monokai Pro", light: "Monokai Pro Light"),
+    ThemeFamily(name: "Solarized", dark: "iTerm2 Solarized Dark", light: "iTerm2 Solarized Light"),
+    ThemeFamily(name: "Xcode", dark: "Xcode Dark", light: "Xcode Light"),
+    ThemeFamily(name: "Flexoki", dark: "Flexoki Dark", light: "Flexoki Light"),
+    ThemeFamily(name: "Atom One", dark: "Atom One Dark", light: "Atom One Light"),
+    ThemeFamily(name: "Nightfox", dark: "Nightfox", light: "Dayfox"),
+    ThemeFamily(name: "Melange", dark: "Melange Dark", light: "Melange Light"),
+    ThemeFamily(name: "Modus", dark: "Modus Vivendi", light: "Modus Operandi"),
+    ThemeFamily(name: "Iceberg", dark: "Iceberg Dark", light: "Iceberg Light"),
+    ThemeFamily(name: "Selenized", dark: "Selenized Dark", light: "Selenized Light"),
+    ThemeFamily(
+      name: "Gruvbox Material", dark: "Gruvbox Material Dark", light: "Gruvbox Material Light"),
+    ThemeFamily(name: "Tomorrow", dark: "Tomorrow Night", light: "Tomorrow"),
+    ThemeFamily(name: "Duskfox", dark: "Duskfox", light: "Dawnfox"),
+    ThemeFamily(name: "Seoulbones", dark: "Seoulbones Dark", light: "Seoulbones Light"),
+    ThemeFamily(name: "Pencil", dark: "Pencil Dark", light: "Pencil Light"),
   ]
 
   /// Current chrome tokens. Recomputed only inside `applyActiveTheme()`, so chrome never re-parses
