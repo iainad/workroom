@@ -147,7 +147,7 @@ struct TerminalTabStrip: View {
         .padding(4)
         .background(
           RoundedRectangle(cornerRadius: 5)
-            .fill(Color.primary.opacity(addHovering ? 0.1 : 0))
+            .fill(ThemeService.shared.tokens.hover.opacity(addHovering ? 1 : 0))
         )
     }
     .buttonStyle(.plain)
@@ -167,7 +167,7 @@ struct TerminalTabStrip: View {
   private func splitWell(_ tabs: [TerminalTab]) -> some View {
     if draggingID == nil, let run = splitRunRect(tabs) {
       RoundedRectangle(cornerRadius: 7)
-        .strokeBorder(Color.primary.opacity(0.16), lineWidth: 1)
+        .strokeBorder(ThemeService.shared.tokens.border, lineWidth: 1)
         .frame(width: run.width)
         .offset(x: run.x)
     }
@@ -252,6 +252,7 @@ private struct TerminalTabChip: View {
   /// Draw a hairline on the leading edge, separating two adjacent idle tabs (computed by the strip).
   let showLeadingSeparator: Bool
   let onClose: () -> Void
+  private let theme = ThemeService.shared
 
   var body: some View {
     // The ✕ reveals on hover or when the tab is active — matching the sidebar's terminal rows, and
@@ -266,14 +267,14 @@ private struct TerminalTabChip: View {
       if let runState {
         Image(systemName: "play.circle.fill")
           .font(.system(size: 10))
-          .foregroundStyle(runState == .running ? Color.green : Color.secondary)
+          .foregroundStyle(runState == .running ? Color.green : theme.tokens.fgMuted)
           .help(runState == .running ? "Run command running" : "Run command stopped")
           .accessibilityLabel(runState == .running ? "running" : "stopped")
       }
       Text(tab.title)
         .font(.callout)
         .lineLimit(1)
-        .foregroundStyle(hasActivity ? Color.accentColor : Color.primary)
+        .foregroundStyle(hasActivity ? theme.tokens.accent : Color.primary)
       TabCloseButton(action: onClose)
         .help("Close \(tab.title)")
         .accessibilityLabel("Close \(tab.title)")
@@ -286,19 +287,19 @@ private struct TerminalTabChip: View {
     // Subtle highlight for active/hover; a solid lifted chip while dragging.
     .background {
       RoundedRectangle(cornerRadius: 6)
-        .fill(Color.primary.opacity(isActive ? 0.14 : (isHovered ? 0.06 : 0)))
+        .fill(isActive ? theme.tokens.surface : (isHovered ? theme.tokens.hover : Color.clear))
     }
     // Unread activity tints the whole tab with the accent color (pairs with the accent title).
     .background {
       RoundedRectangle(cornerRadius: 6)
-        .fill(Color.accentColor.opacity(hasActivity ? 0.15 : 0))
+        .fill(theme.tokens.accent.opacity(hasActivity ? 0.15 : 0))
     }
     .background {
       RoundedRectangle(cornerRadius: 6)
         .fill(.thickMaterial)
         .overlay(
           RoundedRectangle(cornerRadius: 6)
-            .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
+            .strokeBorder(theme.tokens.border, lineWidth: 1)
         )
         .opacity(isDragging ? 1 : 0)
     }
@@ -319,7 +320,7 @@ private struct TerminalTabChip: View {
     .overlay(alignment: .leading) {
       if showLeadingSeparator {
         Rectangle()
-          .fill(Color(nsColor: .separatorColor))
+          .fill(theme.tokens.border)
           .frame(width: 1, height: 14)
           .offset(x: -10)
       }
@@ -356,19 +357,20 @@ private struct TabWidthKey: PreferenceKey {
 private struct RunningUnderline: View {
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @State private var sweeping = false
+  private let theme = ThemeService.shared
 
   var body: some View {
     GeometryReader { geo in
       let width = geo.size.width
       let highlight = max(20, width * 0.4)
       Capsule()
-        .fill(Color.accentColor.opacity(reduceMotion ? 0.7 : 0.25))
+        .fill(theme.tokens.accent.opacity(reduceMotion ? 0.7 : 0.25))
         .overlay(alignment: .leading) {
           if !reduceMotion {
             Capsule()
               .fill(
                 LinearGradient(
-                  colors: [.clear, Color.accentColor, .clear],
+                  colors: [.clear, theme.tokens.accent, .clear],
                   startPoint: .leading, endPoint: .trailing)
               )
               .frame(width: highlight)
@@ -393,6 +395,7 @@ private struct RunningUnderline: View {
 private struct TabCloseButton: View {
   let action: () -> Void
   @State private var hovering = false
+  private let theme = ThemeService.shared
 
   var body: some View {
     Button(action: action) {
@@ -402,7 +405,7 @@ private struct TabCloseButton: View {
         .padding(3)
         .background(
           RoundedRectangle(cornerRadius: 4)
-            .fill(Color.primary.opacity(hovering ? 0.15 : 0))
+            .fill(theme.tokens.hover.opacity(hovering ? 1 : 0))
         )
     }
     .buttonStyle(.plain)

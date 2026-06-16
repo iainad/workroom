@@ -61,6 +61,7 @@ private struct ToastView: View {
   @State private var hovering = false
   @State private var dismissTask: Task<Void, Never>?
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  private let theme = ThemeService.shared
 
   var body: some View {
     content
@@ -70,11 +71,11 @@ private struct ToastView: View {
       .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
       // Faint fill + a touch more border on hover so the card reads as the clickable target it is.
       .overlay(
-        RoundedRectangle(cornerRadius: 12).fill(Color.primary.opacity(hovering ? 0.06 : 0))
+        RoundedRectangle(cornerRadius: 12).fill(theme.tokens.hover.opacity(hovering ? 1 : 0))
       )
       .overlay(
         RoundedRectangle(cornerRadius: 12)
-          .strokeBorder(Color.primary.opacity(hovering ? 0.22 : 0.12), lineWidth: 0.5)
+          .strokeBorder(theme.tokens.border, lineWidth: 0.5)
       )
       .overlay(alignment: .topTrailing) { closeButton }
       // Lift on hover: a deeper, wider shadow.
@@ -116,7 +117,7 @@ private struct ToastView: View {
         .foregroundStyle(.secondary)
         .frame(width: 18, height: 18)
         .background(.regularMaterial, in: Circle())
-        .overlay(Circle().strokeBorder(Color.primary.opacity(0.12), lineWidth: 0.5))
+        .overlay(Circle().strokeBorder(theme.tokens.border, lineWidth: 0.5))
         .contentShape(Circle())
     }
     .buttonStyle(.plain)

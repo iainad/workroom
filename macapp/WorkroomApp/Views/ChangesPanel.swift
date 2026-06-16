@@ -101,7 +101,7 @@ struct RightInspector: View {
 
   /// A 1px rule between sections so adjacent (especially collapsed) header bars stay separated.
   private var sectionRule: some View {
-    Color.primary.opacity(0.15).frame(height: 1)
+    ThemeService.shared.tokens.border.frame(height: 1)
   }
 
   /// The selected workroom's status, or nil when a non-target (project) or nothing is selected —
@@ -211,6 +211,7 @@ private struct ChangedFileRow: View {
   /// The workroom directory the repo-relative `file.path` is resolved against. `nil` ⇒ not openable.
   let directory: String?
   @State private var hovering = false
+  private let theme = ThemeService.shared
 
   var body: some View {
     let (dir, name) = ChangesPanel.splitPath(file.path)
@@ -241,7 +242,7 @@ private struct ChangedFileRow: View {
       .frame(maxWidth: .infinity, alignment: .leading)
       .background(
         RoundedRectangle(cornerRadius: 5)
-          .fill(Color.primary.opacity(hovering && directory != nil ? 0.08 : 0))
+          .fill(theme.tokens.hover.opacity(hovering && directory != nil ? 1 : 0))
       )
       .contentShape(Rectangle())
     }
@@ -269,11 +270,11 @@ private struct ChangedFileRow: View {
 
   private var color: Color {
     switch file.change {
-    case .added: return .green
-    case .deleted: return .red
-    case .conflicted: return .red
-    case .modified, .renamed: return .orange
-    case .untracked, .other: return .secondary
+    case .added: return theme.tokens.diffAddFg
+    case .deleted: return theme.tokens.diffRemoveFg
+    case .conflicted: return theme.tokens.diffRemoveFg
+    case .modified, .renamed: return theme.tokens.warning
+    case .untracked, .other: return theme.tokens.fgMuted
     }
   }
 
@@ -344,7 +345,7 @@ struct InspectorSection<Accessory: View, Content: View>: View {
       )
       .help(collapsed ? "Expand \(title)" : "Collapse \(title)")
       // Solid header bar so the sections read as distinct blocks (issue #24 polish).
-      .background(Color.primary.opacity(0.08))
+      .background(ThemeService.shared.tokens.surface)
       .overlay(alignment: .trailing) {
         accessory().padding(.trailing, 12)
       }
@@ -368,12 +369,13 @@ struct InspectorHeaderButton: View {
   var disabled: Bool = false
   let action: () -> Void
   @State private var hovering = false
+  private let theme = ThemeService.shared
 
   var body: some View {
     Button(action: action) {
       Image(systemName: systemImage)
         .font(.system(size: 11))
-        .foregroundStyle(destructive && hovering ? Color.red : Color.secondary)
+        .foregroundStyle(destructive && hovering ? Color.red : theme.tokens.fgMuted)
         .inspectorHeaderButtonChrome(hovering: hovering, destructive: destructive)
     }
     .buttonStyle(.plain)
@@ -399,8 +401,8 @@ extension View {
       .background(
         RoundedRectangle(cornerRadius: 5)
           .fill(
-            (destructive ? Color.red : Color.primary)
-              .opacity(hovering ? (destructive ? 0.18 : 0.1) : 0))
+            (destructive ? Color.red : ThemeService.shared.tokens.hover)
+              .opacity(hovering ? (destructive ? 0.18 : 1) : 0))
       )
       .frame(width: 28, height: 26)
       .contentShape(Rectangle())
@@ -508,7 +510,8 @@ struct ChangesPanel: View {
           Text(commitID).font(.system(.callout, design: .monospaced)).foregroundStyle(.blue)
         }
         ForEach(status.jjRefs ?? [], id: \.self) { ref in
-          Text(ref).font(.callout).fontWeight(.medium).foregroundStyle(Color.accentColor)
+          Text(ref).font(.callout).fontWeight(.medium)
+            .foregroundStyle(ThemeService.shared.tokens.accent)
             .lineLimit(1)
         }
         Spacer(minLength: 0)

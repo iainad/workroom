@@ -31,6 +31,7 @@ struct WorkroomSplitView: View {
   let onClose: (SidebarID) -> Void
 
   private static let space = "workroomSplitContent"
+  private let theme = ThemeService.shared
 
   var body: some View {
     let leaves = layout.tabIDs
@@ -74,8 +75,8 @@ struct WorkroomSplitView: View {
     {
       let band = PaneTreeLayout.edgeBand(hit.edge, in: rect)
       RoundedRectangle(cornerRadius: 8)
-        .fill(Color.accentColor.opacity(0.25))
-        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.accentColor, lineWidth: 2))
+        .fill(theme.tokens.accent.opacity(0.25))
+        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(theme.tokens.accent, lineWidth: 2))
         .frame(width: band.width, height: band.height)
         .position(x: band.midX, y: band.midY)
         .allowsHitTesting(false)

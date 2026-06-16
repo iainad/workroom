@@ -4,15 +4,16 @@ import SwiftUI
 /// already carries the meaning (so color-blind users and the issue-#43 window-blur dimming
 /// don't lose the signal). Unknown/neutral stay muted (`.secondary`), never alarming.
 extension VCSStatusPresentation.Semantic {
-  var color: Color {
+  @MainActor var color: Color {
+    let tokens = ThemeService.shared.tokens
     switch self {
-    case .dirty: return .orange
-    case .conflict: return .red
-    case .unknown: return .secondary
-    case .ciPass: return .green
-    case .ciFail: return .red
-    case .ciRunning: return .orange
-    case .neutral: return .secondary
+    case .dirty: return tokens.warning
+    case .conflict: return tokens.diffRemoveFg
+    case .unknown: return tokens.fgMuted
+    case .ciPass: return tokens.diffAddFg
+    case .ciFail: return tokens.diffRemoveFg
+    case .ciRunning: return tokens.warning
+    case .neutral: return tokens.fgMuted
     }
   }
 }
@@ -21,8 +22,8 @@ extension VCSStatusPresentation {
   /// Tint for a leading identity glyph (the sidebar/tab house or workroom cube) that now carries the
   /// dirty/conflict signal in place of a separate status dot: orange when dirty, red on conflict,
   /// otherwise the default `.secondary` (clean/unknown read as no change).
-  static func iconTint(_ s: WorkroomStatus) -> Color {
-    dot(s)?.semantic.color ?? .secondary
+  @MainActor static func iconTint(_ s: WorkroomStatus) -> Color {
+    dot(s)?.semantic.color ?? ThemeService.shared.tokens.fgMuted
   }
 }
 

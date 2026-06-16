@@ -53,6 +53,7 @@ private struct NotificationRow: View {
   @State private var hovering = false
   @State private var flashing = false
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  private let theme = ThemeService.shared
 
   var body: some View {
     Button(action: onOpen) {
@@ -75,7 +76,7 @@ private struct NotificationRow: View {
 
   /// Accent tint while flashing, else the usual subtle hover fill.
   private var rowFill: Color {
-    flashing ? Color.accentColor.opacity(0.25) : Color.primary.opacity(hovering ? 0.08 : 0)
+    flashing ? theme.tokens.accent.opacity(0.25) : theme.tokens.hover.opacity(hovering ? 1 : 0)
   }
 
   /// One-shot highlight: on, then off after a beat (mirrors `PaneLeafView`'s 0.6s flash).

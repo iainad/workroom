@@ -14,6 +14,7 @@ struct SetupOverlay: View {
   var onDismiss: () -> Void
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @Environment(\.colorScheme) private var colorScheme
+  private let theme = ThemeService.shared
   /// Drives the enter animation. Flipped true in `onAppear` so the spring plays reliably
   /// regardless of how the containing detail pane was mounted (a `.transition` alone won't
   /// animate when the pane appears already-blocking from a fresh target selection).
@@ -65,11 +66,11 @@ struct SetupOverlay: View {
       }
     }
     .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: session.isFinished)
-    .background(Color(nsColor: .windowBackgroundColor))
+    .background(theme.tokens.surface)
     .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
     .overlay(
       RoundedRectangle(cornerRadius: 12, style: .continuous)
-        .strokeBorder(Color(nsColor: .separatorColor), lineWidth: 1)
+        .strokeBorder(theme.tokens.border, lineWidth: 1)
     )
     .shadow(color: .black.opacity(0.28), radius: 22, y: 10)
   }

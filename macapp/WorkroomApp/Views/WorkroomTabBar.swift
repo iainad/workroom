@@ -134,7 +134,7 @@ struct WorkroomTabBar: View {
   @ViewBuilder private var splitWell: some View {
     if draggingID == nil, let run = splitRunRect() {
       RoundedRectangle(cornerRadius: 7)
-        .strokeBorder(Color.primary.opacity(0.16), lineWidth: 1)
+        .strokeBorder(ThemeService.shared.tokens.border, lineWidth: 1)
         .frame(width: run.width)
         .offset(x: run.x)
     }
@@ -198,6 +198,7 @@ private struct WorkroomTabChip: View {
 
   @EnvironmentObject var store: AppStore
   @EnvironmentObject var notifications: NotificationCenterStore
+  private let theme = ThemeService.shared
 
   private var isRoot: Bool {
     if case .root = sid { return true }
@@ -249,7 +250,7 @@ private struct WorkroomTabChip: View {
         Text(primaryLabel)
           .font(.body)
           .lineLimit(1)
-          .foregroundStyle(hasActivity ? Color.accentColor : Color.primary)
+          .foregroundStyle(hasActivity ? theme.tokens.accent : Color.primary)
         // The workroom's own name, secondary — replaces the old "/ name" suffix in the primary text.
         if let workroomName {
           Text(workroomName)
@@ -273,19 +274,19 @@ private struct WorkroomTabChip: View {
     // Subtle highlight for active/hover; a solid lifted chip while dragging.
     .background {
       RoundedRectangle(cornerRadius: 6)
-        .fill(Color.primary.opacity(isActive ? 0.14 : (isHovered ? 0.06 : 0)))
+        .fill(isActive ? theme.tokens.surface : (isHovered ? theme.tokens.hover : Color.clear))
     }
     // Unread activity tints the whole tab with the accent color (pairs with the accent title).
     .background {
       RoundedRectangle(cornerRadius: 6)
-        .fill(Color.accentColor.opacity(hasActivity ? 0.15 : 0))
+        .fill(theme.tokens.accent.opacity(hasActivity ? 0.15 : 0))
     }
     .background {
       RoundedRectangle(cornerRadius: 6)
         .fill(.thickMaterial)
         .overlay(
           RoundedRectangle(cornerRadius: 6)
-            .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
+            .strokeBorder(theme.tokens.border, lineWidth: 1)
         )
         .opacity(isDragging ? 1 : 0)
     }
@@ -300,7 +301,7 @@ private struct WorkroomTabChip: View {
     .overlay(alignment: .leading) {
       if showLeadingSeparator {
         Rectangle()
-          .fill(Color(nsColor: .separatorColor))
+          .fill(theme.tokens.border)
           .frame(width: 1, height: 16)
           .offset(x: -2)
       }

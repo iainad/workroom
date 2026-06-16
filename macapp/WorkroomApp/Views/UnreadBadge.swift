@@ -10,17 +10,18 @@ enum UnreadCount {
 /// a number). Renders nothing when `count` is 0.
 struct UnreadBadge: View {
   let count: Int
+  private let theme = ThemeService.shared
 
   var body: some View {
     if count > 0 {
       Text(UnreadCount.label(count))
         .font(.caption2)
         .fontWeight(.semibold)
-        .foregroundStyle(.white)
+        .foregroundStyle(theme.tokens.accentForeground)
         .monospacedDigit()
         .padding(.horizontal, 5)
         .padding(.vertical, 1)
-        .background(Capsule().fill(Color.accentColor))
+        .background(Capsule().fill(theme.tokens.accent))
         .accessibilityLabel("\(count) unread")
     }
   }
@@ -30,11 +31,12 @@ struct UnreadBadge: View {
 /// where a count is too noisy — presence is what matters. Renders nothing when `count` is 0.
 struct UnreadDot: View {
   let count: Int
+  private let theme = ThemeService.shared
 
   var body: some View {
     if count > 0 {
       Circle()
-        .fill(Color.accentColor)
+        .fill(theme.tokens.accent)
         .frame(width: 7, height: 7)
         .accessibilityLabel("Unread notifications")
     }

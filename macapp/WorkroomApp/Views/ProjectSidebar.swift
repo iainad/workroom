@@ -443,9 +443,9 @@ struct ProjectSidebar: View {
   /// selection highlight.
   @ViewBuilder
   private func rowHighlight(_ id: SidebarID, selected: Bool) -> some View {
-    let opacity = selected ? 0.13 : (hovered == id ? 0.07 : 0)
+    let tokens = ThemeService.shared.tokens
     RoundedRectangle(cornerRadius: 6)
-      .fill(Color.primary.opacity(opacity))
+      .fill(selected ? tokens.surface : (hovered == id ? tokens.hover : Color.clear))
       .padding(.horizontal, 8)
       .padding(.vertical, 1)
   }
@@ -457,9 +457,11 @@ struct ProjectSidebar: View {
     // Lighter than the root/workroom selection fill (0.13): the selected workroom is the primary
     // selection, the focused terminal a secondary "active within" cue — so the two don't read as two
     // equal selections when a subtree is open (issue #30 design pass).
-    let opacity = selected ? 0.07 : (hoveredTerminal == tabID ? 0.04 : 0)
+    let tokens = ThemeService.shared.tokens
+    let fill: Color =
+      selected ? tokens.hover : (hoveredTerminal == tabID ? tokens.hover.opacity(0.5) : .clear)
     RoundedRectangle(cornerRadius: 6)
-      .fill(Color.primary.opacity(opacity))
+      .fill(fill)
       .padding(.horizontal, 8)
       .padding(.vertical, 1)
   }
@@ -494,7 +496,7 @@ struct ProjectSidebar: View {
           .frame(width: 28, height: 28)
           .background(
             RoundedRectangle(cornerRadius: 6)
-              .fill(Color.primary.opacity(themeHovering ? 0.1 : 0))
+              .fill(ThemeService.shared.tokens.hover.opacity(themeHovering ? 1 : 0))
           )
       }
       .buttonStyle(.plain)
@@ -516,7 +518,7 @@ struct ProjectSidebar: View {
           .frame(width: 28, height: 28)
           .background(
             RoundedRectangle(cornerRadius: 6)
-              .fill(Color.primary.opacity(addProjectHovering ? 0.1 : 0))
+              .fill(ThemeService.shared.tokens.hover.opacity(addProjectHovering ? 1 : 0))
           )
       }
       .buttonStyle(.plain)
@@ -560,6 +562,7 @@ private struct CreateRowButton: View {
   let help: String
   let action: () -> Void
   @State private var hovering = false
+  private let theme = ThemeService.shared
 
   var body: some View {
     Button(action: action) {
@@ -569,7 +572,7 @@ private struct CreateRowButton: View {
         .padding(4)
         .background(
           RoundedRectangle(cornerRadius: 5)
-            .fill(Color.primary.opacity(hovering ? 0.1 : 0))
+            .fill(theme.tokens.hover.opacity(hovering ? 1 : 0))
         )
     }
     .buttonStyle(.plain)
@@ -621,6 +624,7 @@ private struct SettingsRowButton: View {
   let visible: Bool
   let action: () -> Void
   @State private var hovering = false
+  private let theme = ThemeService.shared
 
   var body: some View {
     Button(action: action) {
@@ -630,7 +634,7 @@ private struct SettingsRowButton: View {
         .padding(4)
         .background(
           RoundedRectangle(cornerRadius: 5)
-            .fill(Color.primary.opacity(hovering ? 0.1 : 0))
+            .fill(theme.tokens.hover.opacity(hovering ? 1 : 0))
         )
     }
     .buttonStyle(.plain)
@@ -680,6 +684,7 @@ private struct TerminalDisclosureButton: View {
   let width: CGFloat
   let action: () -> Void
   @State private var hovering = false
+  private let theme = ThemeService.shared
 
   var body: some View {
     Button(action: action) {
@@ -693,7 +698,7 @@ private struct TerminalDisclosureButton: View {
         .frame(width: width, height: 18, alignment: .center)
         .background {
           RoundedRectangle(cornerRadius: 5)
-            .fill(Color.primary.opacity(hovering ? 0.12 : 0))
+            .fill(theme.tokens.hover.opacity(hovering ? 1 : 0))
             .frame(width: 18, height: 18)
         }
         .contentShape(Rectangle())
@@ -713,6 +718,7 @@ private struct CloseTerminalRowButton: View {
   let visible: Bool
   let action: () -> Void
   @State private var hovering = false
+  private let theme = ThemeService.shared
 
   var body: some View {
     Button(action: action) {
@@ -722,7 +728,7 @@ private struct CloseTerminalRowButton: View {
         .padding(4)
         .background(
           RoundedRectangle(cornerRadius: 5)
-            .fill(Color.primary.opacity(hovering ? 0.12 : 0))
+            .fill(theme.tokens.hover.opacity(hovering ? 1 : 0))
         )
     }
     .buttonStyle(.plain)
