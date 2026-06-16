@@ -40,15 +40,11 @@ struct ThemePicker: View {
     .onTapGesture { theme.applyFamily(family.name) }
   }
 
-  /// Move the keyboard highlight by `delta`, clamped to the list.
+  /// Move the highlight by `delta` (clamped) and apply that family live — ↑/↓ change the theme
+  /// immediately, no ⏎ needed.
   private func moveHighlight(_ delta: Int) {
     guard !filteredFamilies.isEmpty else { return }
     highlighted = min(max(highlighted + delta, 0), filteredFamilies.count - 1)
-  }
-
-  /// Apply the highlighted family (⏎).
-  private func applyHighlighted() {
-    guard filteredFamilies.indices.contains(highlighted) else { return }
     theme.applyFamily(filteredFamilies[highlighted].name)
   }
 
@@ -123,7 +119,7 @@ struct ThemePicker: View {
       return .handled
     }
     .onKeyPress(.return) {
-      applyHighlighted()
+      dismiss()
       return .handled
     }
     .onAppear { resetHighlight() }
