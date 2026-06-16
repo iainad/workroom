@@ -33,9 +33,12 @@ struct SettingsView: View {
           showThemePopover = true
         } label: {
           HStack(spacing: 6) {
-            Text(themeFamily)
+            Text(themeFamily).lineLimit(1).truncationMode(.tail)
             Image(systemName: "chevron.up.chevron.down").font(.caption2)
           }
+          // Fixed width so the button (and the popover anchored to it) doesn't shift left/right as
+          // the selected family name changes length.
+          .frame(width: 160, alignment: .trailing)
         }
         .popover(isPresented: $showThemePopover, arrowEdge: .bottom) {
           ThemePicker()
