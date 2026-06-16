@@ -117,8 +117,24 @@ struct ThemePicker: View {
   }
 
   @ViewBuilder private var advancedSection: some View {
-    DisclosureGroup("Advanced — override each mode", isExpanded: $showAdvanced) {
-      VStack(alignment: .leading, spacing: 8) {
+    VStack(alignment: .leading, spacing: 8) {
+      // Custom disclosure so the WHOLE row toggles, not just the chevron.
+      Button {
+        withAnimation(.easeInOut(duration: 0.15)) { showAdvanced.toggle() }
+      } label: {
+        HStack(spacing: 6) {
+          Image(systemName: "chevron.right")
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(theme.tokens.fgMuted)
+            .rotationEffect(.degrees(showAdvanced ? 90 : 0))
+          Text("Advanced — override each mode")
+          Spacer(minLength: 0)
+        }
+        .contentShape(Rectangle())
+      }
+      .buttonStyle(.plain)
+
+      if showAdvanced {
         overrideRow(label: "Dark", binding: $darkOverride, isDark: true)
         overrideRow(label: "Light", binding: $lightOverride, isDark: false)
         Text(
@@ -126,7 +142,6 @@ struct ThemePicker: View {
         )
         .font(.caption).foregroundStyle(theme.tokens.fgDim)
       }
-      .padding(.top, 6)
     }
     .font(.subheadline)
     .padding(12)
