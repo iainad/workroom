@@ -306,3 +306,24 @@ to `RootView` (done).
 
 **Priority:** P3 (deferred from #23 — infrequent vs the monitoring use-case; the sidebar already
 covers management).
+
+## Theming: auto-pair user `~/.config` themes into families (macapp) — #36 follow-up
+
+**What:** Let loose theme files a user drops into `~/.config/ghostty/themes` surface as first-class
+theme *families* (a light + dark pair) in the picker, not just as individual variants reachable
+through the Advanced per-slot override.
+
+**Why:** #36 ships a curated set of pair-complete bundled families plus an Advanced override that
+can point either slot at any discovered theme (incl. user `~/.config` files). That covers power
+users, but a user with their own light/dark pair can't pick it as one named family the way the
+bundled ones work — they have to set both slots by hand.
+
+**How to start:** In `Core/ThemeService.swift`, after `discoverThemes()`, infer families from
+loose user files — e.g. name-suffix heuristics (`X` / `X Light`, `X Dark` / `X Light`), or read an
+optional user manifest. Merge inferred families into `ThemeService.families` for the picker. Handle
+the ambiguous cases: a single-variant user theme (no obvious partner) stays override-only; a name
+that collides with a bundled family.
+
+**Depends on:** the #36 families model + Advanced override shipping first (done).
+
+**Priority:** P3 (the Advanced override already makes user themes reachable; this is ergonomics).

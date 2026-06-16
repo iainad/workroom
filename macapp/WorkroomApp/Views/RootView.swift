@@ -19,6 +19,9 @@ struct RootView: View {
   /// even if the sidebar is collapsed via the standard toggle.
   @State private var showImporter = false
 
+  /// Presents the theme picker (issue #36), raised by the `Theme…` (⌘⇧K) command via notification.
+  @State private var showThemePicker = false
+
   /// Live preview of a workroom tab being dragged into the detail content to form a split (issue #23
   /// follow-up). Set by `WorkroomTabBar`'s drag, read by `WorkroomSplitView` to highlight the drop edge.
   @State private var workroomChipDrag: WorkroomPaneDrag?
@@ -150,8 +153,21 @@ struct RootView: View {
     // Foreground toasts (issue #31): pinned bottom-right of the window, over the split + inspector.
     // Only ever populated while the inspector is closed, so it never overlaps the open inspector.
     .overlay(alignment: .bottomTrailing) { ToastStack() }
-    .onAppear { applyAppearance() }
+    .onAppear {
+      // Wire the chokepoint's terminal step once: ThemeService owns theme application, the surface
+      // iteration stays in TerminalSessions (issue #36).
+      ThemeService.shared.onApplyTerminals = { [weak terminals = store.terminals] force in
+        terminals?.applyThemeToAll(force: force)
+      }
+      applyAppearance()
+    }
     .onChange(of: theme) { _ in applyAppearance() }
+    .onReceive(NotificationCenter.default.publisher(for: .showThemePicker)) { _ in
+      showThemePicker = true
+    }
+    .sheet(isPresented: $showThemePicker) {
+      ThemePicker(presentedAsSheet: true)
+    }
     // Keep the root branch labels reasonably current: refresh when the app regains
     // focus (throttled, so rapid alt-tabbing doesn't fork a git/jj process per project).
     // Regaining focus also dismisses the now-visible terminal's notifications (you're looking at it).
@@ -201,7 +217,10 @@ struct RootView: View {
   /// (see `TerminalSessions.applyThemeToAll`).
   private func applyAppearance() {
     NSApp.appearance = theme.nsAppearance
-    store.terminals.applyThemeToAll()
+    // Route through the single chokepoint: recomputes chrome tokens for the (possibly flipped)
+    // active variant, re-themes live terminals, and notifies AppKit sites. `force` because an
+    // appearance/preference change must always re-theme even if `dark` is unchanged.
+    ThemeService.shared.applyActiveTheme(force: true)
   }
 
   @ViewBuilder

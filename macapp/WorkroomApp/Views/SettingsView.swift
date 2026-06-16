@@ -14,13 +14,31 @@ struct SettingsView: View {
   @Default(.showMenuBarItem) private var showMenuBarItem
   // Bundle id of the editor for ⌘-clicked file paths; "" = the file's default app.
   @Default(.filePathEditor) private var pathEditor
+  @Default(.themeFamily) private var themeFamily
   @EnvironmentObject private var updater: Updater
+  @State private var showThemePopover = false
 
   var body: some View {
     Form {
       Picker("Appearance", selection: $theme) {
         ForEach(ThemePreference.allCases, id: \.self) { pref in
           Text(pref.label).tag(pref)
+        }
+      }
+
+      // Theme family (issue #36): a family bundles a light + dark variant; the active one follows
+      // Appearance above. The button opens the swatch picker (also reachable via ⌘⇧K).
+      LabeledContent("Theme") {
+        Button {
+          showThemePopover = true
+        } label: {
+          HStack(spacing: 6) {
+            Text(themeFamily)
+            Image(systemName: "chevron.up.chevron.down").font(.caption2)
+          }
+        }
+        .popover(isPresented: $showThemePopover, arrowEdge: .bottom) {
+          ThemePicker()
         }
       }
 

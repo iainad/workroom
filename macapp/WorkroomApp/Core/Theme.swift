@@ -2,26 +2,10 @@ import AppKit
 import Defaults
 import SwiftUI
 
-extension Color {
-  /// The focus indicator for a terminal pane's border — a solid colour that follows the app
-  /// appearance rather than the system accent blue (issue #23 follow-up). A soft mid-graphite that
-  /// stays gentle against both light and dark terminal backgrounds while reading as "the focused
-  /// one" next to the faint hairline on unfocused panes. Resolved through a dynamic `NSColor` so it
-  /// tracks `NSApp.appearance` (which `ThemePreference` drives), light or dark.
-  static let focused = Color(
-    nsColor: NSColor(name: "TerminalFocus") { appearance in
-      appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
-        ? NSColor(srgbRed: 0.58, green: 0.59, blue: 0.63, alpha: 1)
-        : NSColor(srgbRed: 0.50, green: 0.51, blue: 0.54, alpha: 1)
-    })
-
-  /// The scrim laid over unfocused terminal panes so the active one reads at a glance. It's the terminal's
-  /// own background colour — `.textBackgroundColor`, the exact system colour `GhosttyApp` writes as the
-  /// surface `background` — so the scrim is invisible *over the background* (same colour) and only washes
-  /// the pane's text toward it. The background itself barely shifts in any mode; the text carries the
-  /// focus signal. (A pure white/black scrim overshot dark mode, pushing the dark-grey BG toward black.)
-  static let terminalDim = Color(nsColor: .textBackgroundColor)
-}
+// The terminal focus-border and dim-scrim colours moved to `ThemeTokens` (issue #36): they now
+// derive from the active theme's palette (focus = a fixed-alpha foreground, dim = the theme
+// background) rather than fixed system colours, so they track the chosen theme. SwiftUI sites read
+// `theme.tokens.focused` / `theme.tokens.terminalDim`; AppKit sites read `ThemeService.shared`.
 
 /// The user's appearance choice. Persisted via `Defaults[.theme]`; `.system` (the default)
 /// follows the OS appearance, while `.light`/`.dark` force a scheme. `PreferRawRepresentable`

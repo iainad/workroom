@@ -522,6 +522,12 @@ struct WorkroomCommands: Commands {
       Toggle("Notifications", isOn: $showNotifications)
         .keyboardShortcut("n", modifiers: [.command, .option])
 
+      // Theme chooser (issue #36). A menu command can't anchor a popover, so it posts a
+      // notification RootView observes to present the picker as a sheet.
+      Divider()
+      Button("Theme…") { NotificationCenter.default.post(name: .showThemePicker, object: nil) }
+        .keyboardShortcut("k", modifiers: [.command, .shift])
+
       // Split the focused pane with a new terminal beside it (issue #3): ⌘D right, ⇧⌘D down; left/up
       // have no standard key, so they're menu-only.
       Divider()

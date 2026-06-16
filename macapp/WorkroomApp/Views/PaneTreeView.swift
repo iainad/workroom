@@ -293,6 +293,9 @@ private struct PaneLeafView: View {
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @State private var flashing = false
   @State private var hovering = false
+  // The shared @Observable service; reading `theme.tokens` in a body still tracks changes via the
+  // Observation framework (no environment injection required, so view-rendering tests don't need it).
+  private let theme = ThemeService.shared
 
   var body: some View {
     TerminalContainerView(view: view, isFocusedPane: focused)
@@ -305,7 +308,7 @@ private struct PaneLeafView: View {
       // dim so the pulse is visible on a backgrounded pane.
       .overlay(
         RoundedRectangle(cornerRadius: 12)
-          .fill(Color.terminalDim.opacity(dimmed ? 0.5 : 0))
+          .fill(theme.tokens.terminalDim.opacity(dimmed ? 0.5 : 0))
           .allowsHitTesting(false)
           .animation(reduceMotion ? nil : .easeInOut(duration: 0.1), value: flashing)
           .animation(reduceMotion ? nil : .easeInOut(duration: 0.1), value: focused)
@@ -379,8 +382,8 @@ private struct PaneLeafView: View {
     // The focused terminal gets the solid, theme-following `focused` tint — solo or split alike (and
     // an unfocused pane briefly flashes it on activity). Non-focused panes keep a faint neutral
     // hairline that still frames the surface.
-    if focused || flashing { return .focused }
-    return Color.primary.opacity(0.08)
+    if focused || flashing { return theme.tokens.focused }
+    return theme.tokens.border
   }
 }
 

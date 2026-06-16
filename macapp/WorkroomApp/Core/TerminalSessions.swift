@@ -101,8 +101,10 @@ final class TerminalSessions: ObservableObject {
     appearanceObserver = DistributedNotificationCenter.default().addObserver(
       forName: Notification.Name("AppleInterfaceThemeChangedNotification"), object: nil,
       queue: .main
-    ) { [weak self] _ in
-      DispatchQueue.main.async { self?.applyThemeToAll() }
+    ) { _ in
+      // OS appearance flipped while pref = System: route through the chokepoint so chrome tokens
+      // recompute (the active variant flips) alongside the terminal re-theme (issue #36).
+      Task { @MainActor in ThemeService.shared.applyActiveTheme() }
     }
   }
 
@@ -488,11 +490,12 @@ final class TerminalSessions: ObservableObject {
     for id in Array(tabsByTarget.keys) { reap(id) }
   }
 
-  /// Re-theme every live terminal — visible and hidden, solo and split alike — to the current
-  /// appearance. Driven from `RootView.applyAppearance()` and the system-appearance observer.
-  func applyThemeToAll() {
+  /// Re-theme every live terminal — visible and hidden, solo and split alike — to the active theme
+  /// for the current appearance. The terminal step of `ThemeService.applyActiveTheme()`. `force`
+  /// rebuilds the config even when the appearance is unchanged (a same-appearance theme switch).
+  func applyThemeToAll(force: Bool = false) {
     let isDark = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-    GhosttyApp.shared.reloadConfig()
+    GhosttyApp.shared.reloadConfig(force: force)
     GhosttyApp.shared.setColorScheme(dark: isDark)
     let config = GhosttyApp.shared.config
     for tabs in tabsByTarget.values {
