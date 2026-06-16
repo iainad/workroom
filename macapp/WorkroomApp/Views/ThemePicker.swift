@@ -2,8 +2,8 @@ import Defaults
 import SwiftUI
 
 /// Theme chooser (issue #36). A searchable list of **families**, each row a dual (light + dark)
-/// swatch — pick one and its variant follows the appearance. The selected family is pinned above
-/// the search. Used in Settings and from the `Theme…` (⌘⇧K) command (presented as a sheet).
+/// swatch — pick one and its variant follows the appearance. ↑/↓ apply families live; the selected
+/// one is scrolled into view on open. Used in Settings and from the `Theme…` (⌘⇧K) command.
 struct ThemePicker: View {
   private let theme = ThemeService.shared
   @Environment(\.dismiss) private var dismiss
@@ -21,11 +21,6 @@ struct ThemePicker: View {
     let q = query.trimmingCharacters(in: .whitespaces)
     guard !q.isEmpty else { return ThemeService.families }
     return ThemeService.families.filter { $0.name.localizedCaseInsensitiveContains(q) }
-  }
-
-  /// The currently selected family, pinned at the top of the list.
-  private var selected: ThemeFamily? {
-    ThemeService.families.first { $0.name == familyName }
   }
 
   private func familyRow(_ family: ThemeFamily, highlighted: Bool = false) -> some View {
@@ -48,12 +43,6 @@ struct ThemePicker: View {
     theme.applyFamily(filteredFamilies[highlighted].name)
   }
 
-  /// Start the highlight on the currently-selected family (or the top), clamped to the list.
-  private func resetHighlight() {
-    let idx = filteredFamilies.firstIndex { $0.name == familyName } ?? 0
-    highlighted = min(max(idx, 0), max(filteredFamilies.count - 1, 0))
-  }
-
   var body: some View {
     VStack(spacing: 0) {
       if presentedAsSheet {
@@ -64,19 +53,6 @@ struct ThemePicker: View {
         }
         .padding(12)
         Divider()
-      }
-
-      // The selected family is pinned above the search with a rule beneath it, so the current
-      // choice is always visible — and it ALSO stays in the searchable list below.
-      if let selected {
-        familyRow(selected)
-          .padding(.horizontal, 10)
-          .padding(.top, 8)
-        Rectangle()
-          .fill(theme.tokens.border)
-          .frame(height: 1)
-          .padding(.horizontal, 10)
-          .padding(.top, 7)
       }
 
       searchField
@@ -105,11 +81,20 @@ struct ThemePicker: View {
             withAnimation(.easeInOut(duration: 0.1)) { proxy.scrollTo(filteredFamilies[new].id) }
           }
         }
+        .onAppear {
+          // Start the highlight on the selected family and scroll it into view — it replaces the
+          // pinned row, so the current choice is always visible without a separate header.
+          let idx = filteredFamilies.firstIndex { $0.name == familyName } ?? 0
+          highlighted = idx
+          if filteredFamilies.indices.contains(idx) {
+            proxy.scrollTo(filteredFamilies[idx].id, anchor: .center)
+          }
+        }
       }
     }
     .frame(width: 300, height: presentedAsSheet ? 460 : 420)
-    // ↑/↓ move the highlight through the list, ⏎ applies it. The search field keeps text focus;
-    // single-line fields don't consume the arrow keys, so they bubble here.
+    // ↑/↓ move through the list and apply the family live; ⏎ dismisses. The search field keeps
+    // text focus; single-line fields don't consume the arrow keys, so they bubble here.
     .onKeyPress(.upArrow) {
       moveHighlight(-1)
       return .handled
@@ -122,7 +107,6 @@ struct ThemePicker: View {
       dismiss()
       return .handled
     }
-    .onAppear { resetHighlight() }
     .onChange(of: query) { _, _ in highlighted = 0 }
   }
 
