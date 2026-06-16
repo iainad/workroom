@@ -62,6 +62,8 @@ struct WorkroomTerminalsView: View {
         } actions: {
           Button("New Terminal") { sessions.addTab(for: target) }
             .buttonStyle(.borderedProminent)
+            // Use the active theme accent rather than the system blue (issue #36).
+            .tint(ThemeService.shared.tokens.accent)
             .accessibilityIdentifier("NewTerminal")
         }
       }
