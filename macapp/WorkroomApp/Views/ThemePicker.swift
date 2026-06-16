@@ -54,19 +54,23 @@ struct ThemePicker: View {
         Divider()
       }
 
+      // The selected family is pinned above the search with a rule beneath it, so the current
+      // choice is always visible — and it ALSO stays in the searchable list below.
+      if let selected {
+        familyRow(selected)
+          .padding(.horizontal, 10)
+          .padding(.top, 8)
+        Rectangle()
+          .fill(theme.tokens.border)
+          .frame(height: 1)
+          .padding(.horizontal, 10)
+          .padding(.top, 7)
+      }
+
       searchField
 
       ScrollView {
         LazyVStack(spacing: 2) {
-          // The selected family is pinned at the top with a rule beneath it, so the current choice
-          // is always visible — and it ALSO stays in the full list below in its normal position.
-          if let selected {
-            familyRow(selected)
-            Rectangle()
-              .fill(theme.tokens.border)
-              .frame(height: 1)
-              .padding(.vertical, 5)
-          }
           if filteredFamilies.isEmpty {
             Text("No themes match “\(query)”")
               .font(.footnote)
