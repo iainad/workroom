@@ -26,6 +26,22 @@ struct ThemePicker: View {
     return ThemeService.families.filter { $0.name.localizedCaseInsensitiveContains(q) }
   }
 
+  /// The currently selected family, pinned at the top of the list.
+  private var selected: ThemeFamily? {
+    ThemeService.families.first { $0.name == familyName }
+  }
+
+  private func familyRow(_ family: ThemeFamily) -> some View {
+    FamilyRow(
+      family: family,
+      isActive: family.name == familyName && darkOverride == nil && lightOverride == nil,
+      dark: ThemeService.themePreview(named: family.dark),
+      light: ThemeService.themePreview(named: family.light)
+    )
+    .contentShape(Rectangle())
+    .onTapGesture { theme.applyFamily(family.name) }
+  }
+
   var body: some View {
     VStack(spacing: 0) {
       if presentedAsSheet {
@@ -40,28 +56,30 @@ struct ThemePicker: View {
 
       searchField
 
-      if filteredFamilies.isEmpty {
-        emptyState(
-          title: "No themes match “\(query)”",
-          systemImage: "magnifyingglass",
-          action: ("Clear search", { query = "" }))
-      } else {
-        ScrollView {
-          LazyVStack(spacing: 2) {
-            ForEach(filteredFamilies) { family in
-              FamilyRow(
-                family: family,
-                isActive: family.name == familyName && darkOverride == nil && lightOverride == nil,
-                dark: ThemeService.themePreview(named: family.dark),
-                light: ThemeService.themePreview(named: family.light)
-              )
-              .contentShape(Rectangle())
-              .onTapGesture { theme.applyFamily(family.name) }
-            }
+      ScrollView {
+        LazyVStack(spacing: 2) {
+          // The selected family is pinned at the top with a rule beneath it, so the current choice
+          // is always visible above the (searchable) rest of the list.
+          if let selected {
+            familyRow(selected)
+            Rectangle()
+              .fill(theme.tokens.border)
+              .frame(height: 1)
+              .padding(.vertical, 5)
           }
-          .padding(.horizontal, 10)
-          .padding(.vertical, 8)
+          let others = filteredFamilies.filter { $0.id != selected?.id }
+          if others.isEmpty {
+            Text("No other themes match “\(query)”")
+              .font(.footnote)
+              .foregroundStyle(theme.tokens.fgMuted)
+              .frame(maxWidth: .infinity)
+              .padding(.vertical, 16)
+          } else {
+            ForEach(others) { familyRow($0) }
+          }
         }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
       }
 
       Divider()
@@ -76,6 +94,8 @@ struct ThemePicker: View {
       Image(systemName: "magnifyingglass").foregroundStyle(theme.tokens.fgDim)
       TextField("Search themes", text: $query)
         .textFieldStyle(.plain)
+        .multilineTextAlignment(.leading)
+        .frame(maxWidth: .infinity, alignment: .leading)
       if !query.isEmpty {
         Button {
           query = ""
@@ -122,22 +142,6 @@ struct ThemePicker: View {
       }
       .labelsHidden()
     }
-  }
-
-  private func emptyState(title: String, systemImage: String, action: (String, () -> Void)?)
-    -> some View
-  {
-    VStack(spacing: 10) {
-      Spacer()
-      Image(systemName: systemImage).font(.largeTitle).foregroundStyle(theme.tokens.fgDim)
-      Text(title).foregroundStyle(theme.tokens.fgMuted).multilineTextAlignment(.center)
-      if let action {
-        Button(action.0, action: action.1).buttonStyle(.link)
-      }
-      Spacer()
-    }
-    .frame(maxWidth: .infinity, maxHeight: .infinity)
-    .padding()
   }
 }
 
