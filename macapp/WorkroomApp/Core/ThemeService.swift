@@ -5,8 +5,7 @@ import SwiftUI
 
 /// A named theme **family** that bundles a dark and a light variant (issue #36: every theme must
 /// support both modes). The user picks one family; the active variant follows the appearance, so
-/// "supports dark and light" holds by construction. Power users can override either slot
-/// independently (`Defaults[.darkThemeOverride]` / `[.lightThemeOverride]`).
+/// "supports dark and light" holds by construction.
 struct ThemeFamily: Identifiable, Hashable {
   let name: String
   let dark: String  // dark-variant theme-file name (resolved by ghostty + parsed for chrome)
@@ -73,13 +72,11 @@ final class ThemeService {
     families.first { $0.name == name }
   }
 
-  /// The active variant file name for an appearance: a per-slot override if set, else the selected
-  /// family's variant, else the Workroom default. Always sanitised (safe to write into the conf).
+  /// The active variant file name for an appearance: the selected family's variant for that mode,
+  /// else the Workroom default. Always sanitised (safe to write into the conf).
   nonisolated static func activeThemeName(isDark: Bool) -> String {
-    let override = isDark ? Defaults[.darkThemeOverride] : Defaults[.lightThemeOverride]
     let resolved =
-      override?.nilIfBlank
-      ?? family(named: Defaults[.themeFamily])?.variant(isDark: isDark)
+      family(named: Defaults[.themeFamily])?.variant(isDark: isDark)
       ?? family(named: defaultFamilyName)!.variant(isDark: isDark)
     return sanitizedThemeName(resolved)
   }
@@ -108,67 +105,23 @@ final class ThemeService {
 
   func applyFamily(_ name: String) {
     Defaults[.themeFamily] = name
-    Defaults[.darkThemeOverride] = nil
-    Defaults[.lightThemeOverride] = nil
     applyActiveTheme()
   }
 
-  func applyOverride(_ name: String?, isDark: Bool) {
-    if isDark {
-      Defaults[.darkThemeOverride] = name?.nilIfBlank
-    } else {
-      Defaults[.lightThemeOverride] = name?.nilIfBlank
-    }
-    applyActiveTheme()
-  }
-
-  /// If the stored family/override no longer resolves to a real theme file (e.g. a `~/.config`
-  /// theme was deleted, or an old key references a renamed family), reset to the Workroom default
-  /// so the terminal (ghostty) and chrome don't diverge onto different fallbacks.
+  /// If the stored family no longer resolves (e.g. an old key references a renamed family), reset
+  /// to the Workroom default so the terminal (ghostty) and chrome don't diverge onto different
+  /// fallbacks.
   private func validateSelection() {
     if Self.family(named: Defaults[.themeFamily]) == nil {
       Defaults[.themeFamily] = Self.defaultFamilyName
     }
-    if let name = Defaults[.darkThemeOverride]?.nilIfBlank, Self.themePreview(named: name) == nil {
-      Defaults[.darkThemeOverride] = nil
-    }
-    if let name = Defaults[.lightThemeOverride]?.nilIfBlank, Self.themePreview(named: name) == nil {
-      Defaults[.lightThemeOverride] = nil
-    }
   }
 
-  // MARK: Discovery (picker)
-
-  /// All available themes, deduped, with `~/.config` overriding bundled (matching ghostty's
-  /// terminal precedence), Workroom variants pinned first. Off-main so opening the picker never
-  /// hitches.
-  func loadThemes() async -> [ThemePreview] {
-    await Task.detached { Self.discoverThemes() }.value
-  }
-
-  nonisolated static func discoverThemes() -> [ThemePreview] {
-    var byName: [String: ThemePreview] = [:]
-    // Iterate bundled first, then `~/.config` — last write wins, so user files override bundled
-    // (the same precedence ghostty uses for the terminal).
-    for dir in themeDirectories().reversed() {
-      guard let files = try? FileManager.default.contentsOfDirectory(atPath: dir) else { continue }
-      for file in files where file != "SOURCE.md" && file != "LICENSE" {
-        guard let theme = parseThemeFile(atPath: dir + "/" + file, name: file) else { continue }
-        byName[theme.name] = theme
-      }
-    }
-    let pinned = Set(families.first(where: { $0.name == defaultFamilyName })!.variantNames)
-    return byName.values.sorted {
-      let p0 = pinned.contains($0.name)
-      let p1 = pinned.contains($1.name)
-      if p0 != p1 { return p0 }
-      return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
-    }
-  }
+  // MARK: Resolution
 
   /// Resolve one theme name to its parsed colours, with `~/.config` winning over bundled — the
-  /// SAME precedence as `discoverThemes` and as ghostty's terminal resolution, so chrome and
-  /// terminal never diverge for an overridden name.
+  /// SAME precedence as ghostty's terminal resolution, so chrome and terminal never diverge for a
+  /// user-overridden theme file.
   nonisolated static func themePreview(named name: String) -> ThemePreview? {
     for dir in themeDirectories() {
       let path = dir + "/" + name
@@ -250,17 +203,6 @@ final class ThemeService {
     case .system:
       return NSApp?.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
     }
-  }
-}
-
-extension ThemeFamily {
-  var variantNames: [String] { [dark, light] }
-}
-
-extension String {
-  fileprivate var nilIfBlank: String? {
-    let t = trimmingCharacters(in: .whitespacesAndNewlines)
-    return t.isEmpty ? nil : t
   }
 }
 

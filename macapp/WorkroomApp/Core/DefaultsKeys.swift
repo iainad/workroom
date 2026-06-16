@@ -33,12 +33,6 @@ extension Defaults.Keys {
   /// family so existing users get the Workroom look on upgrade. Resolved by `ThemeService`.
   static let themeFamily = Key<String>("themeFamily", default: ThemeService.defaultFamilyName)
 
-  /// Advanced per-slot overrides: a specific theme-file name to use for the dark / light slot
-  /// instead of the family's variant (the only way to select a loose `~/.config` theme). `nil` =
-  /// use the family's variant. These are the contract for power-user selections — keep stable.
-  static let darkThemeOverride = Key<String?>("darkThemeOverride", default: nil)
-  static let lightThemeOverride = Key<String?>("lightThemeOverride", default: nil)
-
   /// Copy a finished terminal selection to the pasteboard automatically (xterm/iTerm2 convention).
   static let copyOnSelect = Key<Bool>("copyOnSelect", default: true)
 

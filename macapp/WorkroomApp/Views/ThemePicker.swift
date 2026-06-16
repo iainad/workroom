@@ -1,24 +1,19 @@
 import Defaults
 import SwiftUI
 
-/// Theme chooser (issue #36). Primary surface: a searchable list of **families**, each row a dual
-/// (light + dark) swatch — pick one and its variant follows the appearance. An "Advanced" expander
-/// exposes per-slot overrides (the only way to select a loose `~/.config` theme). Used in Settings
-/// and from the `Theme…` (⌘⇧K) command (presented as a sheet).
+/// Theme chooser (issue #36). A searchable list of **families**, each row a dual (light + dark)
+/// swatch — pick one and its variant follows the appearance. The selected family is pinned above
+/// the search. Used in Settings and from the `Theme…` (⌘⇧K) command (presented as a sheet).
 struct ThemePicker: View {
   private let theme = ThemeService.shared
   @Environment(\.dismiss) private var dismiss
   @Default(.themeFamily) private var familyName
-  @Default(.darkThemeOverride) private var darkOverride
-  @Default(.lightThemeOverride) private var lightOverride
 
   /// When true (the ⌘⇧K sheet) the view shows a title bar + Done button; embedded in Settings it
   /// doesn't.
   var presentedAsSheet = false
 
   @State private var query = ""
-  @State private var showAdvanced = false
-  @State private var allThemes: [ThemePreview] = []
 
   private var filteredFamilies: [ThemeFamily] {
     let q = query.trimmingCharacters(in: .whitespaces)
@@ -34,7 +29,7 @@ struct ThemePicker: View {
   private func familyRow(_ family: ThemeFamily) -> some View {
     FamilyRow(
       family: family,
-      isActive: family.name == familyName && darkOverride == nil && lightOverride == nil,
+      isActive: family.name == familyName,
       dark: ThemeService.themePreview(named: family.dark),
       light: ThemeService.themePreview(named: family.light)
     )
@@ -84,12 +79,8 @@ struct ThemePicker: View {
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
       }
-
-      Divider()
-      advancedSection
     }
     .frame(width: 300, height: presentedAsSheet ? 460 : 420)
-    .task { allThemes = await theme.loadThemes() }
   }
 
   private var searchField: some View {
@@ -118,54 +109,6 @@ struct ThemePicker: View {
           RoundedRectangle(cornerRadius: 8).strokeBorder(theme.tokens.border, lineWidth: 0.5))
     )
     .padding(10)
-  }
-
-  @ViewBuilder private var advancedSection: some View {
-    VStack(alignment: .leading, spacing: 8) {
-      // Custom disclosure so the WHOLE row toggles, not just the chevron.
-      Button {
-        withAnimation(.easeInOut(duration: 0.15)) { showAdvanced.toggle() }
-      } label: {
-        HStack(spacing: 6) {
-          Image(systemName: "chevron.right")
-            .font(.caption2.weight(.semibold))
-            .foregroundStyle(theme.tokens.fgMuted)
-            .rotationEffect(.degrees(showAdvanced ? 90 : 0))
-          Text("Advanced — override each mode")
-          Spacer(minLength: 0)
-        }
-        .contentShape(Rectangle())
-      }
-      .buttonStyle(.plain)
-
-      if showAdvanced {
-        overrideRow(label: "Dark", binding: $darkOverride, isDark: true)
-        overrideRow(label: "Light", binding: $lightOverride, isDark: false)
-        Text(
-          "Overrides pick a specific theme for one mode, including any in ~/.config/ghostty/themes."
-        )
-        .font(.caption).foregroundStyle(theme.tokens.fgDim)
-      }
-    }
-    .font(.subheadline)
-    .padding(12)
-  }
-
-  private func overrideRow(label: String, binding: Binding<String?>, isDark: Bool) -> some View {
-    HStack {
-      Text(label).frame(width: 44, alignment: .leading).foregroundStyle(theme.tokens.fg)
-      Picker(
-        "",
-        selection: Binding(
-          get: { binding.wrappedValue ?? "" },
-          set: { theme.applyOverride($0.isEmpty ? nil : $0, isDark: isDark) })
-      ) {
-        Text("Family default").tag("")
-        Divider()
-        ForEach(allThemes) { t in Text(t.name).tag(t.name) }
-      }
-      .labelsHidden()
-    }
   }
 }
 

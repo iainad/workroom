@@ -310,20 +310,20 @@ covers management).
 ## Theming: auto-pair user `~/.config` themes into families (macapp) — #36 follow-up
 
 **What:** Let loose theme files a user drops into `~/.config/ghostty/themes` surface as first-class
-theme *families* (a light + dark pair) in the picker, not just as individual variants reachable
-through the Advanced per-slot override.
+theme *families* (a light + dark pair) in the picker.
 
-**Why:** #36 ships a curated set of pair-complete bundled families plus an Advanced override that
-can point either slot at any discovered theme (incl. user `~/.config` files). That covers power
-users, but a user with their own light/dark pair can't pick it as one named family the way the
-bundled ones work — they have to set both slots by hand.
+**Why:** #36 ships a curated set of pair-complete bundled families only — the picker lists those.
+A user with their own theme files in `~/.config/ghostty/themes` currently has no way to pick them
+from the picker (ghostty still resolves them for the *terminal* when a bundled name collides, since
+`themePreview`/resolution favour `~/.config`, but they aren't selectable). Inferring families from
+user files would make them first-class.
 
-**How to start:** In `Core/ThemeService.swift`, after `discoverThemes()`, infer families from
-loose user files — e.g. name-suffix heuristics (`X` / `X Light`, `X Dark` / `X Light`), or read an
-optional user manifest. Merge inferred families into `ThemeService.families` for the picker. Handle
-the ambiguous cases: a single-variant user theme (no obvious partner) stays override-only; a name
-that collides with a bundled family.
+**How to start:** In `Core/ThemeService.swift`, add discovery of `~/.config/ghostty/themes` and
+infer families from loose user files — e.g. name-suffix heuristics (`X` / `X Light`, `X Dark` /
+`X Light`), or read an optional user manifest. Merge inferred families into the picker's family
+list. Handle the ambiguous cases: a single-variant user theme (no obvious partner); a name that
+collides with a bundled family.
 
-**Depends on:** the #36 families model + Advanced override shipping first (done).
+**Depends on:** the #36 families model shipping first (done).
 
-**Priority:** P3 (the Advanced override already makes user themes reachable; this is ergonomics).
+**Priority:** P3 (bundled families cover the common case; this is for users with custom schemes).

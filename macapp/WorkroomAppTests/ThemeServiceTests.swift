@@ -12,21 +12,15 @@ final class ThemeServiceTests: XCTestCase {
   // Save/restore the theme Defaults each test mutates, so tests don't leak into each other or the
   // running app's prefs.
   private var savedFamily: String!
-  private var savedDark: String?
-  private var savedLight: String?
   private var savedAppearance: ThemePreference!
 
   override func setUp() {
     savedFamily = Defaults[.themeFamily]
-    savedDark = Defaults[.darkThemeOverride]
-    savedLight = Defaults[.lightThemeOverride]
     savedAppearance = Defaults[.theme]
   }
 
   override func tearDown() {
     Defaults[.themeFamily] = savedFamily
-    Defaults[.darkThemeOverride] = savedDark
-    Defaults[.lightThemeOverride] = savedLight
     Defaults[.theme] = savedAppearance
   }
 
@@ -103,25 +97,12 @@ final class ThemeServiceTests: XCTestCase {
   func testActiveNamePicksFamilyVariantPerAppearance() {
     Defaults[.theme] = .dark
     Defaults[.themeFamily] = "Catppuccin"
-    Defaults[.darkThemeOverride] = nil
-    Defaults[.lightThemeOverride] = nil
     XCTAssertEqual(ThemeService.activeThemeName(isDark: true), "Catppuccin Mocha")
-    XCTAssertEqual(ThemeService.activeThemeName(isDark: false), "Catppuccin Latte")
-  }
-
-  func testOverrideWinsOverFamily() {
-    Defaults[.themeFamily] = "Catppuccin"
-    Defaults[.darkThemeOverride] = "Gruvbox Dark"
-    XCTAssertEqual(ThemeService.activeThemeName(isDark: true), "Gruvbox Dark")
-    // Light slot unset → still the family's light variant.
-    Defaults[.lightThemeOverride] = nil
     XCTAssertEqual(ThemeService.activeThemeName(isDark: false), "Catppuccin Latte")
   }
 
   func testUnknownFamilyFallsBackToWorkroom() {
     Defaults[.themeFamily] = "DoesNotExist"
-    Defaults[.darkThemeOverride] = nil
-    Defaults[.lightThemeOverride] = nil
     XCTAssertEqual(ThemeService.activeThemeName(isDark: true), "Workroom")
     XCTAssertEqual(ThemeService.activeThemeName(isDark: false), "Workroom Light")
   }
