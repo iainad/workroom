@@ -237,8 +237,9 @@ struct RootView: View {
           chipPaneDrag: $workroomChipDrag,
           localize: { workroomChipLocal($0) },
           dropTarget: { workroomChipDropTarget(at: $0) })
-        // A hairline directly beneath the tabs, separating the bar from the terminal below.
-        Divider()
+        // A themed hairline directly beneath the tabs, separating the bar from the terminal below
+        // (issue #36 — sources from the active theme rather than the system separator).
+        ThemeService.shared.tokens.border.frame(height: 1)
       }
       detailContent
         // Always fill the remaining height so the tab bar above stays pinned to the top. The
@@ -256,6 +257,11 @@ struct RootView: View {
         )
     }
     .onPreferenceChange(DetailContentFrameKey.self) { detailContentFrame = $0 }
+    // Blend the whole detail column into the active theme background (issue #36): the terminal
+    // surface paints the same theme bg, so the empty states and the region around the tab bar /
+    // panes carry the theme colour instead of the system window background, completing the
+    // "terminal blends into the window" look under any theme.
+    .background(ThemeService.shared.tokens.bg)
   }
 
   /// The content-local point for a chip drag at `global`, or nil when the cursor is still over the bar
@@ -393,7 +399,7 @@ struct RootView: View {
           WorkroomTerminalsView(target: target, sessions: store.terminals)
 
           if let log = store.logs[target.id] {
-            Divider()
+            ThemeService.shared.tokens.border.frame(height: 1)
             ScriptLogPanel(session: log) { store.logs[target.id] = nil }
           }
         }
