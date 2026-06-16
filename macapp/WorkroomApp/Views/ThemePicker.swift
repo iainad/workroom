@@ -14,6 +14,8 @@ struct ThemePicker: View {
   var presentedAsSheet = false
 
   @State private var query = ""
+  /// Index into `filteredFamilies` of the keyboard-highlighted row (↑/↓ move it, ⏎ applies).
+  @State private var highlighted = 0
 
   private var filteredFamilies: [ThemeFamily] {
     let q = query.trimmingCharacters(in: .whitespaces)
@@ -26,15 +28,34 @@ struct ThemePicker: View {
     ThemeService.families.first { $0.name == familyName }
   }
 
-  private func familyRow(_ family: ThemeFamily) -> some View {
+  private func familyRow(_ family: ThemeFamily, highlighted: Bool = false) -> some View {
     FamilyRow(
       family: family,
       isActive: family.name == familyName,
+      isHighlighted: highlighted,
       dark: ThemeService.themePreview(named: family.dark),
       light: ThemeService.themePreview(named: family.light)
     )
     .contentShape(Rectangle())
     .onTapGesture { theme.applyFamily(family.name) }
+  }
+
+  /// Move the keyboard highlight by `delta`, clamped to the list.
+  private func moveHighlight(_ delta: Int) {
+    guard !filteredFamilies.isEmpty else { return }
+    highlighted = min(max(highlighted + delta, 0), filteredFamilies.count - 1)
+  }
+
+  /// Apply the highlighted family (⏎).
+  private func applyHighlighted() {
+    guard filteredFamilies.indices.contains(highlighted) else { return }
+    theme.applyFamily(filteredFamilies[highlighted].name)
+  }
+
+  /// Start the highlight on the currently-selected family (or the top), clamped to the list.
+  private func resetHighlight() {
+    let idx = filteredFamilies.firstIndex { $0.name == familyName } ?? 0
+    highlighted = min(max(idx, 0), max(filteredFamilies.count - 1, 0))
   }
 
   var body: some View {
@@ -64,23 +85,49 @@ struct ThemePicker: View {
 
       searchField
 
-      ScrollView {
-        LazyVStack(spacing: 2) {
-          if filteredFamilies.isEmpty {
-            Text("No themes match “\(query)”")
-              .font(.footnote)
-              .foregroundStyle(theme.tokens.fgMuted)
-              .frame(maxWidth: .infinity)
-              .padding(.vertical, 16)
-          } else {
-            ForEach(filteredFamilies) { familyRow($0) }
+      ScrollViewReader { proxy in
+        ScrollView {
+          LazyVStack(spacing: 2) {
+            if filteredFamilies.isEmpty {
+              Text("No themes match “\(query)”")
+                .font(.footnote)
+                .foregroundStyle(theme.tokens.fgMuted)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 16)
+            } else {
+              ForEach(Array(filteredFamilies.enumerated()), id: \.element.id) { index, family in
+                familyRow(family, highlighted: index == highlighted)
+                  .id(family.id)
+              }
+            }
+          }
+          .padding(.horizontal, 10)
+          .padding(.vertical, 8)
+        }
+        .onChange(of: highlighted) { _, new in
+          if filteredFamilies.indices.contains(new) {
+            withAnimation(.easeInOut(duration: 0.1)) { proxy.scrollTo(filteredFamilies[new].id) }
           }
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
       }
     }
     .frame(width: 300, height: presentedAsSheet ? 460 : 420)
+    // ↑/↓ move the highlight through the list, ⏎ applies it. The search field keeps text focus;
+    // single-line fields don't consume the arrow keys, so they bubble here.
+    .onKeyPress(.upArrow) {
+      moveHighlight(-1)
+      return .handled
+    }
+    .onKeyPress(.downArrow) {
+      moveHighlight(1)
+      return .handled
+    }
+    .onKeyPress(.return) {
+      applyHighlighted()
+      return .handled
+    }
+    .onAppear { resetHighlight() }
+    .onChange(of: query) { _, _ in highlighted = 0 }
   }
 
   private var searchField: some View {
@@ -117,6 +164,7 @@ private struct FamilyRow: View {
   private let theme = ThemeService.shared
   let family: ThemeFamily
   let isActive: Bool
+  var isHighlighted = false
   let dark: ThemePreview?
   let light: ThemePreview?
   @State private var hovered = false
@@ -147,12 +195,18 @@ private struct FamilyRow: View {
     .padding(.vertical, 6)
     .background(
       RoundedRectangle(cornerRadius: 6)
-        .fill(isActive ? theme.tokens.accentSoft : (hovered ? theme.tokens.hover : .clear))
+        .fill(
+          isActive
+            ? theme.tokens.accentSoft
+            : (isHighlighted ? theme.tokens.surface : (hovered ? theme.tokens.hover : .clear)))
     )
-    // A clear accent ring on the selected family so it stands out from hover and the rest.
+    // Accent ring on the selected family; a fainter ring on the keyboard-highlighted row so ↑/↓
+    // focus is visible even when it isn't the selected one.
     .overlay(
       RoundedRectangle(cornerRadius: 6)
-        .strokeBorder(isActive ? theme.tokens.accent : .clear, lineWidth: 1.5)
+        .strokeBorder(
+          isActive ? theme.tokens.accent : (isHighlighted ? theme.tokens.fgDim : .clear),
+          lineWidth: 1.5)
     )
     .onHover { hovered = $0 }
   }
