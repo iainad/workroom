@@ -59,7 +59,7 @@ struct ThemePicker: View {
       ScrollView {
         LazyVStack(spacing: 2) {
           // The selected family is pinned at the top with a rule beneath it, so the current choice
-          // is always visible above the (searchable) rest of the list.
+          // is always visible — and it ALSO stays in the full list below in its normal position.
           if let selected {
             familyRow(selected)
             Rectangle()
@@ -67,15 +67,14 @@ struct ThemePicker: View {
               .frame(height: 1)
               .padding(.vertical, 5)
           }
-          let others = filteredFamilies.filter { $0.id != selected?.id }
-          if others.isEmpty {
-            Text("No other themes match “\(query)”")
+          if filteredFamilies.isEmpty {
+            Text("No themes match “\(query)”")
               .font(.footnote)
               .foregroundStyle(theme.tokens.fgMuted)
               .frame(maxWidth: .infinity)
               .padding(.vertical, 16)
           } else {
-            ForEach(others) { familyRow($0) }
+            ForEach(filteredFamilies) { familyRow($0) }
           }
         }
         .padding(.horizontal, 10)
@@ -106,8 +105,14 @@ struct ThemePicker: View {
         .help("Clear search")
       }
     }
-    .padding(8)
-    .background(theme.tokens.surface)
+    .padding(.horizontal, 8)
+    .padding(.vertical, 6)
+    .background(
+      RoundedRectangle(cornerRadius: 8)
+        .fill(theme.tokens.surface)
+        .overlay(
+          RoundedRectangle(cornerRadius: 8).strokeBorder(theme.tokens.border, lineWidth: 0.5))
+    )
     .padding(10)
   }
 
@@ -158,15 +163,15 @@ private struct FamilyRow: View {
     VStack(alignment: .leading, spacing: 6) {
       HStack(spacing: 6) {
         Text(family.name)
-          .font(.system(size: 12, weight: .medium))
-          .foregroundStyle(theme.tokens.fg)
+          .font(.system(size: 12, weight: isActive ? .semibold : .medium))
+          .foregroundStyle(isActive ? theme.tokens.accent : theme.tokens.fg)
           .lineLimit(1)
           .truncationMode(.tail)
           .help(family.name)
         Spacer(minLength: 0)
         if isActive {
-          Image(systemName: "checkmark")
-            .font(.system(size: 10, weight: .bold))
+          Image(systemName: "checkmark.circle.fill")
+            .font(.system(size: 12, weight: .bold))
             .foregroundStyle(theme.tokens.accent)
         }
       }
@@ -181,6 +186,11 @@ private struct FamilyRow: View {
     .background(
       RoundedRectangle(cornerRadius: 6)
         .fill(isActive ? theme.tokens.accentSoft : (hovered ? theme.tokens.hover : .clear))
+    )
+    // A clear accent ring on the selected family so it stands out from hover and the rest.
+    .overlay(
+      RoundedRectangle(cornerRadius: 6)
+        .strokeBorder(isActive ? theme.tokens.accent : .clear, lineWidth: 1.5)
     )
     .onHover { hovered = $0 }
   }
