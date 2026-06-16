@@ -262,11 +262,10 @@ struct RootView: View {
         )
     }
     .onPreferenceChange(DetailContentFrameKey.self) { detailContentFrame = $0 }
-    // Blend the whole detail column into the active theme background (issue #36): the terminal
-    // surface paints the same theme bg, so the empty states and the region around the tab bar /
-    // panes carry the theme colour instead of the system window background, completing the
-    // "terminal blends into the window" look under any theme.
-    .background(ThemeService.shared.tokens.bg)
+    // The detail column (tab bar + region around the panes) uses the theme *panel* colour — a
+    // subtle step off the terminal background (issue #36) — so the chrome reads as a distinct
+    // surface framing the terminals rather than one flat colour.
+    .background(ThemeService.shared.tokens.panel)
   }
 
   /// The content-local point for a chip drag at `global`, or nil when the cursor is still over the bar

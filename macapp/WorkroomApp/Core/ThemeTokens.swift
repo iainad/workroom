@@ -19,6 +19,12 @@ struct ThemeTokens {
   let nsFg: NSColor
   let bg: Color
   let fg: Color
+  // The chrome panel surrounding the terminals (tab bar, pane gutters, title bar): the theme
+  // background nudged slightly toward the foreground, so the panel reads as a distinct surface from
+  // the terminals themselves (subtly lighter in dark themes, darker in light) without breaking the
+  // overall blend.
+  let panel: Color
+  let nsPanel: NSColor
   let fgMuted: Color  // fg @ 0.65 — secondary text
   let fgDim: Color  // fg @ 0.40 — tertiary text / placeholders
   let surface: Color  // fg @ 0.08 — raised row / panel fill
@@ -65,6 +71,11 @@ struct ThemeTokens {
     nsFg = fgColor
     bg = Color(nsColor: bgColor)
     fg = Color(nsColor: fgColor)
+    let panelColor =
+      bgColor.usingColorSpace(.sRGB)?
+      .blended(withFraction: 0.055, of: fgColor.usingColorSpace(.sRGB) ?? fgColor) ?? bgColor
+    nsPanel = panelColor
+    panel = Color(nsColor: panelColor)
     fgMuted = Color(nsColor: fgColor.withAlphaComponent(0.65))
     fgDim = Color(nsColor: fgColor.withAlphaComponent(0.40))
     surface = Color(nsColor: fgColor.withAlphaComponent(0.08))

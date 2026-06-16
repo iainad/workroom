@@ -37,6 +37,9 @@ struct WindowBackgroundThemer: NSViewRepresentable {
   @MainActor private static func apply(to window: NSWindow?) {
     guard let window else { return }
     window.titlebarAppearsTransparent = true
-    window.backgroundColor = ThemeService.shared.tokens.nsBg
+    // The title bar belongs to the chrome panel, so it takes the panel colour (a subtle step off
+    // the terminal background) — title bar + tab bar + panel read as one surface, terminals as
+    // another (issue #36).
+    window.backgroundColor = ThemeService.shared.tokens.nsPanel
   }
 }
