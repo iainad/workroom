@@ -168,6 +168,11 @@ struct RootView: View {
     .sheet(isPresented: $showThemePicker) {
       ThemePicker(presentedAsSheet: true)
     }
+    // Extend the active theme up into the title bar (issue #36): hide the toolbar's own material so
+    // the transparent titlebar reveals the themed window background set by WindowBackgroundThemer —
+    // the canonical themed-terminal-app look (the top bar matches the terminal/chrome, not system).
+    .toolbarBackground(.hidden, for: .windowToolbar)
+    .background(WindowBackgroundThemer())
     // Keep the root branch labels reasonably current: refresh when the app regains
     // focus (throttled, so rapid alt-tabbing doesn't fork a git/jj process per project).
     // Regaining focus also dismisses the now-visible terminal's notifications (you're looking at it).
