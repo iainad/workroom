@@ -301,7 +301,9 @@ final class AppStore: ObservableObject {
   /// terminal).
   @discardableResult
   func focusWorkroomTab(at index: Int) -> Bool {
-    let tabs = orderedWorkroomTargets()
+    // Index the on-screen order (`displayedWorkroomTargets`, == ordered with no split), so ⌥⌘N maps to
+    // the Nth *visible* chip — a split reorders members in the bar, and nav must follow the eye.
+    let tabs = displayedWorkroomTargets()
     guard tabs.indices.contains(index) else { return false }
     selectedTargetID = tabs[index].sid
     selectedProjectID = Self.projectPath(of: tabs[index].sid)
@@ -310,20 +312,25 @@ final class AppStore: ObservableObject {
 
   /// Switch to the next (`forward`) or previous workroom tab, wrapping at the ends — bound to
   /// ⇧⌥⌘→ / ⇧⌥⌘← (issue #29), the workroom-level counterpart to ⌥⌘arrows' terminal-tab cycle. When
-  /// the current selection isn't in the bar (e.g. a root with no terminals), steps in at the first
-  /// tab (forward) or the last (back). Returns whether it switched, so the AppDelegate monitor
+  /// the current selection isn't in the bar (e.g. a root with no terminals), enters at the rightmost
+  /// tab (forward, →) or the leftmost (back, ←) — spatially matching the arrow, like the on-tab step.
+  /// Returns whether it switched, so the AppDelegate monitor
   /// consumes the key in the monitor only when there's a tab to move to (it's a no-op otherwise —
   /// the key is reserved in `isAppShortcut` either way, so it never reaches the terminal).
   @discardableResult
   func cycleWorkroomTab(forward: Bool) -> Bool {
-    let tabs = orderedWorkroomTargets()
+    // Step the on-screen order (`displayedWorkroomTargets`, == ordered with no split): a split pulls its
+    // members into a contiguous run in the bar, so the raw `orderedWorkroomTargets` index no longer
+    // matches a chip's visual position — ←/→ must move by what's actually on screen.
+    let tabs = displayedWorkroomTargets()
     guard !tabs.isEmpty else { return false }
     let next: Int
     if let current = tabs.firstIndex(where: { $0.sid == selectedTargetID }) {
       guard tabs.count > 1 else { return false }
       next = (current + (forward ? 1 : -1) + tabs.count) % tabs.count
     } else {
-      next = forward ? 0 : tabs.count - 1
+      // No current tab: forward (→) enters at the rightmost, back (←) at the leftmost.
+      next = forward ? tabs.count - 1 : 0
     }
     selectedTargetID = tabs[next].sid
     selectedProjectID = Self.projectPath(of: tabs[next].sid)

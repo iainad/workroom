@@ -182,7 +182,8 @@ final class WorkroomsViewTests: XCTestCase {
   }
 
   func testCycleWorkroomTabStepsInWhenSelectionNotInBar() {
-    // Selection isn't a tab (a root with no terminal): forward steps in at the first tab, back the last.
+    // Selection isn't a tab (a root with no terminal): forward (→) enters at the rightmost tab, back
+    // (←) at the leftmost — spatially matching the arrow, like the on-tab step.
     let store = makeStore([project("/a", workrooms: ["main", "feature"])])
     store.workroomTabOrder = [
       TerminalTarget.workroomID(project: "/a", name: "main"),
@@ -194,11 +195,49 @@ final class WorkroomsViewTests: XCTestCase {
 
     store.selectedTargetID = .root(project: "/a")  // not in the bar
     XCTAssertTrue(store.cycleWorkroomTab(forward: true))
-    XCTAssertEqual(store.selectedTargetID, tabs.first?.sid)
+    XCTAssertEqual(store.selectedTargetID, tabs.last?.sid)  // → enters at the rightmost
 
     store.selectedTargetID = .root(project: "/a")
     XCTAssertTrue(store.cycleWorkroomTab(forward: false))
-    XCTAssertEqual(store.selectedTargetID, tabs.last?.sid)
+    XCTAssertEqual(store.selectedTargetID, tabs.first?.sid)  // ← enters at the leftmost
+  }
+
+  func testCycleWorkroomTabFollowsTheDisplayedOrderWhenSplit() {
+    // A split pulls its members into a contiguous run, so the on-screen (displayed) order diverges from
+    // the raw tab order — and ←/→ must step the *visible* order, not the raw one. Regression: with
+    // main + feature + bugfix and a {main, bugfix} split, the bar reads [main, bugfix, feature], so from
+    // the middle chip (bugfix) ← lands on main (left) and → on feature (right) — not the raw neighbour.
+    let store = makeStore([project("/a", workrooms: ["main", "feature", "bugfix"])])
+    store.workroomTabOrder = [
+      TerminalTarget.workroomID(project: "/a", name: "main"),
+      TerminalTarget.workroomID(project: "/a", name: "feature"),
+      TerminalTarget.workroomID(project: "/a", name: "bugfix"),
+    ]
+    activate(store, .workroom(project: "/a", name: "main"))
+    activate(store, .workroom(project: "/a", name: "feature"))
+    activate(store, .workroom(project: "/a", name: "bugfix"))
+
+    // Split the non-adjacent pair {main, bugfix}; the run anchors at main's slot, jumping bugfix left of
+    // feature in the bar. (Drops the dropped member — bugfix — as the selection.)
+    store.insertWorkroomSplit(
+      .workroom(project: "/a", name: "bugfix"), beside: .workroom(project: "/a", name: "main"),
+      edge: .right)
+    let displayed = store.displayedWorkroomTargets().map(\.sid)
+    XCTAssertEqual(
+      displayed,
+      [
+        .workroom(project: "/a", name: "main"), .workroom(project: "/a", name: "bugfix"),
+        .workroom(project: "/a", name: "feature"),
+      ], "split members run contiguous; the bar order diverges from the raw order")
+
+    store.selectedTargetID = .workroom(project: "/a", name: "bugfix")  // the middle chip on screen
+    XCTAssertTrue(store.cycleWorkroomTab(forward: false))  // ←
+    XCTAssertEqual(store.selectedTargetID, .workroom(project: "/a", name: "main"), "← = left chip")
+
+    store.selectedTargetID = .workroom(project: "/a", name: "bugfix")
+    XCTAssertTrue(store.cycleWorkroomTab(forward: true))  // →
+    XCTAssertEqual(
+      store.selectedTargetID, .workroom(project: "/a", name: "feature"), "→ = right chip")
   }
 
   // MARK: cycleTerminalTab (⌥⌘←/→, issue #29)
