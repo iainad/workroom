@@ -306,6 +306,44 @@ final class WorkroomSplitTests: XCTestCase {
       store.history.entries.count, before, "intra-split focus is history-suppressed (T3)")
   }
 
+  func testSelectingTabInCoDisplayedMemberFocusesThatWorkroom() {
+    // Clicking a tab chip in a co-displayed but non-focused split member must promote that workroom to
+    // the focused member (so its surface takes keyboard focus) — the bug was that the chip highlighted
+    // while the terminal stayed unfocused. Uses b's already-focused tab, the trickiest case: `focus`
+    // early-returns there, so the promotion must happen in `select` ahead of it.
+    let store = store3()
+    let a = wr("main")
+    let b = wr("feature")
+    store.terminals.addTab(for: store.target(for: a)!)
+    let bTarget = store.target(for: b)!
+    store.terminals.addTab(for: bTarget)
+    store.insertWorkroomSplit(b, beside: a, edge: .right)  // split [a, b]
+    store.selectedTargetID = a  // focus a → b is co-displayed but not focused
+    let bTab = store.terminals.tabs(for: bTarget).first!
+
+    store.terminals.select(bTab.id, for: bTarget)
+    XCTAssertEqual(
+      store.selectedTargetID, b, "selecting a tab in a co-displayed member focuses that workroom")
+  }
+
+  func testSelectingTabInFocusedMemberKeepsSelection() {
+    // The common case must not regress: selecting a tab in the already-focused member is a no-op for
+    // the workroom selection.
+    let store = store3()
+    let a = wr("main")
+    let b = wr("feature")
+    let aTarget = store.target(for: a)!
+    store.terminals.addTab(for: aTarget)
+    store.terminals.addTab(for: store.target(for: b)!)
+    store.insertWorkroomSplit(b, beside: a, edge: .right)  // split [a, b]
+    store.selectedTargetID = a
+    let aTab = store.terminals.tabs(for: aTarget).first!
+
+    store.terminals.select(aTab.id, for: aTarget)
+    XCTAssertEqual(
+      store.selectedTargetID, a, "selecting within the focused member keeps it selected")
+  }
+
   func testSurfaceFocusIsNoOpWithoutSplit() {
     let store = store3()
     let a = wr("main")

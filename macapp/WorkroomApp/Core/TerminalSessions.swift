@@ -75,9 +75,12 @@ final class TerminalSessions: ObservableObject {
   /// can prune their now-dead entries (issue #26 — honest back/forward enablement).
   var onTabsRemoved: ((TerminalTarget.ID, [TerminalTab.ID]) -> Void)?
   /// Set once by `AppStore`: a surface in this target became first responder (a click into its
-  /// terminal). Routes focus up to the *workroom* selection in a workroom split (issue #23 follow-up),
-  /// so ⌘T/Run/notifications target the clicked pane's workroom. A closure (not a store reference),
-  /// mirroring `onFocusChange`, so sessions stay ignorant of `AppStore`.
+  /// terminal), or a tab in it was *deliberately* selected (`select` — a chip tap / ⌘1–9). Routes focus
+  /// up to the *workroom* selection in a workroom split (issue #23 follow-up), so ⌘T/Run/notifications
+  /// target that pane's workroom — and so a tab clicked in a co-displayed but non-focused member
+  /// actually takes keyboard focus (selecting it alone leaves `surfaceActive` false, so the surface
+  /// never grabs first responder). A closure (not a store reference), mirroring `onFocusChange`, so
+  /// sessions stay ignorant of `AppStore`.
   var onSurfaceFocused: ((TerminalTarget.ID) -> Void)?
 
   /// Factory seam (plan T1): how a surface view is created for a target at a working directory.
@@ -400,7 +403,18 @@ final class TerminalSessions: ObservableObject {
     reconcileOcclusion(for: target)
   }
 
-  func select(_ tabID: TerminalTab.ID, for target: TerminalTarget) { focus(tabID, for: target) }
+  /// A *deliberate* tab selection (chip tap, ⌘1–9, next/prev) — `focus` plus a request for the owning
+  /// workroom to become the focused split member (via `onSurfaceFocused`). Selecting a tab in a
+  /// co-displayed but non-focused workroom must move keyboard focus there, mirroring a click into that
+  /// pane's body — without this the chip highlights but the terminal never focuses (the renderer keeps
+  /// `surfaceActive` false until the workroom is the selected member). Fired *before* `focus` so the
+  /// promotion lands even when the tab is already this target's focused tab (where `focus` early-returns)
+  /// and so the focus-change history records against the now-correct workroom. A no-op outside a split
+  /// or when this target is already the focused member (the store-side guard handles both).
+  func select(_ tabID: TerminalTab.ID, for target: TerminalTarget) {
+    onSurfaceFocused?(target.id)
+    focus(tabID, for: target)
+  }
 
   /// The single write-point for a target's focused tab (issue #26). Centralising the seven former
   /// direct writes means every focus change — `addTab`, splits, drag-into-split, `focus`, and the
