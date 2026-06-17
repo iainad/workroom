@@ -198,6 +198,7 @@ private struct WorkroomTabChip: View {
 
   @EnvironmentObject var store: AppStore
   @EnvironmentObject var notifications: NotificationCenterStore
+  @EnvironmentObject var terminals: TerminalSessions
   private let theme = ThemeService.shared
 
   private var isRoot: Bool {
@@ -304,6 +305,16 @@ private struct WorkroomTabChip: View {
           .fill(theme.tokens.border)
           .frame(width: 1, height: 16)
           .offset(x: -2)
+      }
+    }
+    // A flowing underline along the chip's base while any of this workroom's terminals is working
+    // (OSC 9;4) — the same indeterminate-progress animation as the terminal tabs (issue #28). An
+    // overlay so it never enters the width the drag gap math measures.
+    .overlay(alignment: .bottom) {
+      if terminals.isRunning(forTargetID: target.id) {
+        RunningUnderline()
+          .padding(.horizontal, 6)
+          .padding(.bottom, 1)
       }
     }
     .contentShape(Rectangle())

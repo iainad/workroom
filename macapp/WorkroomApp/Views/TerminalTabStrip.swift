@@ -354,7 +354,8 @@ private struct TabWidthKey: PreferenceKey {
 /// A thin accent underline that flows left→right while a command runs in a tab (issue #28): a base
 /// accent track with a brighter highlight that sweeps across it, conveying indeterminate progress.
 /// Under Reduce Motion the sweep is dropped for a static, fuller-opacity track.
-private struct RunningUnderline: View {
+/// Reused by `WorkroomTabBar`'s chips so a busy workroom tab shows the same flowing underline.
+struct RunningUnderline: View {
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @State private var sweeping = false
   private let theme = ThemeService.shared
