@@ -311,13 +311,13 @@ private struct PaneLeafView: View {
           .fill(theme.tokens.terminalDim.opacity(dimmed ? 0.5 : 0))
           .allowsHitTesting(false)
           .animation(reduceMotion ? nil : .easeInOut(duration: 0.1), value: flashing)
-          .animation(reduceMotion ? nil : .easeInOut(duration: 0.1), value: focused)
+          .animation(reduceMotion ? nil : .easeInOut(duration: 0.07), value: focused)
       )
       .overlay(
         RoundedRectangle(cornerRadius: 12)
           .strokeBorder(borderColor, lineWidth: 1.5)
           .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: flashing)
-          .animation(reduceMotion ? nil : .easeInOut(duration: 0.15), value: focused)
+          .animation(reduceMotion ? nil : .easeInOut(duration: 0.08), value: focused)
       )
       .overlay(alignment: .top) { handle }
       // The same 2pt inset solo and split, so a tab doesn't shift its surface when it joins or
