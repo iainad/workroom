@@ -449,6 +449,9 @@ struct WorkroomCommands: Commands {
   // dialog's "Don't ask me again", so the File-menu checkmark reflects — and drives — all three;
   // AppStore reads it in requestCloseTerminalTab.
   @Default(.confirmOnCloseTerminal) private var confirmOnCloseTerminal
+  // Drives the quick dark/light toggle (⌘⇧L, issue #57). RootView's `.onChange(of: theme)` applies
+  // it through the single theme chokepoint; same key as the sidebar's 3-state cycle button.
+  @Default(.theme) private var theme
 
   var body: some Commands {
     CommandGroup(after: .appInfo) {
@@ -527,6 +530,15 @@ struct WorkroomCommands: Commands {
       Divider()
       Button("Theme…") { NotificationCenter.default.post(name: .showThemePicker, object: nil) }
         .keyboardShortcut("k", modifiers: [.command, .shift])
+
+      // Quick dark/light toggle (issue #57): flip the *currently visible* appearance. From System
+      // it resolves the live OS appearance first, so it always inverts what's on screen and lands on
+      // a forced mode — repeat presses then flip cleanly (the sidebar button still cycles back to
+      // System). Title names the destination so the menu reads as the action it performs.
+      Button(theme.toggledLightDark.label + " Mode") {
+        theme = theme.toggledLightDark
+      }
+      .keyboardShortcut("l", modifiers: [.command, .shift])
 
       // Split the focused pane with a new terminal beside it (issue #3): ⌘D right, ⇧⌘D down; left/up
       // have no standard key, so they're menu-only.

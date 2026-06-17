@@ -52,4 +52,16 @@ enum ThemePreference: String, CaseIterable, Defaults.Serializable, Defaults.Pref
     let all = Self.allCases
     return all[(all.firstIndex(of: self)! + 1) % all.count]
   }
+
+  /// The forced mode that inverts the *currently visible* appearance — the target for the quick
+  /// dark/light toggle (⌘⇧L, issue #57). `.light`/`.dark` flip to their opposite; `.system` resolves
+  /// the live OS appearance first, so the toggle always inverts what's on screen. Always a forced
+  /// mode (never `.system`), so repeated presses flip cleanly between light and dark.
+  var toggledLightDark: ThemePreference {
+    switch self {
+    case .light: return .dark
+    case .dark: return .light
+    case .system: return ThemeService.isCurrentAppearanceDark() ? .light : .dark
+    }
+  }
 }

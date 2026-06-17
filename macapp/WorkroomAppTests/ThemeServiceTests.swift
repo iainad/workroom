@@ -120,4 +120,17 @@ final class ThemeServiceTests: XCTestCase {
   func testWorkroomFamilyIsFirst() {
     XCTAssertEqual(ThemeService.families.first?.name, ThemeService.defaultFamilyName)
   }
+
+  // MARK: dark/light quick toggle (issue #57)
+
+  func testToggledLightDarkFlipsForcedModes() {
+    XCTAssertEqual(ThemePreference.light.toggledLightDark, .dark)
+    XCTAssertEqual(ThemePreference.dark.toggledLightDark, .light)
+  }
+
+  func testToggledLightDarkFromSystemIsAlwaysForced() {
+    // From System the toggle resolves the live appearance and lands on a forced mode — never
+    // `.system` — so repeat presses flip cleanly between light and dark.
+    XCTAssertNotEqual(ThemePreference.system.toggledLightDark, .system)
+  }
 }
