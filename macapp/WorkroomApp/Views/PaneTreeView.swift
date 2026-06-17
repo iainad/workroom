@@ -308,7 +308,7 @@ private struct PaneLeafView: View {
       // dim so the pulse is visible on a backgrounded pane.
       .overlay(
         RoundedRectangle(cornerRadius: 12)
-          .fill(theme.tokens.terminalDim.opacity(dimmed ? 0.5 : 0))
+          .fill(theme.tokens.terminalDim.opacity(dimmed ? 0.3 : 0))
           .allowsHitTesting(false)
           .animation(reduceMotion ? nil : .easeInOut(duration: 0.1), value: flashing)
           .animation(reduceMotion ? nil : .easeInOut(duration: 0.07), value: focused)
