@@ -769,9 +769,9 @@ final class GhosttySurfaceView: NSView {
     // Menu commands that pair Command with Shift or Option fail the command-only guard below, so
     // reserve them explicitly. Without this they reach the terminal, and a TUI in an enhanced
     // keyboard mode (Claude/Codex) consumes the keystroke so the menu key-equivalent never fires.
-    // ⇧⌘D = Split Down; ⇧⌘N = Next Notification; ⇧⌘R = Stop run; ⌥⌘N = Notifications toggle;
-    // ⌥⌘R = Restart run (issue #7).
-    if flags == [.command, .shift] { return key == "d" || key == "n" || key == "r" }
+    // ⇧⌘D = Split Down; ⇧⌘K = Theme picker (issue #36/#53); ⇧⌘N = Next Notification; ⇧⌘R = Stop
+    // run; ⌥⌘N = Notifications toggle; ⌥⌘R = Restart run (issue #7).
+    if flags == [.command, .shift] { return key == "d" || key == "k" || key == "n" || key == "r" }
     if flags == [.command, .option] { return key == "n" || key == "r" }
     guard flags == .command else { return false }
     if ("1"..."9").contains(ch) { return true }  // focus tab N
