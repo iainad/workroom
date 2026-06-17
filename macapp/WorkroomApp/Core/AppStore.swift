@@ -1018,6 +1018,14 @@ final class AppStore: ObservableObject {
   }
 
   private func apply(_ fresh: [Project]) {
+    // Sort projects alphabetically by display name (issue #62) so the sidebar order is stable and
+    // predictable regardless of CLI/config order. Case-insensitive, with the full path as a
+    // tie-break so same-named projects in different dirs keep a deterministic order. Done here at the
+    // single source of truth so selection defaults (`fresh.first`) and the rendered tree agree.
+    let fresh = fresh.sorted {
+      let byName = $0.displayName.localizedCaseInsensitiveCompare($1.displayName)
+      return byName == .orderedSame ? $0.path < $1.path : byName == .orderedAscending
+    }
     projects = fresh
     // First load after launch: restore last session's selection (issue #14) before it's
     // validated below. Resolved against the live projects, so a since-deleted target — or a
