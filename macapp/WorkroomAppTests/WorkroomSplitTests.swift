@@ -138,6 +138,57 @@ final class WorkroomSplitTests: XCTestCase {
     XCTAssertEqual(store.workroomSplit?.tabIDs.count, 2)
   }
 
+  // MARK: auto-close — emptying a split member's terminals drops its pane (issue #55)
+
+  func testClosingLastTerminalInSplitMemberDissolvesSplit() {
+    let store = store3()
+    let a = wr("main")
+    let b = wr("feature")
+    store.terminals.addTab(for: store.target(for: a)!)
+    let bTab = store.terminals.addTab(for: store.target(for: b)!)
+    store.insertWorkroomSplit(b, beside: a, edge: .right)  // split [a, b], focuses b
+    store.terminals.closeTab(bTab.id, for: store.target(for: b)!)
+    XCTAssertNil(store.workroomSplit, "emptying a 2-member split's pane dissolves the split")
+    XCTAssertEqual(
+      store.selectedTargetID, a, "the emptied-and-focused member yields to the survivor")
+  }
+
+  func testClosingLastTerminalInSplitMemberCollapsesThreeToTwo() {
+    let store = store3()
+    let a = wr("main")
+    let b = wr("feature")
+    let c = wr("bugfix")
+    store.terminals.addTab(for: store.target(for: a)!)
+    store.terminals.addTab(for: store.target(for: b)!)
+    let cTab = store.terminals.addTab(for: store.target(for: c)!)
+    store.insertWorkroomSplit(b, beside: a, edge: .right)
+    store.insertWorkroomSplit(c, beside: b, edge: .bottom)  // split [a, b, c]
+    store.terminals.closeTab(cTab.id, for: store.target(for: c)!)
+    XCTAssertEqual(
+      Set(store.workroomSplit?.tabIDs ?? []), [a, b], "the emptied member leaves a 2-member split")
+  }
+
+  func testClosingLastTerminalInNonFocusedMemberKeepsSelectionOnSurvivor() {
+    let store = store3()
+    let a = wr("main")
+    let b = wr("feature")
+    store.terminals.addTab(for: store.target(for: a)!)
+    let bTab = store.terminals.addTab(for: store.target(for: b)!)
+    store.insertWorkroomSplit(b, beside: a, edge: .right)
+    store.selectedTargetID = a  // focus a → b is the co-displayed, non-selected member
+    store.terminals.closeTab(bTab.id, for: store.target(for: b)!)
+    XCTAssertNil(store.workroomSplit, "the split dissolves to the survivor")
+    XCTAssertEqual(store.selectedTargetID, a, "selection stays on the still-focused survivor")
+  }
+
+  func testClosingLastTerminalInSoloWorkroomLeavesNoSplit() {
+    let store = store3()
+    let a = wr("main")
+    let aTab = store.terminals.addTab(for: store.target(for: a)!)
+    store.terminals.closeTab(aTab.id, for: store.target(for: a)!)  // no split active
+    XCTAssertNil(store.workroomSplit, "a solo workroom has no split to close — and must not crash")
+  }
+
   // MARK: persistence — split survives selecting a non-member (grouping like terminal tabs)
 
   func testSplitPersistsAndHidesWhenSelectingNonMember() {

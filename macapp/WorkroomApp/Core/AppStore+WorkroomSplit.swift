@@ -128,6 +128,19 @@ extension AppStore {
     }
   }
 
+  /// When a split member's last terminal is closed, its pane has nothing left but the
+  /// remove-from-split ✕ — so close it for the user: drop the now-empty workroom from the split
+  /// (collapse to the survivor subtree, or dissolve to the lone survivor, re-pointing selection as
+  /// needed). No-op unless the target is empty AND still resolves to a member: a *deleted* workroom is
+  /// handled by `pruneWorkroomSplitToLiveLeaves`, and a solo (non-split) workroom keeps its empty
+  /// "New Terminal" state (issue #55).
+  func autoCloseEmptiedSplitMember(_ targetID: TerminalTarget.ID) {
+    guard terminals.tabCount(forTargetID: targetID) == 0,
+      let sid = Self.sidebarID(forTargetID: targetID, in: projects)
+    else { return }
+    removeWorkroomSplitMember(sid)  // guards `split.contains(sid)` → no-op for a non-member
+  }
+
   /// Set a divider ratio (driven by `WorkroomSplitView`'s divider drag).
   func setWorkroomSplitRatio(_ ratio: CGFloat, forSplit splitID: UUID) {
     workroomSplit = workroomSplit?.settingRatio(ratio, forSplit: splitID)

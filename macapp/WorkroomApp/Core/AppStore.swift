@@ -206,6 +206,10 @@ final class AppStore: ObservableObject {
         self.runStates[targetID] = nil
         self.clearRunPidFile(for: targetID)  // forget the captured pid (issue #7)
       }
+      // Closing the last terminal in a co-displayed split pane leaves an empty pane whose only
+      // affordance is the remove-from-split ✕ — close it for the user by dropping the now-empty
+      // workroom from the split (issue #55). No-op for a solo workroom or a non-member.
+      self.autoCloseEmptiedSplitMember(targetID)
     }
     // Mirror the aggregate unread count onto the Dock icon badge (issue #32). Owned here, not in a
     // view: see `NotificationCenterStore.onTotalChange` for why a view-driven badge misses
