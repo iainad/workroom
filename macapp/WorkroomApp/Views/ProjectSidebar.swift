@@ -175,19 +175,25 @@ struct ProjectSidebar: View {
         VCSAggregateDot(status: agg)
       }
 
-      if store.busyProjects.contains(project.path) {
-        ProgressView().controlSize(.small)
-      } else {
-        // Project settings (run command, etc.), revealed on hover to the left of the new-workroom
-        // button (issue #7). Laid out always (opacity-gated) so the row size is stable.
-        SettingsRowButton(
-          help: "Project settings for \(project.displayName)", visible: hovered == id
-        ) {
-          settingsProject = project
-        }
-        CreateRowButton(help: "New workroom in \(project.displayName)") {
-          Task { await store.createWorkroom(in: project) }
-        }
+      // Both buttons stay laid out while a workroom is being created so the row size never shifts
+      // (issue #51) — the create spinner overlays the new-workroom button (which it replaces) rather
+      // than swapping the buttons out for a smaller ProgressView.
+      let busy = store.busyProjects.contains(project.path)
+      // Project settings (run command, etc.), revealed on hover to the left of the new-workroom
+      // button (issue #7). Laid out always (opacity-gated) so the row size is stable. Hidden while
+      // busy so the spinner reads as the sole active control.
+      SettingsRowButton(
+        help: "Project settings for \(project.displayName)", visible: hovered == id && !busy
+      ) {
+        settingsProject = project
+      }
+      CreateRowButton(help: "New workroom in \(project.displayName)") {
+        Task { await store.createWorkroom(in: project) }
+      }
+      .opacity(busy ? 0 : 1)
+      .allowsHitTesting(!busy)
+      .overlay {
+        if busy { ProgressView().controlSize(.small) }
       }
     }
     .contentShape(Rectangle())
