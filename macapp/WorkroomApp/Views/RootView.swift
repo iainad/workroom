@@ -54,6 +54,15 @@ struct RootView: View {
         // Persist the user-dragged sidebar width across launches (issue #14) via the
         // underlying NSSplitView's autosave — SwiftUI offers no width binding.
         .background(SplitViewAutosave(name: "WorkroomSidebarSplit"))
+        // Capture the live (autosaved) width so the edge-hover reveal panel (issue #56) matches it.
+        .background(
+          GeometryReader { geo in
+            Color.clear.preference(key: SidebarWidthKey.self, value: geo.size.width)
+          }
+        )
+        .onPreferenceChange(SidebarWidthKey.self) { width in
+          if width > 0 { store.dockedSidebarWidth = width }
+        }
     } detail: {
       detail
     }
@@ -153,7 +162,23 @@ struct RootView: View {
     .inspector(isPresented: $showNotifications) {
       RightInspector()
         .inspectorColumnWidth(min: 260, ideal: 300, max: 420)
+        // Capture the live inspector width so the right edge-hover reveal (issue #56) matches it.
+        .background(
+          GeometryReader { geo in
+            Color.clear.preference(key: InspectorWidthKey.self, value: geo.size.width)
+          }
+        )
+        .onPreferenceChange(InspectorWidthKey.self) { width in
+          if width > 0 { store.dockedInspectorWidth = width }
+        }
     }
+    // Edge-hover reveal of a collapsed sidebar (issue #56): each layer is active only while its
+    // sidebar is closed, slides the same content in OVER the detail, and is inert otherwise. Applied
+    // before the toast overlay so toasts keep z-order above a revealed panel. Packaged as a modifier
+    // so this large `body` stays within the type-checker's budget.
+    .modifier(
+      EdgeRevealSidebars(sidebarVisible: store.sidebarVisible, inspectorVisible: showNotifications)
+    )
     // Foreground toasts (issue #31): pinned bottom-right of the window, over the split + inspector.
     // Only ever populated while the inspector is closed, so it never overlaps the open inspector.
     .overlay(alignment: .bottomTrailing) { ToastStack() }
@@ -440,5 +465,24 @@ private struct DetailContentFrameKey: PreferenceKey {
   static func reduce(value: inout CGRect, nextValue: () -> CGRect) {
     let next = nextValue()
     if next != .zero { value = next }
+  }
+}
+
+/// The docked Projects sidebar's measured width, published so the edge-hover reveal panel matches it
+/// (issue #56). Mirrors `DetailContentFrameKey`: a non-zero reading wins.
+private struct SidebarWidthKey: PreferenceKey {
+  static var defaultValue: CGFloat = 0
+  static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+    let next = nextValue()
+    if next != 0 { value = next }
+  }
+}
+
+/// The docked right inspector's measured width, for the right edge-hover reveal (issue #56).
+private struct InspectorWidthKey: PreferenceKey {
+  static var defaultValue: CGFloat = 0
+  static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+    let next = nextValue()
+    if next != 0 { value = next }
   }
 }

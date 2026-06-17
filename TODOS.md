@@ -403,3 +403,28 @@ header (`ChangesPanel.prIndicator`).
 sweep stage.
 
 **Priority:** P3 (strong UX win, but the background-sweep work makes it its own chunk, not part of #52).
+
+## Keyboard + VoiceOver parity for the edge-hover reveal (macapp) — #56 follow-up
+
+**What:** Make the edge-hover sidebar reveal (issue #56) first-class for keyboard / VoiceOver users:
+move keyboard focus into the panel when it reveals, restore focus when it hides, and post a
+VoiceOver announcement on reveal/hide.
+
+**Current state:** The reveal ships pointer-first (`Views/EdgeRevealSidebar.swift`). Escape-to-dismiss
+is wired (`.onExitCommand`) and the panels carry `sidebar.reveal.{leading,trailing}` accessibility
+identifiers, but there's no focus management or VO announce. Persistent keyboard/AX access already
+exists via the View-menu toggles (`View ▸ Projects`, `View ▸ Notifications`) and the toolbar
+sidebar/inspector buttons, so the docked sidebars remain fully reachable without a pointer — this is
+polish, not an accessibility blocker.
+
+**Why:** a hover-only affordance is invisible to keyboard-only and VoiceOver users; focus + announce
+make the transient panel behave like a real sidebar for them too.
+
+**How to start:** drive first-responder when `EdgeRevealReducer.revealed` flips (focus the panel's
+list, restore the prior responder on hide); post `NSAccessibility.post(element:notification:)` on
+reveal/hide. Focus management in a transient overlay is finicky (focus stealing, restore-on-hide
+races) — prototype carefully and test with VoiceOver on.
+
+**Depends on:** the #56 reveal panel (shipped).
+
+**Priority:** P3 (polish; persistent keyboard/AX access already exists via the menu/toolbar toggles).

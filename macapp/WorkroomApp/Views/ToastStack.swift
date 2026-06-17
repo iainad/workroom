@@ -14,9 +14,18 @@ struct ToastStack: View {
   @EnvironmentObject var notifications: NotificationCenterStore
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
+  /// Toasts to render. While the right inspector is edge-hover-revealed (issue #56) the revealed
+  /// Notifications panel IS the surface, so withhold toasts — the routing already flashes instead of
+  /// toasting for *new* arrivals during a reveal (`recordNotification`); this also hides any toast
+  /// that was already on screen when the reveal began, so the two never co-display. They reappear
+  /// (re-armed) once the reveal ends.
+  private var visibleToasts: [WorkroomNotification] {
+    store.previewingRight ? [] : store.toasts
+  }
+
   var body: some View {
     VStack(alignment: .trailing, spacing: 8) {
-      ForEach(store.toasts) { toast in
+      ForEach(visibleToasts) { toast in
         ToastView(
           item: toast,
           onTap: {

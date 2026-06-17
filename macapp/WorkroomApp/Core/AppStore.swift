@@ -65,6 +65,30 @@ final class AppStore: ObservableObject {
   /// Session-only (resets to shown on launch); the dragged width is persisted separately by
   /// `SplitViewAutosave`.
   @Published var sidebarVisible: Bool = true
+  /// Whether a collapsed sidebar is *temporarily* on screen via edge-hover reveal (issue #56): the
+  /// left Projects overlay (`previewingLeft`) and the right inspector overlay (`previewingRight`).
+  /// These are observable app state, not view-local, because other surfaces must react: notification
+  /// routing flashes the row instead of popping a toast while `previewingRight` (so the revealed
+  /// Notifications panel and a toast never co-display — the invariant at `recordNotification`), and
+  /// `ToastStack` withholds toasts while it's set. Session-only and deliberately NOT persisted (a
+  /// transient hover state). Set by `EdgeRevealSidebar`.
+  @Published var previewingLeft: Bool = false
+  @Published var previewingRight: Bool = false
+  /// The docked Projects sidebar's last-measured width, captured by a `GeometryReader` in `RootView`
+  /// while the sidebar is shown, so the edge-hover reveal panel (issue #56) matches the user's chosen
+  /// (autosaved) width rather than a fixed guess. `nil` until first measured — the reveal falls back
+  /// to a sensible default. Session-only.
+  ///
+  /// Deliberately NOT `@Published`: it's written on every layout change (including mid-resize-drag),
+  /// and publishing it then would re-render the `NavigationSplitView` during the drag and fight the
+  /// `NSSplitView` divider (you couldn't resize). The reveal reads it on the next natural render —
+  /// when the sidebar collapses — which is the only time it's needed.
+  var dockedSidebarWidth: CGFloat?
+  /// The docked right inspector's last-measured width (issue #56), captured while the inspector is
+  /// open so the right edge-hover reveal matches the user's resized inspector width. `nil` until the
+  /// inspector has been opened at least once this session — the reveal falls back to a default. Plain
+  /// (non-`@Published`) for the same reason as `dockedSidebarWidth`.
+  var dockedInspectorWidth: CGFloat?
   /// The workroom-into-workroom split (issue #23 follow-up): two+ workrooms shown side by side, each a
   /// full `TargetTerminalDetail`. `nil` = the single `selectedTarget` (the normal case). Leaves are
   /// `SidebarID`; the focused member IS `selectedTargetID`. Always ≥2 *live* leaves when non-nil (a lone
@@ -1543,10 +1567,12 @@ final class AppStore: ObservableObject {
         activity: activity, focused: seen)
     else { return }
     if NotificationGate.shouldPresentInApp(recorded: true, appActive: NSApp.isActive) {
-      // App is focused: sound on every arrival, then either flash the row (inspector open) or pop a
-      // toast (inspector closed). The two surfaces are exclusive — never both at once.
+      // App is focused: sound on every arrival, then either flash the row (inspector visible) or pop
+      // a toast (inspector closed). The two surfaces are exclusive — never both at once. The inspector
+      // counts as visible when docked open (`showNotifications`) OR temporarily edge-hover-revealed
+      // (`previewingRight`, issue #56) — otherwise a toast would pop over the revealed panel.
       NotificationSound.play()
-      if Defaults[.showNotifications] {
+      if Defaults[.showNotifications] || previewingRight {
         flashNotification(note.id)
       } else {
         enqueueToast(note)

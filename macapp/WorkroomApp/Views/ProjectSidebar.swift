@@ -28,6 +28,9 @@ struct ProjectSidebar: View {
   /// disclosure caret (root/workroom, only at ≥2 terminals) or the terminal glyph, and is always
   /// reserved so the labels beside it line up whether or not a caret is shown.
   private let caretWidth: CGFloat = 14
+  /// Height of the floating theme/add bar (top fade pad 18 + 28 button + bottom pad 6). Used to
+  /// reserve a trailing list spacer so the last row scrolls clear of it.
+  private let bottomBarHeight: CGFloat = 52
   /// Per-level leading indent so the tree reads as a hierarchy: projects sit at `rowInsets.leading`,
   /// their root/workroom children one `levelIndent` deeper (`childRowInsets`), and a target's terminal
   /// rows deeper again — the terminal base matches its root/workroom, then the in-row `caretWidth`
@@ -67,7 +70,10 @@ struct ProjectSidebar: View {
         tree
       }
     }
-    .safeAreaInset(edge: .bottom, spacing: 0) { bottomBar }
+    // The theme/add bar floats over the list contents (issue #56 feedback) with a top-fading solid
+    // background, so rows scroll under it and stay legible; the list reserves matching bottom room
+    // (`contentMargins` in `tree`) so the last row can still scroll clear of it.
+    .overlay(alignment: .bottom) { bottomBar }
     .navigationTitle("Projects")
     // Per-project run-command settings (issue #7) stays sidebar-local — it's only ever triggered
     // from a (visible) project row, so it needs no re-homing.
@@ -109,6 +115,13 @@ struct ProjectSidebar: View {
           }
         }
       }
+      // Trailing spacer the height of the floating theme/add bar, so the last real row can always
+      // scroll clear of it (issue #56 feedback).
+      Color.clear
+        .frame(height: bottomBarHeight)
+        .listRowInsets(EdgeInsets())
+        .listRowSeparator(.hidden)
+        .listRowBackground(Color.clear)
     }
     // Plain style (not the NavigationSplitView sidebar default): the `.sidebar` style forces a
     // comfortable ~28pt row-height floor and ignores small `listRowInsets` + `defaultMinListRowHeight`,
@@ -534,7 +547,22 @@ struct ProjectSidebar: View {
       .accessibilityIdentifier("AddProject")
     }
     .padding(.horizontal, 8)
-    .padding(.vertical, 6)
+    .padding(.top, 18)
+    .padding(.bottom, 6)
+    // Solid at the buttons, fading to transparent at the top, so list rows scroll under the bar and
+    // stay legible behind it (issue #56 feedback). Click-through so only the buttons capture clicks —
+    // a row scrolled under the bar is still clickable through the background.
+    .background(
+      LinearGradient(
+        stops: [
+          .init(color: ThemeService.shared.tokens.panel.opacity(0), location: 0),
+          .init(color: ThemeService.shared.tokens.panel, location: 0.65),
+          .init(color: ThemeService.shared.tokens.panel, location: 1),
+        ],
+        startPoint: .top, endPoint: .bottom
+      )
+      .allowsHitTesting(false)
+    )
   }
 }
 
