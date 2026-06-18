@@ -93,6 +93,14 @@ extension Defaults.Keys {
   /// collapse flags — the inspector's shape is now per-workroom.
   static let inspectorPaneStates = Key<[String: InspectorPaneState]>(
     "inspector.paneStates", default: [:])
+
+  /// Collapse state of the two jj Changes-panel lists (Working Copy `@` / Parent Commit `@-`). The
+  /// working copy is expanded and the parent collapsed by default. Global (not per-workroom) for v1
+  /// — a possible follow-up is to scope these per workroom like `inspectorPaneStates`.
+  static let changesWorkingCopyCollapsed = Key<Bool>(
+    "changes.workingCopyCollapsed", default: false)
+  static let changesParentCommitCollapsed = Key<Bool>(
+    "changes.parentCommitCollapsed", default: true)
 }
 
 /// One workroom's persisted inspector layout: the collapse state and relative pane heights of the

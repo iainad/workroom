@@ -43,6 +43,9 @@ private final class RecordingStatusRunner: StatusCommandRunning, @unchecked Send
 private func ok(_ stdout: String) -> CommandResult {
   CommandResult(stdout: stdout, stderr: "", exitCode: 0, timedOut: false)
 }
+private func fail() -> CommandResult {
+  CommandResult(stdout: "", stderr: "boom", exitCode: 1, timedOut: false)
+}
 private let nul = "\u{0}"
 
 final class WorkroomStatusResolverTests: XCTestCase {
@@ -405,10 +408,113 @@ final class WorkroomStatusResolverTests: XCTestCase {
     XCTAssertEqual(s.deletions, 3)
     // jj branch resolved from the nearest bookmark, used for CI/PR lookup.
     XCTAssertEqual(s.branchForCI, "my-feature")
-    XCTAssertEqual(s.jjRefs, ["feat"])
-    XCTAssertEqual(s.jjDescription, "wip: x")
-    XCTAssertEqual(s.jjChangeID, "ch")
-    XCTAssertEqual(s.jjCommitID, "co34")
+    // The working-copy change set drives the Working Copy disclosure group; `changedFiles` mirrors it.
+    XCTAssertEqual(s.jjWorkingCopy?.refs, ["feat"])
+    XCTAssertEqual(s.jjWorkingCopy?.description, "wip: x")
+    XCTAssertEqual(s.jjWorkingCopy?.changeID, "ch")
+    XCTAssertEqual(s.jjWorkingCopy?.commitID, "co34")
+    XCTAssertEqual(s.jjWorkingCopy?.files.count, 2)
+    // With this mock the @- probes resolve to a single parent change set.
+    guard case .changes(let parent)? = s.jjParent else {
+      return XCTFail("expected .changes parent, got \(String(describing: s.jjParent))")
+    }
+    XCTAssertEqual(parent.files.count, 2)
+  }
+
+  // MARK: - resolveJJParent (working copy's parent @- state)
+
+  func testResolveJJParentMerge() async {
+    let r = WorkroomStatusResolver(
+      runner: MockStatusRunner { exe, args in
+        guard exe == "jj" else { return ok("") }
+        if args.contains(WorkroomStatusResolver.jjParentCountTemplate) { return ok("x\nx\n") }
+        if args.contains("--summary"), args.contains("@"), !args.contains("@-") {
+          return ok("M a.txt\n")
+        }
+        return ok("")
+      })
+    let s = await r.resolveLocal(path: existing, vcs: "jj")
+    XCTAssertEqual(s.jjParent, .merge(2))  // @- resolved to two revisions
+  }
+
+  func testResolveJJParentRoot() async {
+    let r = WorkroomStatusResolver(
+      runner: MockStatusRunner { exe, args in
+        guard exe == "jj" else { return ok("") }
+        // 0 revisions ⇒ @ has no parent (the root).
+        if args.contains(WorkroomStatusResolver.jjParentCountTemplate) { return ok("") }
+        if args.contains("--summary"), args.contains("@"), !args.contains("@-") {
+          return ok("M a.txt\n")
+        }
+        return ok("")
+      })
+    let s = await r.resolveLocal(path: existing, vcs: "jj")
+    XCTAssertEqual(s.jjParent, .root)
+  }
+
+  func testResolveJJParentUnavailableWhenProbesFail() async {
+    let r = WorkroomStatusResolver(
+      runner: MockStatusRunner { exe, args in
+        guard exe == "jj" else { return ok("") }
+        if args.contains(WorkroomStatusResolver.jjParentCountTemplate) { return fail() }
+        if args.contains("--summary"), args.contains("@-") { return fail() }  // parent files fail
+        if args.contains("--summary") { return ok("M a.txt\n") }  // working copy ok (STEP-1 guard)
+        return ok("")
+      })
+    let s = await r.resolveLocal(path: existing, vcs: "jj")
+    XCTAssertEqual(s.jjParent, .unavailable)  // can't read the parent → not faked as empty
+  }
+
+  func testResolveJJParentDegradedHeaderWhenLogFails() async {
+    let r = WorkroomStatusResolver(
+      runner: MockStatusRunner { exe, args in
+        guard exe == "jj" else { return ok("") }
+        // exactly one parent revision.
+        if args.contains(WorkroomStatusResolver.jjParentCountTemplate) { return ok("x\n") }
+        if args.contains(WorkroomStatusResolver.jjHeadTemplate), args.contains("@-") {
+          return fail()  // parent head/log fails → no id chips, but files still shown
+        }
+        if args.contains("--summary"), args.contains("@-") { return ok("M p.txt\nA q.txt\n") }
+        if args.contains("--summary") { return ok("M a.txt\n") }
+        if args.contains(WorkroomStatusResolver.jjHeadTemplate) {
+          return ok("false\tch\tco34\t\t\twip\n")
+        }
+        return ok("")
+      })
+    let s = await r.resolveLocal(path: existing, vcs: "jj")
+    guard case .changes(let parent)? = s.jjParent else {
+      return XCTFail("expected degraded .changes parent, got \(String(describing: s.jjParent))")
+    }
+    XCTAssertEqual(parent.files.count, 2)  // summary succeeded → files present
+    XCTAssertNil(parent.changeID)  // log failed → header chips dropped, not the whole group
+  }
+
+  /// The parent (`@-`) is probed, the working-copy snapshot probe (STEP 1) does NOT ignore the
+  /// working copy (it must snapshot + take the lock), and the concurrent STEP-2 reads DO ignore it
+  /// (so they don't contend on the lock).
+  func testResolveJJProbesParentAndIgnoresWorkingCopyOnStep2() async {
+    let runner = RecordingStatusRunner { _, args in
+      if args.contains(WorkroomStatusResolver.jjParentCountTemplate) { return ok("x\n") }
+      if args.contains("--summary") { return ok("M a.txt\n") }
+      if args.contains(WorkroomStatusResolver.jjHeadTemplate) {
+        return ok("false\tch\tco34\t\t\twip\n")
+      }
+      return ok("")
+    }
+    _ = await WorkroomStatusResolver(runner: runner).resolveLocal(path: existing, vcs: "jj")
+    let jj = runner.calls.filter { $0.exe == "jj" }
+    XCTAssertTrue(jj.contains { $0.args.contains("@-") }, "parent @- must be probed")
+    let wcSummary = jj.first {
+      $0.args.contains("--summary") && $0.args.contains("@") && !$0.args.contains("@-")
+    }
+    XCTAssertNotNil(wcSummary)
+    XCTAssertFalse(
+      wcSummary?.args.contains("--ignore-working-copy") ?? true,
+      "STEP-1 @ summary must snapshot (no --ignore-working-copy)")
+    let parentSummary = jj.first { $0.args.contains("--summary") && $0.args.contains("@-") }
+    XCTAssertEqual(
+      parentSummary?.args.contains("--ignore-working-copy"), true,
+      "STEP-2 @- summary must reuse the snapshot (--ignore-working-copy)")
   }
 
   // MARK: - parseJJBranch (nearest-bookmark resolution for jj CI/PR)

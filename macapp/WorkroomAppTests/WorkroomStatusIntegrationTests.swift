@@ -214,13 +214,30 @@ final class WorkroomStatusIntegrationTests: XCTestCase {
     sh("jj describe -m 'my change (#9)' 2>/dev/null", in: dir)
     sh("jj bookmark create mybook -r @ 2>/dev/null", in: dir)
     let s = await resolver.resolveLocal(path: dir, vcs: "jj")
-    XCTAssertEqual(s.jjDescription, "my change (#9)")
-    XCTAssertEqual(s.jjRefs, ["mybook"])
-    XCTAssertNotNil(s.jjChangeID)  // real jj always yields a change-id + commit-id for @
-    XCTAssertNotNil(s.jjCommitID)
+    let wc = s.jjWorkingCopy
+    XCTAssertEqual(wc?.description, "my change (#9)")
+    XCTAssertEqual(wc?.refs, ["mybook"])
+    XCTAssertNotNil(wc?.changeID)  // real jj always yields a change-id + commit-id for @
+    XCTAssertNotNil(wc?.commitID)
     // The change-id is its shortest unique prefix, unpadded (a one-commit repo → a 1-char prefix).
-    XCTAssertFalse((s.jjChangeID ?? "").isEmpty)
-    XCTAssertEqual((s.jjCommitID ?? "").count, 8)  // commit-id is jj's shortest-8 id
+    XCTAssertFalse((wc?.changeID ?? "").isEmpty)
+    XCTAssertEqual((wc?.commitID ?? "").count, 8)  // commit-id is jj's shortest-8 id
+  }
+
+  /// Proves the real `@-` probes resolve the working copy's parent change set end to end: a described
+  /// commit with a file, with `@` a fresh empty change holding its own working-copy edit on top.
+  func testJJParentCommitResolves() async throws {
+    let dir = try jjRepo()
+    sh("echo a > f.txt && jj describe -m 'parent change' 2>/dev/null", in: dir)
+    sh("jj new 2>/dev/null", in: dir)  // @ becomes empty; @- is the 'parent change' commit
+    sh("echo b > g.txt", in: dir)  // a working-copy edit on top
+    let s = await resolver.resolveLocal(path: dir, vcs: "jj")
+    XCTAssertTrue((s.jjWorkingCopy?.files ?? []).contains { $0.path == "g.txt" })
+    guard case .changes(let parent)? = s.jjParent else {
+      return XCTFail("expected .changes parent, got \(String(describing: s.jjParent))")
+    }
+    XCTAssertEqual(parent.description, "parent change")
+    XCTAssertTrue(parent.files.contains { $0.path == "f.txt" })
   }
 
   /// The real reason `branchForCI` exists for jj: `@` is a *detached* git HEAD (so the
@@ -264,6 +281,7 @@ final class WorkroomStatusIntegrationTests: XCTestCase {
     XCTAssertNil(s.failure)  // NOT .notRepository
     XCTAssertEqual(s.dirty, true)
     XCTAssertEqual(s.branchForCI, "feature/login")  // ancestor bookmark via the jj revset
-    XCTAssertNotNil(s.jjChangeID)  // jj head populated → Changes shows the jj line, not "detached"
+    XCTAssertNotNil(s.jjWorkingCopy?.changeID)  // jj head populated → Changes shows the jj line
+
   }
 }

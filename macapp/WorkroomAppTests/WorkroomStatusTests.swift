@@ -182,15 +182,19 @@ final class WorkroomStatusTests: XCTestCase {
       dirty: true,
       changedFiles: [ChangedFile(path: "a.rb", change: .added)],
       branchForCI: nil,
-      jjRefs: ["mybook"], jjDescription: "feat: x",
-      jjChangeID: "pw", jjCommitID: "7d74470b")
+      jjWorkingCopy: JJCommitChanges(
+        changeID: "pw", commitID: "7d74470b", refs: ["mybook"], description: "feat: x",
+        files: [ChangedFile(path: "a.rb", change: .added)]),
+      jjParent: .changes(JJCommitChanges(changeID: "qz", commitID: "a1b2c3d4")))
     store.mergeLocalStatus(fresh, into: sid)
     let stored = store.workroomStatuses[sid]
     XCTAssertEqual(stored?.dirty, true)
-    XCTAssertEqual(stored?.jjRefs, ["mybook"])
-    XCTAssertEqual(stored?.jjDescription, "feat: x")
-    XCTAssertEqual(stored?.jjChangeID, "pw")
-    XCTAssertEqual(stored?.jjCommitID, "7d74470b")
+    XCTAssertEqual(stored?.jjWorkingCopy?.refs, ["mybook"])
+    XCTAssertEqual(stored?.jjWorkingCopy?.description, "feat: x")
+    XCTAssertEqual(stored?.jjWorkingCopy?.changeID, "pw")
+    XCTAssertEqual(stored?.jjWorkingCopy?.commitID, "7d74470b")
+    XCTAssertEqual(
+      stored?.jjParent, .changes(JJCommitChanges(changeID: "qz", commitID: "a1b2c3d4")))
   }
 
   /// The merge preserves the separately-resolved CI fields (a fast local refresh must never wipe
@@ -202,15 +206,17 @@ final class WorkroomStatusTests: XCTestCase {
     let sid = SidebarID.root(project: "/p")
     // Seed: a prior jj snapshot with CI already resolved.
     store.workroomStatuses[sid] = WorkroomStatus(
-      dirty: true, ci: .passing, jjRefs: ["old"], jjChangeID: "aaaa")
+      dirty: true, ci: .passing,
+      jjWorkingCopy: JJCommitChanges(changeID: "aaaa", refs: ["old"]),
+      jjParent: .changes(JJCommitChanges(changeID: "bbbb")))
     // A fresh GIT probe (no jj head) lands.
     let gitFresh = WorkroomStatus(dirty: false, branchForCI: "main")
     store.mergeLocalStatus(gitFresh, into: sid)
     let stored = store.workroomStatuses[sid]
     XCTAssertEqual(stored?.ci, .passing)  // CI preserved across the local refresh
     XCTAssertEqual(stored?.branchForCI, "main")
-    XCTAssertNil(stored?.jjRefs)  // stale jj head cleared
-    XCTAssertNil(stored?.jjChangeID)
+    XCTAssertNil(stored?.jjWorkingCopy)  // stale jj working copy cleared
+    XCTAssertNil(stored?.jjParent)  // stale jj parent cleared
   }
 
   // MARK: - Inspector layout (per-workroom, persisted to Defaults)

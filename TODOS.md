@@ -437,13 +437,18 @@ a vertical divider drag changes only the pane's *viewport height* — the body's
 its intrinsic (content) height and its width is unchanged, so SwiftUI should NOT re-lay-out per
 frame. This TODO is to confirm that under profiling, not a known regression.
 
-**Why:** `ChangesPanel` can render ~200 file rows. The original eng-review of the migration plan
-flagged per-frame re-layout as a risk; the scroll-view pane design should avoid it (drag = viewport
-change, not document re-layout), but it hasn't been profiled on a 200-row set.
+**Why:** `ChangesPanel` can render up to ~200 file rows **per list** — and for jj repos it now shows
+**two** lists (Working Copy `@` + Parent Commit `@-`), so the worst case is ~400 non-lazy rows in the
+pane (softened in practice: Parent Commit is collapsed by default, rendering 0 of its rows until
+expanded). The original eng-review of the migration plan flagged per-frame re-layout as a risk; the
+scroll-view pane design should avoid it (drag = viewport change, not document re-layout), but it
+hasn't been profiled — and the two-list change raises the ceiling.
 
 **How to start:** Instruments (Time Profiler / SwiftUI body re-evaluation) while dragging the
-Changes divider on a 200-row fixture. Only if jank shows: coalesce resize → re-layout, or
-`.drawingGroup()` the body for the drag duration.
+Changes divider on a jj fixture with both groups expanded (~400 rows). Only if jank shows: coalesce
+resize → re-layout, or `.drawingGroup()` the body for the drag duration. Note `LazyVStack` won't help
+here — the pane scrolls via AppKit `NSScrollView` with an intrinsic-size host, so there's no SwiftUI
+clip rect to virtualize against.
 
 **Priority:** P3 (likely already a non-issue by construction; confirm before optimizing).
 
@@ -482,3 +487,46 @@ are the interim safe state.
 
 **Priority:** P3 (only worth it if a wide inspector is a real workflow need; the current cap is a
 zero-risk shipped state).
+
+## Per-workroom collapse persistence for the jj Changes groups (macapp) — Working/Parent-commit follow-up
+
+**What:** Scope the Working Copy / Parent Commit disclosure-group collapse state per workroom, instead
+of the two global flags shipped today.
+
+**Why:** The two groups persist their collapse state in global `Defaults`
+(`changes.workingCopyCollapsed` / `changes.parentCommitCollapsed`, in `Core/DefaultsKeys.swift`), so
+expanding/collapsing in one repo carries to every other repo. The inspector's three *sections* are
+already per-workroom (`inspectorPaneStates`), so the inner groups are the odd one out. Surfaced by the
+eng-review outside voice (codex).
+
+**How to start:** Either add the two flags to the per-workroom `InspectorPaneState`
+(`Core/DefaultsKeys.swift`) keyed by `targetIDString`, or a parallel `[String: …]` map like
+`collapsedProjects`. They're global `@Published` flags on `AppStore` today
+(`changesWorkingCopyCollapsed` / `changesParentCommitCollapsed`, Defaults-backed via `didSet`);
+switch to a per-target lookup keyed by `store.selectedTargetID`.
+
+**Depends on:** the shipped two-group panel (`Views/ChangesPanel.swift`).
+
+**Priority:** P3 (global is acceptable for v1; revisit if the cross-repo carryover annoys).
+
+## Evaluate libgit2 for git diffs if the diff viewer needs structured features (macapp)
+
+**What:** Reconsider moving git status/diff off the CLI onto `libgit2` *specifically for the planned
+in-app diff viewer*, if and only if the viewer needs structured diff features that parsing
+`git diff --git` can't cleanly provide (rename-following, intra-line/word diff, binary handling as
+data).
+
+**Why:** The eng-review settled the backend as **CLI for both git + jj** with one shared git-format
+unified-diff parser fed by `git diff --git` and `jj diff --git` (jj-lib is unstable with no C/FFI, so
+jj diffs must be CLI patches regardless; reusing that parser for git keeps a single diff codepath +
+the one `StatusCommandRunning` mock seam). `libgit2` would only de-dupe the git half while splitting
+the path, so it's not worth it *unless* the viewer's feature depth makes patch-parsing the bottleneck.
+
+**How to start:** Build the viewer on the shared CLI patch parser first. If a feature (e.g. precise
+rename-following or word-diff) proves painful to parse, prototype `libgit2`'s diff API for the git
+side only and weigh the second codepath against the gain. Verify `libgit2` worktree support first (the
+app's core mechanism).
+
+**Depends on:** the in-app diff viewer plan (in progress).
+
+**Priority:** P3 (conditional — only if the viewer's needs outgrow patch-parsing).

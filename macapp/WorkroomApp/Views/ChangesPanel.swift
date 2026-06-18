@@ -306,6 +306,105 @@ private struct ChangedFileRow: View {
   }
 }
 
+/// One collapsible jj changes group (Working Copy `@` or Parent Commit `@-`): a disclosure header —
+/// rotating chevron + title + the change-id/commit-id/bookmark chips + a trailing changed-file count
+/// — over a body that's shown only when expanded. The chevron is a single rotated glyph (fixed
+/// width, like `SectionHeader`) so the title never shifts. `meta == nil` renders just the title (the
+/// merge/unavailable parent states, which carry no id/description); `count == nil` drops the count
+/// chip. Tap anywhere on the header toggles `collapsed`.
+private struct ChangesDisclosureGroup<Content: View>: View {
+  let title: String
+  let meta: JJCommitChanges?
+  let count: Int?
+  /// Accessibility id on the header button (so a UI test clicks the *header* to toggle, never a file
+  /// row inside an expanded body).
+  let identifier: String
+  @Binding var collapsed: Bool
+  @ViewBuilder var content: () -> Content
+  private let theme = ThemeService.shared
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 6) {
+      header
+      if !collapsed { content() }
+    }
+    .frame(maxWidth: .infinity, alignment: .leading)
+  }
+
+  private var countLabel: String? {
+    guard let count else { return nil }
+    return count == 1 ? "1 changed file" : "\(count) changed files"
+  }
+
+  private var header: some View {
+    Button {
+      collapsed.toggle()
+    } label: {
+      VStack(alignment: .leading, spacing: 2) {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+          Image(systemName: "chevron.right")
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundStyle(.secondary)
+            .rotationEffect(.degrees(collapsed ? 0 : 90))
+            .frame(width: 12, alignment: .center)
+          Text(title).font(.callout).fontWeight(.semibold)
+          if let meta {
+            if let changeID = meta.changeID {
+              Text(changeID).font(.system(.callout, design: .monospaced)).foregroundStyle(.purple)
+            }
+            if let commitID = meta.commitID {
+              Text(commitID).font(.system(.callout, design: .monospaced)).foregroundStyle(.blue)
+            }
+            ForEach(meta.refs, id: \.self) { ref in
+              Text(ref).font(.callout).fontWeight(.medium)
+                .foregroundStyle(theme.tokens.accent).lineLimit(1)
+            }
+          }
+          Spacer(minLength: 4)
+          if let count, let countLabel {
+            Text("\(count)")
+              .font(.caption).monospacedDigit().foregroundStyle(.secondary)
+              .help(countLabel)
+          }
+        }
+        // The change description (or its absence) on its own line, indented under the title.
+        if let meta {
+          if let desc = meta.description {
+            Text(desc).font(.callout).foregroundStyle(.primary)
+              .lineLimit(1).truncationMode(.tail).padding(.leading, 18)
+          } else {
+            Text("(no description set)").font(.footnote).foregroundStyle(.tertiary)
+              .lineLimit(1).padding(.leading, 18)
+          }
+        }
+      }
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .help(collapsed ? "Expand \(title)" : "Collapse \(title)")
+    // Keep the Button a single, pressable accessibility element (like `SectionHeader`): an overriding
+    // `accessibilityLabel` composes the phrase without `accessibilityElement(children: .ignore)`,
+    // which would strip the press action (XCUITest can then neither type it as a button nor click it).
+    .accessibilityLabel(accessibilityLabel)
+    .accessibilityIdentifier(identifier)
+  }
+
+  /// One composed phrase, e.g. "Working Copy, expanded, change pw, commit 7d74470b, main, feat: …,
+  /// 3 changed files" — rather than a row of cryptic tokens VoiceOver would read individually.
+  private var accessibilityLabel: String {
+    var parts: [String] = [title, collapsed ? "collapsed" : "expanded"]
+    if let meta {
+      if let c = meta.changeID { parts.append("change \(c)") }
+      if let c = meta.commitID { parts.append("commit \(c)") }
+      parts += meta.refs
+      parts.append(meta.description ?? "no description set")
+    }
+    if let countLabel { parts.append(countLabel) }
+    return parts.joined(separator: ", ")
+  }
+}
+
 /// A compact section-header action button matching the sidebar row-button convention: an SF
 /// Symbol with a subtle rounded hover fill. `destructive` tints red on hover (like the row
 /// delete button); neutral uses a faint primary fill (like the new-workroom button).
@@ -407,84 +506,109 @@ struct ChangesPanel: View {
     } else if status == nil || status?.lastChecked == nil {
       inspectorMessage("Checking\u{2026}")
     } else if let status {
-      VStack(alignment: .leading, spacing: 10) {
-        header(sid: sid, status: status)
-        if let sync = syncText(status) {
-          Text(sync).font(.callout).foregroundStyle(.secondary)
-        }
-        Divider()
-        if let failure = status.failure {
-          inspectorMessage(failureText(failure))
-        } else if status.isClean {
-          cleanState
-        } else {
-          fileList(status.changedFiles ?? [], in: target?.path)
-        }
-        // CI is GitHub-derived, so it lives in the Pull Request section (with or without a PR) —
-        // not here in the local working-tree view.
+      // jj repos render two collapsible groups (working copy + parent); git keeps the flat list.
+      // `jjWorkingCopy != nil` is the discriminator — a failed probe leaves it nil, so failures fall
+      // to the git path (which renders the failure message under a branch header, as before).
+      if let workingCopy = status.jjWorkingCopy {
+        jjContent(workingCopy: workingCopy, parent: status.jjParent, directory: target?.path)
+      } else {
+        gitContent(sid: sid, status: status, directory: target?.path)
       }
-      .padding(12)
     }
   }
 
-  /// Header — no repo/workroom name (issue #24 feedback). Git shows the branch; jj shows the
-  /// working copy's jj-log header (change-id + commit-id + bookmarks/tags) with the description on
-  /// its own line below.
+  /// Git repos: the branch header, sync state, then the working-tree change list (or clean/failure).
+  /// CI is GitHub-derived, so it lives in the Pull Request section — not here.
   @ViewBuilder
-  private func header(sid: SidebarID, status: WorkroomStatus) -> some View {
-    if status.jjRefs != nil {
-      jjHeader(status)
-    } else {
+  private func gitContent(sid: SidebarID, status: WorkroomStatus, directory: String?) -> some View {
+    VStack(alignment: .leading, spacing: 10) {
       HStack(spacing: 6) {
         Text(gitBranchLabel(sid: sid, status: status))
           .font(.body).fontWeight(.semibold)
           .lineLimit(1).truncationMode(.middle)
         Spacer(minLength: 0)
       }
-    }
-  }
-
-  /// The jj working-copy header: change-id + commit-id + bookmarks/tags on the first line, the
-  /// description on its own line below (issue #24 feedback).
-  private func jjHeader(_ status: WorkroomStatus) -> some View {
-    VStack(alignment: .leading, spacing: 4) {
-      HStack(alignment: .firstTextBaseline, spacing: 6) {
-        if let changeID = status.jjChangeID {
-          // Change-id: just the shortest unique prefix, no dimmed padding.
-          Text(changeID).font(.system(.callout, design: .monospaced)).foregroundStyle(.purple)
-        }
-        if let commitID = status.jjCommitID {
-          Text(commitID).font(.system(.callout, design: .monospaced)).foregroundStyle(.blue)
-        }
-        ForEach(status.jjRefs ?? [], id: \.self) { ref in
-          Text(ref).font(.callout).fontWeight(.medium)
-            .foregroundStyle(ThemeService.shared.tokens.accent)
-            .lineLimit(1)
-        }
-        Spacer(minLength: 0)
+      if let sync = syncText(status) {
+        Text(sync).font(.callout).foregroundStyle(.secondary)
       }
-      if let desc = status.jjDescription {
-        Text(desc).font(.callout).foregroundStyle(.primary).lineLimit(1).truncationMode(.tail)
+      Divider()
+      if let failure = status.failure {
+        inspectorMessage(failureText(failure))
+      } else if status.isClean {
+        cleanState
       } else {
-        // No description: a smaller, dimmer placeholder so it reads as absent, not a real subject.
-        Text("(no description set)").font(.footnote).foregroundStyle(.tertiary).lineLimit(1)
+        fileList(status.changedFiles ?? [], in: directory)
       }
     }
-    .frame(maxWidth: .infinity, alignment: .leading)
-    // Read as one phrase ("change pw, commit 7d74470b, feature/login, feat: …") rather than four
-    // cryptic tokens.
-    .accessibilityElement(children: .ignore)
-    .accessibilityLabel(jjHeaderAccessibility(status))
+    .padding(12)
   }
 
-  /// Composed VoiceOver phrase for the jj header.
-  private func jjHeaderAccessibility(_ status: WorkroomStatus) -> String {
-    var parts: [String] = []
-    if let change = status.jjChangeID { parts.append("change \(change)") }
-    if let commit = status.jjCommitID { parts.append("commit \(commit)") }
-    parts += status.jjRefs ?? []
-    parts.append(status.jjDescription ?? "no description set")
-    return parts.joined(separator: ", ")
+  /// jj repos: two collapsible groups — the working copy (`@`, expanded by default) and its parent
+  /// (`@-`, collapsed by default), each with a changed-file count in its header.
+  @ViewBuilder
+  private func jjContent(workingCopy: JJCommitChanges, parent: JJParentState?, directory: String?)
+    -> some View
+  {
+    VStack(alignment: .leading, spacing: 10) {
+      ChangesDisclosureGroup(
+        title: "Working Copy", meta: workingCopy, count: workingCopy.files.count,
+        identifier: "changes.group.workingCopy", collapsed: $store.changesWorkingCopyCollapsed
+      ) {
+        if workingCopy.files.isEmpty {
+          cleanState
+        } else {
+          fileList(workingCopy.files, in: directory)
+        }
+      }
+      parentGroup(parent, directory: directory)
+    }
+    .padding(12)
+  }
+
+  /// The Parent Commit (`@-`) group. Each `JJParentState` renders explicitly so a merge or an
+  /// unavailable probe is shown, never silently dropped; `.root`/`nil` hides the group entirely.
+  @ViewBuilder
+  private func parentGroup(_ parent: JJParentState?, directory: String?) -> some View {
+    switch parent {
+    case .changes(let commit):
+      ChangesDisclosureGroup(
+        title: "Parent Commit", meta: commit, count: commit.files.count,
+        identifier: "changes.group.parentCommit", collapsed: $store.changesParentCommitCollapsed
+      ) {
+        if commit.files.isEmpty {
+          parentMessage("No changes in this commit")
+        } else {
+          fileList(commit.files, in: directory)
+        }
+      }
+    case .merge(let n):
+      ChangesDisclosureGroup(
+        title: "Parent Commit", meta: nil, count: nil,
+        identifier: "changes.group.parentCommit", collapsed: $store.changesParentCommitCollapsed
+      ) {
+        parentMessage("Parent is a merge of \(n) changes")
+      }
+    case .unavailable:
+      ChangesDisclosureGroup(
+        title: "Parent Commit", meta: nil, count: nil,
+        identifier: "changes.group.parentCommit", collapsed: $store.changesParentCommitCollapsed
+      ) {
+        parentMessage("Parent changes unavailable")
+      }
+    case .root, .none:
+      EmptyView()
+    }
+  }
+
+  /// A muted single-line message for the parent group's non-list states (merge / unavailable / empty),
+  /// indented to align under the disclosure title.
+  private func parentMessage(_ text: String) -> some View {
+    Text(text)
+      .font(.callout).foregroundStyle(.secondary)
+      .padding(.leading, 18)
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .accessibilityElement(children: .ignore)
+      .accessibilityLabel(text)
   }
 
   private func gitBranchLabel(sid: SidebarID, status: WorkroomStatus) -> String {
