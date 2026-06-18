@@ -1369,26 +1369,35 @@ final class AppStore: ObservableObject {
       }
       return
     }
-    let alert = NSAlert()
-    alert.messageText = "Close ‘\(tab.title)’?"
-    alert.informativeText = "Closing this terminal stops any process running in it."
-    alert.addButton(withTitle: "Close")
-    alert.addButton(withTitle: "Cancel")
-    alert.showsSuppressionButton = true
-    alert.suppressionButton?.title = "Don't ask me again"
-    let confirmed = alert.runModal() == .alertFirstButtonReturn
-    // Ticking the box stops future confirmations whether they Close or Cancel — it means "stop
-    // asking". Writes the same key the Settings checkbox and the File ▸ "Confirm Before Closing a
-    // Terminal" menu toggle bind to, so both unset the moment the box is ticked.
-    if alert.suppressionButton?.state == .on {
-      Defaults[.confirmOnCloseTerminal] = false
-    }
-    if confirmed {
-      // Stop a live run command (Ctrl-C + wait) before freeing the surface, so the dev server
-      // exits cleanly rather than being orphaned by the bare hangup (issue #7). Non-run / exited
-      // tabs close immediately.
-      closingRunTab(tabID, for: target.id) { [weak self] in
-        self?.terminals.closeTab(tabID, for: target)
+    // Defer the modal to the next runloop tick so the event that triggered the close — the ⌘W
+    // key-equivalent dispatch or the ✕ button's mouse tracking — finishes draining first. Running
+    // `NSAlert.runModal()` synchronously inside that dispatch spins up the modal loop while the
+    // input event is still in flight, so the alert window doesn't reliably become key and the
+    // confirming Return is intermittently dropped (issue #54). By the next tick it owns the
+    // keyboard cleanly. (The context-menu Close already defers for the same unwind reason.)
+    DispatchQueue.main.async { [weak self] in
+      guard let self else { return }
+      let alert = NSAlert()
+      alert.messageText = "Close ‘\(tab.title)’?"
+      alert.informativeText = "Closing this terminal stops any process running in it."
+      alert.addButton(withTitle: "Close")
+      alert.addButton(withTitle: "Cancel")
+      alert.showsSuppressionButton = true
+      alert.suppressionButton?.title = "Don't ask me again"
+      let confirmed = alert.runModal() == .alertFirstButtonReturn
+      // Ticking the box stops future confirmations whether they Close or Cancel — it means "stop
+      // asking". Writes the same key the Settings checkbox and the File ▸ "Confirm Before Closing a
+      // Terminal" menu toggle bind to, so both unset the moment the box is ticked.
+      if alert.suppressionButton?.state == .on {
+        Defaults[.confirmOnCloseTerminal] = false
+      }
+      if confirmed {
+        // Stop a live run command (Ctrl-C + wait) before freeing the surface, so the dev server
+        // exits cleanly rather than being orphaned by the bare hangup (issue #7). Non-run / exited
+        // tabs close immediately.
+        self.closingRunTab(tabID, for: target.id) { [weak self] in
+          self?.terminals.closeTab(tabID, for: target)
+        }
       }
     }
   }
