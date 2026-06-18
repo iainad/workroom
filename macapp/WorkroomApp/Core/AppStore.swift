@@ -41,6 +41,8 @@ final class AppStore: ObservableObject {
       // Freshen the newly-selected workroom's status (incl. CI) — debounced so arrow-key
       // cycling through rows doesn't fork a probe per row (issue #24).
       scheduleSelectedStatusRefresh()
+      // Swap the inspector to the newly-selected workroom's saved layout (issue #24).
+      if selectedTargetID != oldValue { loadInspectorState() }
     }
   }
   /// Project paths the user has collapsed in the sidebar (issue #14). Held here as `@Published`
@@ -123,16 +125,26 @@ final class AppStore: ObservableObject {
 
   // Inspector section collapse (issue #24). Held on the store rather than as `@Default` in the
   // inspector view: the `.inspector` content doesn't observe `@Default` changes, but it DOES observe
-  // this `@EnvironmentObject`. Seeded from — and persisted back to — Defaults via `didSet`.
-  @Published var changesSectionCollapsed = Defaults[.changesSectionCollapsed] {
-    didSet { Defaults[.changesSectionCollapsed] = changesSectionCollapsed }
+  // this `@EnvironmentObject`. These three are the *live* state for the currently selected workroom;
+  // they're loaded from / persisted to the per-workroom `inspectorPaneStates` map (keyed by the
+  // selection) via `loadInspectorState()` / `persistInspectorState()`.
+  @Published var changesSectionCollapsed = false {
+    didSet { persistInspectorState() }
   }
-  @Published var prSectionCollapsed = Defaults[.prSectionCollapsed] {
-    didSet { Defaults[.prSectionCollapsed] = prSectionCollapsed }
+  @Published var prSectionCollapsed = false {
+    didSet { persistInspectorState() }
   }
-  @Published var notificationsSectionCollapsed = Defaults[.notificationsSectionCollapsed] {
-    didSet { Defaults[.notificationsSectionCollapsed] = notificationsSectionCollapsed }
+  @Published var notificationsSectionCollapsed = false {
+    didSet { persistInspectorState() }
   }
+  /// Relative heights of the three inspector panes for the selected workroom (issue #24), ordered as
+  /// `InspectorSectionKind.allCases`. Equal == the default three-equal-sections layout; updated when
+  /// the user drags a divider (via `updateInspectorSizeWeights`) and persisted per workroom. Not set
+  /// directly by the view — the `NSSplitView` reports drag results back through the store.
+  @Published var inspectorSizeWeights: [Double] = [1, 1, 1]
+  /// True while `loadInspectorState` is writing the three collapse flags + weights, so their
+  /// `didSet`s don't persist the values straight back (and the load isn't mistaken for a user edit).
+  private var isLoadingInspectorState = false
 
   @Published var errorMessage: String?
   /// Title for the error alert. Nil falls back to the generic title; specific
@@ -1706,6 +1718,44 @@ final class AppStore: ObservableObject {
 
   /// Encode a selectable target to its `TerminalTarget.ID` string for persistence (issue #14) —
   /// the inverse of `sidebarID(forTargetID:in:)`. `.project`/nil aren't selectable targets.
+  // MARK: Per-workroom inspector layout (issue #24)
+
+  /// Load the selected workroom's saved inspector layout (collapse + pane weights) into the live
+  /// state, or the default (all expanded, equal) when the workroom has none / nothing is selected.
+  /// Guarded so the resulting `didSet`s don't immediately persist the values back.
+  func loadInspectorState() {
+    let state =
+      Self.targetIDString(for: selectedTargetID)
+      .flatMap { Defaults[.inspectorPaneStates][$0] } ?? .default
+    let collapsed = state.collapsed.count == 3 ? state.collapsed : [false, false, false]
+    let weights = state.weights.count == 3 ? state.weights : [1, 1, 1]
+    isLoadingInspectorState = true
+    changesSectionCollapsed = collapsed[0]
+    prSectionCollapsed = collapsed[1]
+    notificationsSectionCollapsed = collapsed[2]
+    inspectorSizeWeights = weights
+    isLoadingInspectorState = false
+  }
+
+  /// Persist the live inspector layout to the selected workroom's entry. No-op while loading or when
+  /// the selection has no stable key (e.g. a project row, or nothing selected).
+  func persistInspectorState() {
+    guard !isLoadingInspectorState, let key = Self.targetIDString(for: selectedTargetID) else {
+      return
+    }
+    Defaults[.inspectorPaneStates][key] = InspectorPaneState(
+      collapsed: [changesSectionCollapsed, prSectionCollapsed, notificationsSectionCollapsed],
+      weights: inspectorSizeWeights)
+  }
+
+  /// Record new pane weights reported by the inspector's `NSSplitView` after a divider drag, and
+  /// persist them for the selected workroom.
+  func updateInspectorSizeWeights(_ weights: [Double]) {
+    guard weights.count == 3, weights != inspectorSizeWeights else { return }
+    inspectorSizeWeights = weights
+    persistInspectorState()
+  }
+
   nonisolated static func targetIDString(for id: SidebarID?) -> String? {
     switch id {
     case .root(let path): return TerminalTarget.rootID(project: path)

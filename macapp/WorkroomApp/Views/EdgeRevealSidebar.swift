@@ -229,8 +229,10 @@ struct EdgeRevealSidebar<Content: View>: View {
 
   private var panel: some View {
     content()
-      // Breathing room between the card's rounded top and the first row.
-      .padding(.top, 8)
+      // Breathing room between the card's rounded top and the first row — but only for the leading
+      // sidebar (a List). The trailing inspector's first element is a full-width section header bar
+      // that must sit flush under the card's rounded top, so it gets no top inset.
+      .padding(.top, side == .leading ? 8 : 0)
       .frame(width: width)
       .frame(maxHeight: .infinity)
       .background(ThemeService.shared.tokens.panel)

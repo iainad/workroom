@@ -213,19 +213,57 @@ final class WorkroomStatusTests: XCTestCase {
     XCTAssertNil(stored?.jjChangeID)
   }
 
-  // MARK: - Inspector section collapse (store-backed, persisted to Defaults)
+  // MARK: - Inspector layout (per-workroom, persisted to Defaults)
 
-  /// The collapse state lives on the store (so the `.inspector` content re-renders) and persists to
-  /// Defaults via `didSet`. Guards that store↔Defaults wiring.
+  /// Collapse state lives on the store (so the `.inspector` content re-renders) and persists
+  /// per-workroom into `inspectorPaneStates`, keyed by the selection. Switching workrooms swaps the
+  /// live state to that workroom's saved layout; switching back restores it.
   @MainActor
-  func testInspectorSectionCollapsePersistsToDefaults() {
-    let original = Defaults[.changesSectionCollapsed]
-    defer { Defaults[.changesSectionCollapsed] = original }
+  func testInspectorCollapsePersistsPerWorkroom() {
+    let original = Defaults[.inspectorPaneStates]
+    defer { Defaults[.inspectorPaneStates] = original }
+    Defaults[.inspectorPaneStates] = [:]
+
     let store = AppStore()
+    let a = SidebarID.workroom(project: "/p", name: "a")
+    let b = SidebarID.workroom(project: "/p", name: "b")
+
+    store.selectedTargetID = a
     store.changesSectionCollapsed = true
-    XCTAssertTrue(Defaults[.changesSectionCollapsed])
-    store.changesSectionCollapsed = false
-    XCTAssertFalse(Defaults[.changesSectionCollapsed])
+    store.notificationsSectionCollapsed = true
+
+    // Switching to a different workroom shows its own (default, all-expanded) layout.
+    store.selectedTargetID = b
+    XCTAssertFalse(store.changesSectionCollapsed)
+    XCTAssertFalse(store.notificationsSectionCollapsed)
+
+    // Switching back restores workroom a's saved collapse.
+    store.selectedTargetID = a
+    XCTAssertTrue(store.changesSectionCollapsed)
+    XCTAssertTrue(store.notificationsSectionCollapsed)
+    XCTAssertFalse(store.prSectionCollapsed)
+  }
+
+  /// Pane size weights (set when the user drags a divider) persist per-workroom alongside collapse.
+  @MainActor
+  func testInspectorSizeWeightsPersistPerWorkroom() {
+    let original = Defaults[.inspectorPaneStates]
+    defer { Defaults[.inspectorPaneStates] = original }
+    Defaults[.inspectorPaneStates] = [:]
+
+    let store = AppStore()
+    let a = SidebarID.workroom(project: "/p", name: "a")
+    let b = SidebarID.workroom(project: "/p", name: "b")
+
+    store.selectedTargetID = a
+    store.updateInspectorSizeWeights([300, 100, 200])
+
+    store.selectedTargetID = b
+    XCTAssertEqual(
+      store.inspectorSizeWeights, [1, 1, 1], "another workroom uses the equal default")
+
+    store.selectedTargetID = a
+    XCTAssertEqual(store.inspectorSizeWeights, [300, 100, 200], "workroom a's drag is restored")
   }
 
   // MARK: - PRPresentation (Phase 2 pull-request badge)

@@ -6,6 +6,12 @@ import SwiftUI
 /// exposes no width binding, so we locate the split view from a zero-size probe placed in the
 /// sidebar and let `NSSplitView`'s built-in autosave save + restore the divider positions.
 /// (Issue #14 — sidebar width.)
+///
+/// NOTE: only `autosaveName` is set. Other `NSSplitView` configuration (delegate, holding priority,
+/// per-subview constraints) must NOT be applied here — the split view behind `NavigationSplitView`
+/// is a private SwiftUI subclass that *asserts and crashes* on `setDelegate:` /
+/// `setHoldingPriority:forSubviewAtIndex:`, and frame-managed panes ignore Auto Layout width
+/// constraints. Column sizing is therefore expressed only via SwiftUI's `navigationSplitViewColumnWidth`.
 struct SplitViewAutosave: NSViewRepresentable {
   let name: String
 

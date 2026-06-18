@@ -50,7 +50,11 @@ struct RootView: View {
         set: { store.sidebarVisible = $0 != .detailOnly })
     ) {
       ProjectSidebar()
-        .frame(minWidth: 240)
+        // Bound the sidebar column: a floor so a wide inspector can't crush it (clipping labels) and
+        // a ceiling so it can't be dragged so wide it eats the main panel. Expressed as a
+        // NavigationSplitView column constraint, which the split view honours as the real column
+        // range (a plain `.frame(minWidth:)` is not treated as the column floor).
+        .navigationSplitViewColumnWidth(min: 240, ideal: 270, max: 360)
         // Persist the user-dragged sidebar width across launches (issue #14) via the
         // underlying NSSplitView's autosave — SwiftUI offers no width binding.
         .background(SplitViewAutosave(name: "WorkroomSidebarSplit"))
@@ -161,7 +165,12 @@ struct RootView: View {
     }
     .inspector(isPresented: $showNotifications) {
       RightInspector()
-        .inspectorColumnWidth(min: 260, ideal: 300, max: 420)
+        // Max is capped below the point where a wider inspector starts squeezing the left sidebar.
+        // SwiftUI's NavigationSplitView resizes the inner sidebar|detail split proportionally when
+        // the inspector grows, crushing the sidebar's labels, and the AppKit fixes for that
+        // (setHoldingPriority / a custom split delegate) crash on SwiftUI's private split subclass —
+        // so 520 is the safe ceiling rather than something larger.
+        .inspectorColumnWidth(min: 260, ideal: 300, max: 520)
         // Capture the live inspector width so the right edge-hover reveal (issue #56) matches it.
         .background(
           GeometryReader { geo in

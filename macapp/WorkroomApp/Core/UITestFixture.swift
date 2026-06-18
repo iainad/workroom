@@ -20,6 +20,14 @@ enum UITestFixture {
     UserDefaults.standard.bool(forKey: defaultsKey)
   }
 
+  /// When set (`-WorkroomUITestManyChanges 1`), the fixture workroom reports a long changed-file
+  /// list so the Changes section overflows and fills the inspector — the scenario in which the
+  /// inspector's section-disclosure animation misbehaves (the header title swims relative to its
+  /// bar). Used by `InspectorAnimationUITests`.
+  static var manyChanges: Bool {
+    UserDefaults.standard.bool(forKey: "WorkroomUITestManyChanges")
+  }
+
   /// Stable display name of the fixture project (also its sidebar accessibility id suffix:
   /// `sidebar.project.<name>`). Deliberately obvious so it never reads as a real project in logs.
   static let projectName = "UITestProject"
@@ -58,34 +66,31 @@ enum UITestFixture {
   static var workroomStatus: WorkroomStatus {
     WorkroomStatus(
       dirty: true,
-      changedFiles: [
-        ChangedFile(path: "Gemfile", change: .modified),
-        ChangedFile(path: ".env.example", change: .added),
-        ChangedFile(path: "app/models/user.rb", change: .modified),
-        ChangedFile(path: "app/controllers/sessions_controller.rb", change: .added),
-        ChangedFile(path: "config/routes.rb", change: .modified),
-        ChangedFile(path: "test/models/user_test.rb", change: .added),
-      ],
+      changedFiles: changedFiles,
       insertions: 411, deletions: 222,
       ci: .passing,
       jjRefs: ["feature/login"],
       jjDescription: "feat: add session login (#42)",
       jjChangeID: "pw", jjCommitID: "7d74470b",
-      pr: PullRequestInfo(
-        number: 42, title: "Add session login", state: .open, isDraft: false,
-        url: "https://github.com/acme/app/pull/42", reviewDecision: .changesRequested,
-        // A spread of reviewer states so the panel renders the aggregate header + every row kind:
-        // a bot still generating (pending → no link), and two submitted reviews (approval +
-        // changes-requested) that carry permalinks so the rows render as open-on-GitHub links.
-        reviewers: [
-          Reviewer(identity: .user(login: "copilot-pull-request-reviewer"), state: .requested),
-          Reviewer(
-            identity: .user(login: "iainad"), state: .approved,
-            url: "https://github.com/acme/app/pull/42#pullrequestreview-1001"),
-          Reviewer(
-            identity: .user(login: "octocat"), state: .changesRequested,
-            url: "https://github.com/acme/app/pull/42#pullrequestreview-1002"),
-        ]),
+      // The many-changes repro scenario pairs a tall Changes list with an empty Pull Request and
+      // Notifications (the exact configuration the disclosure-animation glitch was reported in).
+      pr: manyChanges
+        ? nil
+        : PullRequestInfo(
+          number: 42, title: "Add session login", state: .open, isDraft: false,
+          url: "https://github.com/acme/app/pull/42", reviewDecision: .changesRequested,
+          // A spread of reviewer states so the panel renders the aggregate header + every row kind:
+          // a bot still generating (pending → no link), and two submitted reviews (approval +
+          // changes-requested) that carry permalinks so the rows render as open-on-GitHub links.
+          reviewers: [
+            Reviewer(identity: .user(login: "copilot-pull-request-reviewer"), state: .requested),
+            Reviewer(
+              identity: .user(login: "iainad"), state: .approved,
+              url: "https://github.com/acme/app/pull/42#pullrequestreview-1001"),
+            Reviewer(
+              identity: .user(login: "octocat"), state: .changesRequested,
+              url: "https://github.com/acme/app/pull/42#pullrequestreview-1002"),
+          ]),
       // All three "checked" stamps set so the inspector shows the seeded data, not "Checking…".
       lastChecked: Self.checkedAt, ciCheckedAt: Self.checkedAt, prCheckedAt: Self.checkedAt)
   }
@@ -100,6 +105,24 @@ enum UITestFixture {
       // No PR seeded here, so a `prCheckedAt` stamp makes the inspector show the "No pull request"
       // empty state (not "Checking…").
       lastChecked: Self.checkedAt, ciCheckedAt: Self.checkedAt, prCheckedAt: Self.checkedAt)
+  }
+
+  /// The fixture's changed-file list: a small representative set, or a long one (`manyChanges`) so
+  /// the Changes section overflows the inspector for the disclosure-animation repro.
+  private static var changedFiles: [ChangedFile] {
+    let base = [
+      ChangedFile(path: "Gemfile", change: .modified),
+      ChangedFile(path: ".env.example", change: .added),
+      ChangedFile(path: "app/models/user.rb", change: .modified),
+      ChangedFile(path: "app/controllers/sessions_controller.rb", change: .added),
+      ChangedFile(path: "config/routes.rb", change: .modified),
+      ChangedFile(path: "test/models/user_test.rb", change: .added),
+    ]
+    guard manyChanges else { return base }
+    let extra = (0..<20).map {
+      ChangedFile(path: "app/views/layouts/v\($0).html.erb", change: .modified)
+    }
+    return base + extra
   }
 
   /// A fixed timestamp for the seeded statuses' "last checked" stamps (deterministic; the value

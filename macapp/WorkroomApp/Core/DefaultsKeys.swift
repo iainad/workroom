@@ -81,14 +81,23 @@ extension Defaults.Keys {
   /// hint applied to whatever is currently active — stale ids resolve away harmlessly.
   static let workroomTabOrder = Key<[String]>("workroomsView.tabOrder", default: [])
 
-  /// Whether the right inspector's "Changes" section is collapsed (issue #24). The inspector now
-  /// composes two sections (Changes + Notifications); per-section collapse persists independently.
-  static let changesSectionCollapsed = Key<Bool>(
-    "inspector.changesSectionCollapsed", default: false)
-  /// Whether the right inspector's "Notifications" section is collapsed (issue #24).
-  static let notificationsSectionCollapsed = Key<Bool>(
-    "inspector.notificationsSectionCollapsed", default: false)
-  /// Whether the right inspector's "Pull Request" section is collapsed (issue #24, Phase 2).
-  static let prSectionCollapsed = Key<Bool>(
-    "inspector.prSectionCollapsed", default: false)
+  /// Per-workroom inspector layout (issue #24): each workroom remembers which of its three
+  /// sections (Changes / Pull Request / Notifications) are collapsed and the relative heights of
+  /// the panes, keyed by the workroom's `targetIDString`. Replaces the earlier global per-section
+  /// collapse flags — the inspector's shape is now per-workroom.
+  static let inspectorPaneStates = Key<[String: InspectorPaneState]>(
+    "inspector.paneStates", default: [:])
+}
+
+/// One workroom's persisted inspector layout: the collapse state and relative pane heights of the
+/// three sections, ordered as `InspectorSectionKind.allCases` (Changes, Pull Request,
+/// Notifications). `weights` are relative (renormalised among the expanded panes at layout time),
+/// so they survive inspector-width/height changes; equal weights == the three-equal-sections
+/// default.
+struct InspectorPaneState: Codable, Defaults.Serializable, Equatable {
+  var collapsed: [Bool]
+  var weights: [Double]
+
+  static let `default` = InspectorPaneState(
+    collapsed: [false, false, false], weights: [1, 1, 1])
 }

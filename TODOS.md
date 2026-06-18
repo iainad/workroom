@@ -428,3 +428,57 @@ races) — prototype carefully and test with VoiceOver on.
 **Depends on:** the #56 reveal panel (shipped).
 
 **Priority:** P3 (polish; persistent keyboard/AX access already exists via the menu/toolbar toggles).
+
+## Profile inspector pane body during live divider-drag (macapp) — NSSplitView inspector follow-up
+
+**What:** Verify there's no stutter when dragging an inspector section divider with a large Changes
+set. The NSSplitView inspector (shipped) hosts each section body inside a native `NSScrollView`, so
+a vertical divider drag changes only the pane's *viewport height* — the body's `NSHostingView` keeps
+its intrinsic (content) height and its width is unchanged, so SwiftUI should NOT re-lay-out per
+frame. This TODO is to confirm that under profiling, not a known regression.
+
+**Why:** `ChangesPanel` can render ~200 file rows. The original eng-review of the migration plan
+flagged per-frame re-layout as a risk; the scroll-view pane design should avoid it (drag = viewport
+change, not document re-layout), but it hasn't been profiled on a 200-row set.
+
+**How to start:** Instruments (Time Profiler / SwiftUI body re-evaluation) while dragging the
+Changes divider on a 200-row fixture. Only if jank shows: coalesce resize → re-layout, or
+`.drawingGroup()` the body for the drag duration.
+
+**Priority:** P3 (likely already a non-issue by construction; confirm before optimizing).
+
+## Own the main-window column layout so the inspector can be dragged wide (macapp)
+
+**What:** Let the right inspector resize wider than its current 520 cap without crushing the left
+sidebar, by taking the three-column layout (sidebar | detail | inspector) off SwiftUI's
+`NavigationSplitView` + `.inspector` and onto a layout we control.
+
+**Why:** `NavigationSplitView` manages its `sidebar | detail` columns through a *private*
+`NSSplitView` subclass, and `.inspector` rides the same machinery. When the inspector grows SwiftUI
+shrinks that inner split **proportionally**, so the sidebar loses width and its labels clip — even
+when there's plenty of room (reproduced at a 1900px window). It can't be overridden: `setDelegate:`
+and `setHoldingPriority:forSubviewAtIndex:` both *assert/crash* on the private subclass, and
+frame-managed panes ignore Auto Layout width constraints. So 520 is only a safe ceiling, not a fix —
+the inspector divider can't go wider without squeezing the sidebar.
+
+**How to start:** Two shapes —
+- **3a (most control, recommended):** replace `NavigationSplitView` + `.inspector` with one
+  `NSSplitView` we own via `NSViewControllerRepresentable`, hosting three `NSHostingController`s.
+  Our own split view accepts per-pane `minimumThickness` + holding priority, so the sidebar holds
+  its floor, the detail yields, and the inspector resizes to any width.
+- **3b (simpler, less native):** drop `NavigationSplitView` and lay the columns out in pure SwiftUI
+  (`HStack` + explicit `@State` widths + drag-gesture dividers), enforcing min/max ourselves.
+
+**Cost / risk:** medium-large, touches the app's primary window layout. `NavigationSplitView` gives
+a lot for free that must be rebuilt: the unified toolbar spanning columns (back/forward over the
+sidebar, bell over the inspector), native sidebar material + column show/hide animations, the system
+sidebar toggle wired to `columnVisibility` (and the `View ▸ Projects` checkmark), `.detailOnly`/
+`.all` visibility, and keyboard column nav. The edge-hover reveal (`EdgeRevealSidebar`, issue #56) is
+built around `NavigationSplitView` collapse and would need rework. Put the toolbar / reveal /
+visibility-menu regressions explicitly on the test list.
+
+**Depends on:** nothing; supersedes the 520 inspector-width cap + the 240–360 sidebar bound, which
+are the interim safe state.
+
+**Priority:** P3 (only worth it if a wide inspector is a real workflow need; the current cap is a
+zero-risk shipped state).

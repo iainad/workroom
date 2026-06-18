@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// The right inspector (issue #24). macOS 14 supports only one `.inspector` per view, so the
@@ -12,44 +13,58 @@ struct RightInspector: View {
   @State private var pendingConfirm: PendingPRAction?
 
   var body: some View {
-    // Each section owns its action in its own header (issue #24 feedback): Refresh in Changes,
-    // Clear in Notifications. Collapse state lives on `store` (not `@Default`) so toggling it
-    // reliably re-renders this inspector content — see AppStore.
-    VStack(spacing: 0) {  // sections are flush; a 1px rule separates them
-      InspectorSection(
-        title: "Changes", collapsed: $store.changesSectionCollapsed, indicator: changesIndicator,
-        indicatorLabel: changesIndicatorLabel
-      ) {
-        InspectorHeaderButton(systemImage: "arrow.clockwise", help: "Refresh workroom status") {
-          store.refreshWorkroomStatuses(force: true)
-        }
-      } content: {
-        ChangesPanel()
-      }
-      sectionRule
-      InspectorSection(
-        title: "Pull Request", collapsed: $store.prSectionCollapsed, indicator: prIndicator,
-        indicatorLabel: prIndicatorLabel
-      ) {
-        prActionsMenu
-      } content: {
-        PullRequestPanel()
-      }
-      sectionRule
-      InspectorSection(
-        title: "Notifications", collapsed: $store.notificationsSectionCollapsed, fill: true,
-        indicator: notificationsIndicator, indicatorLabel: notificationsIndicatorLabel
-      ) {
-        InspectorHeaderButton(
-          systemImage: "trash", help: "Clear notifications", destructive: true,
-          disabled: notifications.items.isEmpty
-        ) {
-          notifications.clear()
-        }
-      } content: {
-        NotificationsList()
-      }
-    }
+    // Composed as a native NSSplitView (see InspectorSplitView). Each section's header + body are
+    // handed over as environment-injected AnyViews — the hosted tree does NOT inherit our
+    // `@EnvironmentObject`s across NSHostingController, so we inject `store` + `notifications` here.
+    // Order matches InspectorSectionKind.allCases: Changes, Pull Request, Notifications.
+    InspectorSplitView(
+      headers: [
+        AnyView(
+          SectionHeader(
+            title: "Changes", collapsed: $store.changesSectionCollapsed,
+            indicator: changesIndicator, indicatorLabel: changesIndicatorLabel
+          ) {
+            InspectorHeaderButton(systemImage: "arrow.clockwise", help: "Refresh workroom status") {
+              store.refreshWorkroomStatuses(force: true)
+            }
+          }
+          .environmentObject(store).environmentObject(notifications)),
+        AnyView(
+          SectionHeader(
+            title: "Pull Request", collapsed: $store.prSectionCollapsed,
+            indicator: prIndicator, indicatorLabel: prIndicatorLabel
+          ) {
+            prActionsMenu
+          }
+          .environmentObject(store).environmentObject(notifications)),
+        AnyView(
+          SectionHeader(
+            title: "Notifications", collapsed: $store.notificationsSectionCollapsed,
+            indicator: notificationsIndicator, indicatorLabel: notificationsIndicatorLabel
+          ) {
+            InspectorHeaderButton(
+              systemImage: "trash", help: "Clear notifications", destructive: true,
+              disabled: notifications.items.isEmpty
+            ) {
+              notifications.clear()
+            }
+          }
+          .environmentObject(store).environmentObject(notifications)),
+      ],
+      bodies: [
+        AnyView(ChangesPanel().environmentObject(store).environmentObject(notifications)),
+        AnyView(PullRequestPanel().environmentObject(store).environmentObject(notifications)),
+        AnyView(NotificationsList().environmentObject(store).environmentObject(notifications)),
+      ],
+      collapsed: [
+        store.changesSectionCollapsed,
+        store.prSectionCollapsed,
+        store.notificationsSectionCollapsed,
+      ],
+      workroomKey: AppStore.targetIDString(for: store.selectedTargetID) ?? "",
+      weights: store.inspectorSizeWeights,
+      onWeightsChanged: { store.updateInspectorSizeWeights($0) }
+    )
     .frame(minWidth: 260, maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     .confirmationDialog(
       pendingConfirm.map { "\($0.action.label)?" } ?? "",
@@ -288,74 +303,6 @@ private struct ChangedFileRow: View {
     case .conflicted: return "conflicted"
     case .other: return "changed"
     }
-  }
-}
-
-/// A collapsible section header + body for the composed inspector. `fill: true` makes the
-/// expanded body grab the remaining vertical space (used by Notifications so its list fills
-/// below the intrinsic-height Changes section).
-struct InspectorSection<Accessory: View, Content: View>: View {
-  let title: String
-  @Binding var collapsed: Bool
-  var fill: Bool = false
-  /// A small status indicator shown right after the title (a dot / count badge), so a *collapsed*
-  /// section still conveys its state. Non-interactive, so it rides inside the collapse button.
-  var indicator: AnyView = AnyView(EmptyView())
-  /// VoiceOver text for `indicator` — appended to the header's accessibility label, since the
-  /// collapse button's explicit label would otherwise swallow the indicator's own a11y.
-  var indicatorLabel: String = ""
-  /// Trailing header action — overlaid on top of the full-width collapse button so tapping it
-  /// fires the action without also toggling the section.
-  @ViewBuilder var accessory: () -> Accessory
-  @ViewBuilder var content: () -> Content
-  @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-  var body: some View {
-    VStack(spacing: 0) {
-      // The ENTIRE header bar toggles collapse — the padding lives *inside* the button's content
-      // shape, so there are no dead zones around the title. The trailing action button is overlaid
-      // on top so it still gets its own taps.
-      Button {
-        if reduceMotion {
-          collapsed.toggle()
-        } else {
-          withAnimation(.easeInOut(duration: 0.15)) { collapsed.toggle() }
-        }
-      } label: {
-        HStack(spacing: 7) {
-          Image(systemName: collapsed ? "chevron.right" : "chevron.down")
-            .font(.system(size: 11, weight: .semibold))
-            .foregroundStyle(.secondary)
-            // Fixed width: chevron.right and chevron.down differ in glyph width, which would
-            // otherwise nudge the title sideways on every toggle.
-            .frame(width: 12, alignment: .center)
-          Text(title).font(.headline)
-          indicator
-          Spacer(minLength: 0)
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .contentShape(Rectangle())
-      }
-      .buttonStyle(.plain)
-      .accessibilityLabel(
-        "\(title) section, \(collapsed ? "collapsed" : "expanded")"
-          + (indicatorLabel.isEmpty ? "" : ", \(indicatorLabel)")
-      )
-      .help(collapsed ? "Expand \(title)" : "Collapse \(title)")
-      // Solid header bar so the sections read as distinct blocks (issue #24 polish).
-      .background(ThemeService.shared.tokens.surface)
-      .overlay(alignment: .trailing) {
-        accessory().padding(.trailing, 12)
-      }
-
-      if !collapsed {
-        content()
-          .frame(maxWidth: .infinity, maxHeight: fill ? .infinity : nil, alignment: .top)
-      }
-    }
-    .frame(maxHeight: fill && !collapsed ? .infinity : nil, alignment: .top)
   }
 }
 
