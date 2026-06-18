@@ -61,6 +61,12 @@ extension Defaults.Keys {
   /// Whether the right-hand notifications inspector is open.
   static let showNotifications = Key<Bool>("showNotificationsInspector", default: false)
 
+  /// The docked right inspector's remembered column width. `.inspector` resets to its `ideal`
+  /// width every time it's re-shown, so we feed this back as the ideal — hiding and re-showing
+  /// (and relaunching) restores the user's last width instead of snapping back to 300. Written
+  /// from the live width measurement, clamped to the `.inspectorColumnWidth` min/max range.
+  static let inspectorWidth = Key<Double>("inspector.width", default: 300)
+
   /// Whether the notifications menu bar item is shown (issue #33). On by default.
   static let showMenuBarItem = Key<Bool>("showMenuBarItem", default: true)
 

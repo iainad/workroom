@@ -170,15 +170,25 @@ struct RootView: View {
         // the inspector grows, crushing the sidebar's labels, and the AppKit fixes for that
         // (setHoldingPriority / a custom split delegate) crash on SwiftUI's private split subclass —
         // so 520 is the safe ceiling rather than something larger.
-        .inspectorColumnWidth(min: 260, ideal: 300, max: 520)
-        // Capture the live inspector width so the right edge-hover reveal (issue #56) matches it.
+        // ideal = the remembered width (read non-reactively so a live drag doesn't re-render and
+        // fight the divider). `.inspector` snaps back to `ideal` on every re-show, so this is what
+        // makes hiding and re-showing restore the user's last width.
+        .inspectorColumnWidth(
+          min: 260, ideal: store.dockedInspectorWidth ?? CGFloat(Defaults[.inspectorWidth]),
+          max: 520
+        )
+        // Capture the live inspector width so the right edge-hover reveal (issue #56) matches it,
+        // and persist it (clamped to the column range) so the width survives hide/show + relaunch.
         .background(
           GeometryReader { geo in
             Color.clear.preference(key: InspectorWidthKey.self, value: geo.size.width)
           }
         )
         .onPreferenceChange(InspectorWidthKey.self) { width in
-          if width > 0 { store.dockedInspectorWidth = width }
+          if width > 0 {
+            store.dockedInspectorWidth = width
+            Defaults[.inspectorWidth] = Double(min(max(width, 260), 520))
+          }
         }
     }
     // Edge-hover reveal of a collapsed sidebar (issue #56): each layer is active only while its
