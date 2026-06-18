@@ -107,17 +107,41 @@ struct PullRequestPanel: View {
       Text(review).font(.footnote).foregroundStyle(.secondary)
     }
     // One row per reviewer: state glyph + name + state label (e.g. "Copilot in progress",
-    // "iainad approved"). Glyph + label carry the meaning without relying on color.
+    // "iainad approved"). Glyph + label carry the meaning without relying on color. A reviewer who
+    // has *submitted* a review carries its permalink, so that row becomes a tappable open-in-browser
+    // link (same chevron affordance as the PR/CI rows) that jumps straight to their comment.
     ForEach(PRPresentation.reviewers(pr)) { reviewer in
-      HStack(spacing: 6) {
-        Image(systemName: reviewer.symbol).foregroundStyle(reviewer.semantic.color)
-        Text(reviewer.displayName).font(.footnote).lineLimit(1).truncationMode(.tail)
-        Text(reviewer.stateLabel).font(.footnote).foregroundStyle(.secondary)
-        Spacer(minLength: 0)
+      if let url = reviewer.url.flatMap(URL.init(string:)) {
+        Button {
+          openURL(url)
+        } label: {
+          reviewerRow(reviewer, linked: true)
+        }
+        .buttonStyle(.plain)
+        .help("Open \(reviewer.displayName)\u{2019}s review on GitHub")
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(reviewer.accessibility), open review on GitHub")
+      } else {
+        reviewerRow(reviewer, linked: false)
+          .accessibilityElement(children: .ignore)
+          .accessibilityLabel(reviewer.accessibility)
       }
-      .accessibilityElement(children: .ignore)
-      .accessibilityLabel(reviewer.accessibility)
     }
+  }
+
+  /// A single reviewer row. `linked` adds the open-in-browser chevron (and a hit-testable shape)
+  /// used when the reviewer has a review permalink to deep-link to.
+  private func reviewerRow(_ reviewer: PRPresentation.ReviewerBadge, linked: Bool) -> some View {
+    HStack(spacing: 6) {
+      Image(systemName: reviewer.symbol).foregroundStyle(reviewer.semantic.color)
+      Text(reviewer.displayName).font(.footnote).lineLimit(1).truncationMode(.tail)
+      Text(reviewer.stateLabel).font(.footnote).foregroundStyle(.secondary)
+      if linked {
+        Image(systemName: "arrow.up.right").font(.caption).foregroundStyle(.secondary)
+      }
+      Spacer(minLength: 0)
+    }
+    .contentShape(Rectangle())
   }
 
   private var noPullRequestRow: some View {

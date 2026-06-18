@@ -75,11 +75,16 @@ enum UITestFixture {
         number: 42, title: "Add session login", state: .open, isDraft: false,
         url: "https://github.com/acme/app/pull/42", reviewDecision: .changesRequested,
         // A spread of reviewer states so the panel renders the aggregate header + every row kind:
-        // a bot still generating, a human approval, and a human requesting changes.
+        // a bot still generating (pending → no link), and two submitted reviews (approval +
+        // changes-requested) that carry permalinks so the rows render as open-on-GitHub links.
         reviewers: [
           Reviewer(identity: .user(login: "copilot-pull-request-reviewer"), state: .requested),
-          Reviewer(identity: .user(login: "iainad"), state: .approved),
-          Reviewer(identity: .user(login: "octocat"), state: .changesRequested),
+          Reviewer(
+            identity: .user(login: "iainad"), state: .approved,
+            url: "https://github.com/acme/app/pull/42#pullrequestreview-1001"),
+          Reviewer(
+            identity: .user(login: "octocat"), state: .changesRequested,
+            url: "https://github.com/acme/app/pull/42#pullrequestreview-1002"),
         ]),
       // All three "checked" stamps set so the inspector shows the seeded data, not "Checking…".
       lastChecked: Self.checkedAt, ciCheckedAt: Self.checkedAt, prCheckedAt: Self.checkedAt)

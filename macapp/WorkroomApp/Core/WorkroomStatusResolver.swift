@@ -156,7 +156,65 @@ struct WorkroomStatusResolver: Sendable {
         "pr", "list", "--head", target.branch, "--state", "all", "--limit", "1", "--json",
         "number,title,state,isDraft,url,reviewDecision,latestReviews,reviewRequests",
       ], in: target.dir, timeout: ciTimeout)
-    return Self.classifyPR(r)
+    let res = Self.classifyPR(r)
+    return await enrichReviewURLs(res, in: target.dir)
+  }
+
+  /// Attach each submitted reviewer's review permalink so the PR panel can deep-link a row to its
+  /// comment. `gh pr list --json` blanks review urls/ids, so fetch them with a GraphQL
+  /// `resource(url:)` follow-up keyed by the PR's own URL. Best-effort: any failure (the probe
+  /// errors, returns nothing, or the PR has no submitted reviews) leaves urls `nil` and returns the
+  /// already-resolved PR unchanged — it never downgrades a good result. Only fires when there's a
+  /// submitted (non-`requested`) reviewer, so PRs awaiting first review skip the extra round-trip.
+  private func enrichReviewURLs(_ res: PRResolution, in dir: String) async -> PRResolution {
+    guard case .info(let pr) = res,
+      pr.reviewers.contains(where: { $0.state != .requested })
+    else { return res }
+    let g = await runner.run(
+      "gh", ["api", "graphql", "-f", "query=\(Self.reviewURLQuery(prURL: pr.url))"],
+      in: dir, timeout: ciTimeout)
+    let urls = Self.parseReviewURLs(g)
+    guard !urls.isEmpty else { return res }
+    let enriched = pr.reviewers.map { rev -> Reviewer in
+      guard case .user(let login) = rev.identity, let url = urls[login] else { return rev }
+      return Reviewer(identity: rev.identity, state: rev.state, url: url)
+    }
+    return .info(
+      PullRequestInfo(
+        number: pr.number, title: pr.title, state: pr.state, isDraft: pr.isDraft, url: pr.url,
+        reviewDecision: pr.reviewDecision, reviewers: enriched))
+  }
+
+  /// The GraphQL query that maps a PR's submitted reviews to their author + permalink. Keyed by the
+  /// PR's web URL via `resource(url:)` so it needs no separate owner/repo lookup.
+  static func reviewURLQuery(prURL: String) -> String {
+    "{resource(url:\"\(prURL)\"){... on PullRequest{latestReviews(first:50){nodes{author{login} url}}}}}"
+  }
+
+  /// Decode the `reviewURLQuery` response into `login → review-permalink`. Best-effort: a non-JSON
+  /// body, a GraphQL `errors` payload, or any missing field yields an empty map (urls stay `nil`),
+  /// so a flaky enrichment probe never blanks the reviewer rows.
+  static func parseReviewURLs(_ r: CommandResult) -> [String: String] {
+    struct Author: Decodable { let login: String? }
+    struct Node: Decodable {
+      let author: Author?
+      let url: String?
+    }
+    struct Reviews: Decodable { let nodes: [Node]? }
+    struct Resource: Decodable { let latestReviews: Reviews? }
+    struct Data: Decodable { let resource: Resource? }
+    struct Payload: Decodable { let data: Data? }
+    guard let data = r.stdout.data(using: .utf8),
+      let payload = try? JSONDecoder().decode(Payload.self, from: data)
+    else { return [:] }
+    var map: [String: String] = [:]
+    for node in payload.data?.resource?.latestReviews?.nodes ?? [] {
+      guard let login = node.author?.login, !login.isEmpty,
+        let url = node.url, !url.isEmpty
+      else { continue }
+      map[login] = url
+    }
+    return map
   }
 
   /// Where a stage-2 `gh` probe must run and which branch it keys off, per VCS. A **git worktree**

@@ -631,6 +631,98 @@ final class WorkroomStatusResolverTests: XCTestCase {
     XCTAssertTrue(pr.reviewers.isEmpty)
   }
 
+  // MARK: - parseReviewURLs (review-permalink enrichment)
+
+  func testParseReviewURLsMapsLoginToURL() {
+    let r = ok(
+      #"{"data":{"resource":{"latestReviews":{"nodes":[{"author":{"login":"iainad"},"url":"https://x/9#pullrequestreview-1"},{"author":{"login":"octocat"},"url":"https://x/9#pullrequestreview-2"}]}}}}"#
+    )
+    let map = WorkroomStatusResolver.parseReviewURLs(r)
+    XCTAssertEqual(map["iainad"], "https://x/9#pullrequestreview-1")
+    XCTAssertEqual(map["octocat"], "https://x/9#pullrequestreview-2")
+  }
+
+  /// A node missing an author, a url, or with an empty login is skipped — never a `"": url` key or
+  /// a `login: ""` value that would link a row to nowhere.
+  func testParseReviewURLsSkipsNodesMissingFields() {
+    let r = ok(
+      #"{"data":{"resource":{"latestReviews":{"nodes":[{"author":null,"url":"u"},{"author":{"login":"a"},"url":null},{"author":{"login":""},"url":"u"},{"author":{"login":"ok"},"url":"good"}]}}}}"#
+    )
+    XCTAssertEqual(WorkroomStatusResolver.parseReviewURLs(r), ["ok": "good"])
+  }
+
+  /// Best-effort: a non-JSON body, an unresolved PR (`resource:null`), or a GraphQL `errors` payload
+  /// all yield an empty map so the enrichment probe can never blank the reviewer rows.
+  func testParseReviewURLsMalformedIsEmpty() {
+    XCTAssertTrue(WorkroomStatusResolver.parseReviewURLs(ok("not json")).isEmpty)
+    XCTAssertTrue(
+      WorkroomStatusResolver.parseReviewURLs(ok(#"{"data":{"resource":null}}"#)).isEmpty)
+    XCTAssertTrue(
+      WorkroomStatusResolver.parseReviewURLs(ok(#"{"errors":[{"message":"rate limited"}]}"#))
+        .isEmpty)
+  }
+
+  func testReviewURLQueryEmbedsPRURL() {
+    let q = WorkroomStatusResolver.reviewURLQuery(prURL: "https://github.com/o/r/pull/9")
+    XCTAssertTrue(q.contains(#"resource(url:"https://github.com/o/r/pull/9")"#))
+    XCTAssertTrue(q.contains("latestReviews"))
+  }
+
+  // MARK: - resolvePR review-URL enrichment (end-to-end via the mock)
+
+  /// A submitted reviewer gets its review permalink from the follow-up GraphQL probe; a pending
+  /// requester (no submitted review) stays url-less.
+  func testResolvePREnrichesSubmittedReviewURLs() async {
+    let prJSON =
+      #"[{"number":9,"title":"t","state":"OPEN","isDraft":false,"url":"https://x/9","reviewDecision":"APPROVED","latestReviews":[{"author":{"login":"iainad"},"state":"APPROVED"}],"reviewRequests":[{"login":"carl"}]}]"#
+    let gqlJSON =
+      #"{"data":{"resource":{"latestReviews":{"nodes":[{"author":{"login":"iainad"},"url":"https://x/9#pullrequestreview-7"}]}}}}"#
+    let r = WorkroomStatusResolver(
+      runner: MockStatusRunner { exe, args in
+        guard exe == "gh" else { return ok("") }
+        if args.contains("graphql") { return ok(gqlJSON) }
+        if args.contains("pr") { return ok(prJSON) }
+        return ok("")
+      })
+    let res = await r.resolvePR(path: existing, vcs: "git", projectRoot: existing, branch: "main")
+    guard case .info(let pr) = res else { return XCTFail("expected .info") }
+    func url(_ id: String) -> String? { pr.reviewers.first { $0.id == id }?.url }
+    XCTAssertEqual(url("user:iainad"), "https://x/9#pullrequestreview-7")  // submitted → linked
+    XCTAssertNil(url("user:carl"))  // pending requester → nothing to open
+  }
+
+  /// No submitted review ⇒ no permalink to fetch ⇒ the extra GraphQL round-trip is skipped.
+  func testResolvePRSkipsReviewURLProbeWhenAllPending() async {
+    let prJSON =
+      #"[{"number":9,"title":"t","state":"OPEN","isDraft":false,"url":"https://x/9","reviewDecision":"REVIEW_REQUIRED","latestReviews":[],"reviewRequests":[{"login":"copilot-pull-request-reviewer"}]}]"#
+    let runner = RecordingStatusRunner { exe, args in
+      (exe == "gh" && args.contains("pr")) ? ok(prJSON) : ok("")
+    }
+    let r = WorkroomStatusResolver(runner: runner)
+    let res = await r.resolvePR(path: existing, vcs: "git", projectRoot: existing, branch: "main")
+    guard case .info(let pr) = res else { return XCTFail("expected .info") }
+    XCTAssertNil(pr.reviewers.first?.url)
+    XCTAssertFalse(runner.calls.contains { $0.args.contains("graphql") })
+  }
+
+  /// A failing enrichment probe leaves urls `nil` but never downgrades the already-resolved PR.
+  func testResolvePRReviewURLProbeFailureKeepsPR() async {
+    let prJSON =
+      #"[{"number":9,"title":"t","state":"OPEN","isDraft":false,"url":"https://x/9","reviewDecision":"APPROVED","latestReviews":[{"author":{"login":"iainad"},"state":"APPROVED"}],"reviewRequests":[]}]"#
+    let r = WorkroomStatusResolver(
+      runner: MockStatusRunner { exe, args in
+        if exe == "gh", args.contains("graphql") {
+          return CommandResult(stdout: "boom", stderr: "x", exitCode: 1, timedOut: false)
+        }
+        if exe == "gh", args.contains("pr") { return ok(prJSON) }
+        return ok("")
+      })
+    let res = await r.resolvePR(path: existing, vcs: "git", projectRoot: existing, branch: "main")
+    guard case .info(let pr) = res else { return XCTFail("expected .info") }
+    XCTAssertEqual(pr.reviewers.first?.id, "user:iainad")
+    XCTAssertNil(pr.reviewers.first?.url)
+  }
+
   // MARK: - resolvePR (end-to-end via the mock)
 
   func testResolvePRWithBranch() async {

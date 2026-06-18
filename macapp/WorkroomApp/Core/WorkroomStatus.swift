@@ -106,6 +106,11 @@ struct Reviewer: Equatable, Sendable, Identifiable {
   }
   let identity: Identity
   let state: State
+  /// Permalink to this reviewer's submitted review (`…/pull/N#pullrequestreview-<id>`), so the row
+  /// can deep-link straight to their comment. `nil` for a pending (`requested`) reviewer or a team
+  /// (no review to open yet). `gh pr list --json` blanks review urls, so a follow-up GraphQL probe
+  /// (`resolvePR`) fills this in — `classifyPR` alone always leaves it `nil`.
+  var url: String?
   var id: String {
     switch identity {
     case .user(let login): return "user:\(login)"
@@ -340,6 +345,9 @@ enum PRPresentation {
     let semantic: ReviewSemantic
     let stateLabel: String
     let accessibility: String
+    /// The reviewer's submitted-review permalink (from `Reviewer.url`), or `nil` when there's no
+    /// review to open. Drives whether the row is a tappable open-on-GitHub link.
+    let url: String?
   }
 
   /// The reviewer rows for the PR panel, sorted by attention (changes-requested first) then `id`
@@ -395,7 +403,7 @@ enum PRPresentation {
     }
     return ReviewerBadge(
       id: r.id, displayName: name, symbol: symbol, semantic: semantic, stateLabel: label,
-      accessibility: "\(name) \(label)")
+      accessibility: "\(name) \(label)", url: r.url)
   }
 
   /// Display name: friendly for known bots, the team slug for teams, else the raw login.
