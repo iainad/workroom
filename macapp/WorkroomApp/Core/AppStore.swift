@@ -1092,7 +1092,14 @@ final class AppStore: ObservableObject {
       selectedTargetID = .workroom(project: project.path, name: workroom.name)
       // Selecting a workroom no longer auto-opens a terminal (issue #23), so explicitly open one here
       // for the UI tests — they assume the fixture workroom has a terminal (and thus a tab) on launch.
-      terminals.ensureTab(for: workroom.target(inProject: project.path))
+      let target = workroom.target(inProject: project.path)
+      terminals.ensureTab(for: target)
+      // Seed a representative notification history (the inspector's Notifications panel is otherwise
+      // empty in fixture mode) so it gets visual + UI-test coverage. Keyed to the workroom target but
+      // synthetic tabs (see `UITestFixture.notifications`) so the window's focus auto-dismiss can't
+      // wipe them. First-load only (guarded by the nil selection), so a focus-driven reload never
+      // clobbers notifications a test has since dismissed.
+      notifications.seedForTesting(UITestFixture.notifications(targetID: target.id))
     }
     // Seed deterministic Changes-inspector status (the fixture paths aren't real repos, so the live
     // probe would only report "unknown"); the resolver sweep is skipped in fixture mode.

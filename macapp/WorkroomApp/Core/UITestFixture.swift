@@ -133,6 +133,42 @@ enum UITestFixture {
       lastChecked: Self.checkedAt, ciCheckedAt: Self.checkedAt, prCheckedAt: Self.checkedAt)
   }
 
+  // MARK: - Notifications
+
+  /// A deterministic notification history for the inspector's Notifications panel. The fixture
+  /// otherwise leaves it empty (real entries only arrive when a terminal emits an OSC notification),
+  /// so this seeds a representative spread — a coalesced ×N entry, a wrapping two-line body, a
+  /// title-only entry, and a body-only (titleless) one — across a range of ages so the panel, every
+  /// row variant, and the "time ago" line all get visual + UI-test coverage.
+  ///
+  /// Each entry carries a *synthetic* tab id, NOT the workroom's live tab: real notifications are
+  /// raised for terminals you're NOT looking at, and the app dismisses the visible tab's history on
+  /// focus (`dismissFocusedTerminalNotifications`) — keying these to the live tab would wipe them the
+  /// instant the window activates. They keep the real `targetID`, so a row click still routes to the
+  /// workroom (and dismisses by `notifID`); it just can't re-focus a tab that was never opened —
+  /// exactly the graceful path a since-closed terminal already takes.
+  static func notifications(targetID: TerminalTarget.ID) -> [WorkroomNotification] {
+    let source = "\(projectName) / \(workroomName)"
+    func note(_ ago: TimeInterval, _ title: String, _ body: String? = nil, count: Int = 1)
+      -> WorkroomNotification
+    {
+      WorkroomNotification(
+        id: UUID(), targetID: targetID, tabID: UUID(), kind: .osc, source: source,
+        title: title, body: body, date: Date().addingTimeInterval(-ago), count: count)
+    }
+    // Oldest first: the store appends chronologically and the panel reverses to newest-first, so the
+    // most recent ("Build finished", just now) lands at the top.
+    return [
+      note(3600, "Tests passed", "All 248 specs green", count: 3),
+      note(
+        900, "Deploy blocked",
+        "Branch protection: 1 required review still missing before this can merge to main."),
+      note(120, "", "Background indexing finished"),
+      note(45, "Lint clean"),
+      note(2, "Build finished", "Workroom Dev compiled in 12.4s"),
+    ]
+  }
+
   /// The fixture's changed-file list: a small representative set, or a long one (`manyChanges`) so
   /// the Changes section overflows the inspector for the disclosure-animation repro.
   private static var changedFiles: [ChangedFile] {

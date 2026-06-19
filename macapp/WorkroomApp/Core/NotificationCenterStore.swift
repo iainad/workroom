@@ -132,6 +132,14 @@ final class NotificationCenterStore: ObservableObject {
   }
 
   func clear() { items.removeAll() }
+
+  // MARK: Test seam
+
+  /// Replace the history wholesale with a fixed set — the UI-test fixture (`UITestFixture`) and unit
+  /// tests only. The production path is `record`, which stamps `now()` and drops focused events; this
+  /// exists so a test can populate the panel with the back-dated, multi-line, and coalesced (×N)
+  /// entries that `record` can't synthesise. Inert unless called (only fixture mode / tests do).
+  func seedForTesting(_ seed: [WorkroomNotification]) { items = seed }
 }
 
 /// Pure gates for how a recorded event should surface, split by app activation so the rules are
