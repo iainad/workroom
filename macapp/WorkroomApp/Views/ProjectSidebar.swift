@@ -226,6 +226,12 @@ struct ProjectSidebar: View {
       } label: {
         Label("Project Settings…", systemImage: "gearshape")
       }
+      Divider()
+      Button(role: .destructive) {
+        store.pendingProjectDeletion = PendingProjectDeletion(project: project)
+      } label: {
+        Label("Delete Project…", systemImage: "trash")
+      }
     }
   }
 

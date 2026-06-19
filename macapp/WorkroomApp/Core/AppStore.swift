@@ -10,6 +10,15 @@ enum SidebarID: Hashable {
   case project(String)
   case root(project: String)
   case workroom(project: String, name: String)
+
+  /// Whether this id is scoped to the given project path — its row, its root, or one of its
+  /// workrooms. Used to clear selection when a whole project is deleted.
+  func belongsToProject(_ path: String) -> Bool {
+    switch self {
+    case .project(let p), .root(project: let p), .workroom(project: let p, name: _):
+      return p == path
+    }
+  }
 }
 
 /// A workroom queued for deletion, awaiting the user's confirmation. Held on the store so
@@ -18,6 +27,16 @@ enum SidebarID: Hashable {
 struct PendingWorkroomDeletion {
   let workroom: Workroom
   let project: Project
+}
+
+/// A project queued for deletion, awaiting the user's type-the-name confirmation. Held on
+/// the store (and `Identifiable` so it drives a `.sheet(item:)`) so the sidebar's Delete
+/// Project affordance and the confirm sheet share one piece of state. `id` is the project
+/// path, so re-targeting a different project rebuilds the sheet (resetting its typed/toggle
+/// `@State`).
+struct PendingProjectDeletion: Identifiable {
+  let project: Project
+  var id: String { project.path }
 }
 
 /// App-wide state and actions. A single shared instance is used so the App, views,
@@ -169,6 +188,9 @@ final class AppStore: ObservableObject {
   @Published var requestAddProject = false
   /// A workroom awaiting delete confirmation; setting it raises the confirmation prompt.
   @Published var pendingDeletion: PendingWorkroomDeletion?
+  /// A project awaiting type-to-confirm deletion (drives the DeleteProjectSheet). Set by the
+  /// project row's context menu; cleared when the sheet's Delete/Cancel resolves.
+  @Published var pendingProjectDeletion: PendingProjectDeletion?
   /// Setup logs scoped per terminal target (a workroom's target id), rendered under that
   /// workroom's terminal. Kept until the user closes them (or the workroom is deleted) so
   /// the output stays available for review. Keyed on the target id (project-scoped) so
@@ -1304,21 +1326,30 @@ final class AppStore: ObservableObject {
 
     let finishTeardown = { [weak self] in
       guard let self else { return }
-      self.terminals.reap(targetID)
-      // `reap` only fires `onTabsRemoved` (which clears run state) when tabs existed; a workroom armed
-      // for auto-run but deleted before its pane mounted has none, so clear directly too (issue #7).
-      self.runStates[targetID] = nil
-      // Same for a created-then-deleted-before-mount workroom marked to open a shell on create.
-      self.pendingOpenTerminal.remove(targetID)
-      self.clearRunPidFile(for: targetID)
-      self.logs[targetID] = nil
-      // Drop the gone workroom's notifications and pull any banners it already delivered.
-      self.systemNotifier.withdraw(tabIDs: self.notifications.removeForTarget(targetID))
+      self.reapTargetLocally(targetID)
       self.startWorkroomTeardown(workroom, in: project)
     }
     // SIGINT the run process and wait for it to exit before reaping + deleting the worktree (so the
     // dev server isn't left running against a deleted directory); no live run command → immediate.
     gracefullyStopRuns([targetID], then: finishTeardown)
+  }
+
+  /// Reaps a single terminal target's in-app surface and clears all the per-target state
+  /// keyed by its `TerminalTarget.ID`. Extracted from `deleteWorkroom`'s teardown so a
+  /// project delete (which reaps a root + every workroom target) reuses the exact same
+  /// cleanup — no second, drifting copy. Run only AFTER any live run process has been
+  /// gracefully stopped (issue #7), so the dev server isn't orphaned against a deleted dir.
+  private func reapTargetLocally(_ targetID: TerminalTarget.ID) {
+    terminals.reap(targetID)
+    // `reap` only fires `onTabsRemoved` (which clears run state) when tabs existed; a target armed
+    // for auto-run but deleted before its pane mounted has none, so clear directly too (issue #7).
+    runStates[targetID] = nil
+    // Same for a created-then-deleted-before-mount target marked to open a shell on create.
+    pendingOpenTerminal.remove(targetID)
+    clearRunPidFile(for: targetID)
+    logs[targetID] = nil
+    // Drop the gone target's notifications and pull any banners it already delivered.
+    systemNotifier.withdraw(tabIDs: notifications.removeForTarget(targetID))
   }
 
   /// Run the VCS teardown (worktree/workspace removal) in the background, surfacing any failure with
@@ -1359,6 +1390,76 @@ final class AppStore: ObservableObject {
     let output = log.lines.map(\.text).joined(separator: "\n").trimmingCharacters(
       in: .whitespacesAndNewlines)
     errorTitle = "Teardown of ‘\(workroom.name)’ failed"
+    errorMessage = output.isEmpty ? errorText(error) : output
+  }
+
+  /// Removes a project from the sidebar immediately, then removes it from config — and,
+  /// when `deleteWorkrooms`, tears down each of its workrooms first — in the background.
+  /// Mirrors `deleteWorkroom`: optimistic removal + scoped selection/split/status cleanup,
+  /// then graceful run-stop → in-app reap → CLI. On failure we reload (so it reappears if
+  /// it still exists) and surface the error with any captured teardown log.
+  ///
+  /// Branches/bookmarks are never deleted in either mode — the cascade reuses the same
+  /// per-workroom teardown as `deleteWorkroom`, whose VCS removal leaves refs intact.
+  func deleteProject(_ project: Project, deleteWorkrooms: Bool) {
+    let targetIDs = removeProjectLocally(project)
+
+    let finishTeardown = { [weak self] in
+      guard let self else { return }
+      for id in targetIDs { self.reapTargetLocally(id) }
+      Task {
+        let log =
+          deleteWorkrooms
+          ? ScriptLogSession(title: "Deleting \(project.displayName)", phase: "teardown") : nil
+        do {
+          try await WorkroomCLI.shared.deleteProject(
+            project.path, withWorkrooms: deleteWorkrooms
+          ) { text in DispatchQueue.main.async { log?.append(text) } }
+        } catch {
+          await self.reload()
+          self.presentDeleteProjectFailure(project, error: error, log: log)
+        }
+      }
+    }
+    // ALWAYS stop runs BEFORE any disk teardown so no dev server holds a deleted dir (issue #7).
+    gracefullyStopRuns(targetIDs, then: finishTeardown)
+  }
+
+  /// Optimistic, synchronous removal of a project from every piece of in-memory state — the
+  /// sidebar model, selection (project + target), the workroom split, and statuses. Returns
+  /// every `TerminalTarget.ID` the project owns (its root + each workroom) so the caller can
+  /// reap them once runs have stopped. Pure model mutation: NO CLI, disk, or config access, so
+  /// it is safe to unit-test directly. An in-flight status sweep is already guarded
+  /// (`targetExists` checks `projects`), so dropping the project here also stops a slow probe
+  /// from repopulating these entries.
+  @discardableResult
+  func removeProjectLocally(_ project: Project) -> [TerminalTarget.ID] {
+    let targetIDs =
+      [TerminalTarget.rootID(project: project.path)]
+      + project.workrooms.map { TerminalTarget.workroomID(project: project.path, name: $0.name) }
+
+    projects.removeAll { $0.id == project.id }
+    if selectedProjectID == project.id { selectedProjectID = nil }
+    // Clear selection if it pointed anywhere inside this project (its root or any workroom).
+    if let sel = selectedTargetID, sel.belongsToProject(project.path) { selectedTargetID = nil }
+    removeWorkroomSplitMember(.root(project: project.path))
+    workroomStatuses[.root(project: project.path)] = nil
+    for w in project.workrooms {
+      removeWorkroomSplitMember(.workroom(project: project.path, name: w.name))
+      workroomStatuses[.workroom(project: project.path, name: w.name)] = nil
+    }
+    return targetIDs
+  }
+
+  /// Project deletion failed in the background: pop an alert carrying any captured cascade
+  /// teardown output. `log` is nil for a config-only delete (no teardown ran), in which case
+  /// the error's own message is shown.
+  private func presentDeleteProjectFailure(
+    _ project: Project, error: Error, log: ScriptLogSession?
+  ) {
+    let output = (log?.lines.map(\.text).joined(separator: "\n") ?? "").trimmingCharacters(
+      in: .whitespacesAndNewlines)
+    errorTitle = "Delete of ‘\(project.displayName)’ failed"
     errorMessage = output.isEmpty ? errorText(error) : output
   }
 

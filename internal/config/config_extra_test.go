@@ -119,6 +119,96 @@ func TestRemoveWorkroomKeepProject(t *testing.T) {
 	}
 }
 
+func TestRemoveProjectRemovesEntryAndKeepsSiblings(t *testing.T) {
+	c := newTestConfig(t)
+	if err := c.AddWorkroom("/proj", "foo", "/wr/foo", "jj"); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.AddWorkroom("/proj", "bar", "/wr/bar", "jj"); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.AddProject("/other", "git"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := c.RemoveProject("/proj"); err != nil {
+		t.Fatal(err)
+	}
+
+	data, _ := c.Read()
+	if _, ok := data["/proj"]; ok {
+		t.Fatal("RemoveProject left the project (and its workrooms) in config")
+	}
+	if _, ok := data["/other"]; !ok {
+		t.Fatal("RemoveProject deleted an unrelated sibling project")
+	}
+}
+
+func TestRemoveProjectAbsentIsNoOp(t *testing.T) {
+	c := newTestConfig(t)
+	if err := c.AddProject("/keep", "git"); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.RemoveProject("/nonexistent"); err != nil {
+		t.Fatalf("removing an absent project should be a nil no-op, got %v", err)
+	}
+	data, _ := c.Read()
+	if _, ok := data["/keep"]; !ok {
+		t.Fatal("RemoveProject of an absent path disturbed an existing project")
+	}
+}
+
+func TestRemoveProjectRefusesReservedKey(t *testing.T) {
+	c := newTestConfig(t)
+	if err := c.SetWorkroomsDir("/somewhere"); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.RemoveProject("workrooms_dir"); err != nil {
+		t.Fatalf("RemoveProject of the reserved key should be a nil no-op, got %v", err)
+	}
+	data, _ := c.Read()
+	if data["workrooms_dir"] != "/somewhere" {
+		t.Fatalf("RemoveProject deleted the reserved workrooms_dir key: %v", data)
+	}
+}
+
+func TestWorkroomNames(t *testing.T) {
+	c := newTestConfig(t)
+	if err := c.AddWorkroom("/proj", "zebra", "/wr/zebra", "jj"); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.AddWorkroom("/proj", "alpha", "/wr/alpha", "jj"); err != nil {
+		t.Fatal(err)
+	}
+
+	names, err := c.WorkroomNames("/proj")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(names) != 2 || names[0] != "alpha" || names[1] != "zebra" {
+		t.Fatalf("expected sorted [alpha zebra], got %v", names)
+	}
+
+	// Unknown project and the reserved key both yield an empty (non-nil) slice.
+	empty, err := c.WorkroomNames("/unknown")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(empty) != 0 {
+		t.Fatalf("expected empty slice for unknown project, got %v", empty)
+	}
+	if err := c.SetWorkroomsDir("/x"); err != nil {
+		t.Fatal(err)
+	}
+	reserved, err := c.WorkroomNames("workrooms_dir")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reserved) != 0 {
+		t.Fatalf("expected empty slice for reserved key, got %v", reserved)
+	}
+}
+
 func TestWriteAtomicLeavesNoTempOrLockFiles(t *testing.T) {
 	c := newTestConfig(t)
 	in := map[string]any{

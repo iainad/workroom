@@ -160,6 +160,22 @@ final class WorkroomCLI {
     try throwIfError(result)
   }
 
+  /// Removes a project from the config. By default this is config-only — nothing on disk
+  /// is touched (worktree dirs, branches, and files all stay). With `withWorkrooms` it
+  /// first tears down every registered workroom (worktree dirs + files; branches are
+  /// always kept), streaming teardown output via `onLog`. `--confirm` echoes the path
+  /// (the type-to-confirm guard lives in the sheet; this just satisfies the CLI gate).
+  func deleteProject(_ path: String, withWorkrooms: Bool, onLog: ((String) -> Void)? = nil)
+    async throws
+  {
+    var args = ["delete-project", path, "--json", "--confirm", path]
+    if withWorkrooms { args.append("--with-workrooms") }
+    let result = try await run(args, timeout: withWorkrooms ? 600 : 15) { event in
+      if event.type == "log", let text = event.text { onLog?(text) }
+    }
+    try throwIfError(result)
+  }
+
   // MARK: Binary location
 
   /// The bundled `workroom` binary in Contents/Resources (NOT Contents/MacOS — "workroom"

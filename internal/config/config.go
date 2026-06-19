@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -240,6 +241,49 @@ func (c *Config) RemoveWorkroomKeepProject(parentPath, name string) error {
 
 		return c.Write(data)
 	})
+}
+
+// RemoveProject removes a project entry (and its nested workrooms map) from the
+// config. It does NOT touch the filesystem or VCS — any worktree/workspace teardown
+// is the caller's job (via Service.Delete). Idempotent: an absent project is a no-op
+// returning nil. The reserved "workrooms_dir" key is never deletable through here.
+func (c *Config) RemoveProject(parentPath string) error {
+	return c.withLock(func() error {
+		data, err := c.Read()
+		if err != nil {
+			return err
+		}
+		if parentPath == "workrooms_dir" {
+			return nil // reserved key, not a project
+		}
+		delete(data, parentPath)
+		return c.Write(data)
+	})
+}
+
+// WorkroomNames returns the names of every workroom registered under the given
+// project path, sorted for deterministic ordering. An unknown project or one with
+// no workrooms yields an empty slice (never nil-panics). The reserved
+// "workrooms_dir" key is treated as having no workrooms.
+func (c *Config) WorkroomNames(parentPath string) ([]string, error) {
+	data, err := c.Read()
+	if err != nil {
+		return nil, err
+	}
+	project, ok := data[parentPath].(map[string]any)
+	if !ok {
+		return []string{}, nil
+	}
+	workrooms, ok := project["workrooms"].(map[string]any)
+	if !ok {
+		return []string{}, nil
+	}
+	names := make([]string, 0, len(workrooms))
+	for name := range workrooms {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names, nil
 }
 
 // FindCurrentProject finds the project for the given directory. If cwd is a project path in the
