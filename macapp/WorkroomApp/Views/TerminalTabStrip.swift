@@ -30,6 +30,9 @@ struct TerminalTabStrip: View {
 
   @State private var hoveredTab: TerminalTab.ID?
   @State private var addHovering = false
+  /// The last chip click (id + time), so a quick second click on the same chip promotes a preview
+  /// content tab to persisted without delaying the eager first-click select (#66).
+  @State private var lastChipClick: ChipClick?
 
   // Drag-to-reorder. The tab order is *frozen* for the duration of a drag: the dragged
   // chip simply follows the cursor (its slot never moves, so it can't jump), and the
@@ -81,9 +84,21 @@ struct TerminalTabStrip: View {
               if inside { hoveredTab = tab.id } else if hoveredTab == tab.id { hoveredTab = nil }
             }
             .onTapGesture {
-              // Selecting changes `active.id`; the view's .onChange hook marks the tab read.
+              // Eager: select on the first click (changes `active.id`; the view's .onChange hook
+              // marks the tab read). A quick second click on the same chip promotes a preview content
+              // tab to persisted (#66) — `persist` no-ops on terminal/persisted tabs, so this is safe
+              // for every chip and never delays the select.
+              let now = Date()
               sessions.select(tab.id, for: target)
+              if let last = lastChipClick, last.id == tab.id, now.timeIntervalSince(last.at) < 0.35
+              {
+                sessions.persist(tab.id, for: target)
+                lastChipClick = nil
+              } else {
+                lastChipClick = ChipClick(id: tab.id, at: now)
+              }
             }
+            .diffChipContextMenu(tab: tab, sessions: sessions, target: target, store: store)
             // Measure in .global space: a .local drag reads coordinates relative to the
             // chip, which itself moves via .offset(dragTranslation) — that feedback loop
             // dampens the translation so the chip lags the cursor. Global space is fixed.
@@ -271,8 +286,17 @@ private struct TerminalTabChip: View {
           .help(runState == .running ? "Run command running" : "Run command stopped")
           .accessibilityLabel(runState == .running ? "running" : "stopped")
       }
+      // A diff (content) tab gets a leading glyph so it reads as not-a-terminal at a glance (#66).
+      if case .diff = tab.content {
+        Image(systemName: "plusminus")
+          .font(.system(size: 9, weight: .semibold))
+          .foregroundStyle(theme.tokens.fgMuted)
+          .accessibilityHidden(true)
+      }
       Text(tab.title)
         .font(.callout)
+        // A preview tab's name is italic until it's persisted (VS-Code semantics, #66).
+        .italic(tab.isPreview)
         .lineLimit(1)
         .foregroundStyle(hasActivity ? theme.tokens.accent : Color.primary)
       TabCloseButton(action: onClose)
@@ -437,5 +461,40 @@ struct CloseWorkroomPaneButton: View {
     .help("Remove this workroom from the split")
     .accessibilityLabel("Remove workroom from split")
     .accessibilityIdentifier("workroom.pane.close")
+  }
+}
+
+/// The last chip click — id + time — used by the strip's eager single/double tap discrimination (#66).
+private struct ChipClick {
+  let id: TerminalTab.ID
+  let at: Date
+}
+
+extension View {
+  /// Attach a context menu to a **diff (content)** chip only (#66): "Keep Open" promotes a preview
+  /// tab to persisted; "Close" closes it. Terminal chips are returned unchanged (no menu), so this
+  /// adds nothing to their right-click behaviour.
+  @ViewBuilder
+  fileprivate func diffChipContextMenu(
+    tab: TerminalTab, sessions: TerminalSessions, target: TerminalTarget, store: AppStore
+  ) -> some View {
+    if case .diff = tab.content {
+      self.contextMenu {
+        if tab.isPreview {
+          Button {
+            sessions.persist(tab.id, for: target)
+          } label: {
+            Label("Keep Open", systemImage: "pin")
+          }
+        }
+        Button(role: .destructive) {
+          store.requestCloseTerminalTab(tab.id, for: target)
+        } label: {
+          Label("Close \(tab.title)", systemImage: "xmark")
+        }
+      }
+    } else {
+      self
+    }
   }
 }

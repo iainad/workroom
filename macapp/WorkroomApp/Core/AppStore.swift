@@ -630,7 +630,7 @@ final class AppStore: ObservableObject {
     captureRunSession(for: target.id, pidPath: pidPath)  // record the session for reliable stop
     // Child-exit flips run-state to stopped; the pane stays open (wait_after_command). The captured
     // `target` value is stable for the workroom's lifetime (a delete reaps everything anyway).
-    tab.view.onChildExited = { [weak self] _ in self?.markRunExited(for: target) }
+    tab.surface?.onChildExited = { [weak self] _ in self?.markRunExited(for: target) }
   }
 
   /// Respawn the run command in place of `oldTab` (issue #40): the replacement takes the old run tab's
@@ -655,7 +655,7 @@ final class AppStore: ObservableObject {
     runStates[target.id] = .running(tab: tab.id, interrupted: false)
     runPidFiles[target.id] = pidPath  // after respawnRunTab's closeTab cleanup, so it survives
     captureRunSession(for: target.id, pidPath: pidPath)  // record the session for reliable stop
-    tab.view.onChildExited = { [weak self] _ in self?.markRunExited(for: target) }
+    tab.surface?.onChildExited = { [weak self] _ in self?.markRunExited(for: target) }
   }
 
   /// Toggle a specific target's run command from the sidebar: running → stop; otherwise start (or
@@ -1393,7 +1393,10 @@ final class AppStore: ObservableObject {
     // Also skip the confirm when the tab's process has already exited (e.g. a stopped/finished run
     // command sitting at "Process exited" via wait_after_command) — there's nothing running to lose
     // (issue #7).
-    guard Defaults[.confirmOnCloseTerminal], !UITestFixture.isActive, !tab.view.processHasExited
+    // A content tab (diff) has no surface/process — `?? true` makes "has exited" so it closes without
+    // the confirm (there's nothing running to lose).
+    guard Defaults[.confirmOnCloseTerminal], !UITestFixture.isActive,
+      !(tab.surface?.processHasExited ?? true)
     else {
       // No confirmation needed: UI tests close synchronously (teardown must not block); everyone
       // else still stops a live run command gracefully first so its dev server isn't orphaned.
@@ -1466,11 +1469,32 @@ final class AppStore: ObservableObject {
     return true
   }
 
+  // MARK: Diff content tabs (issue #66)
+
+  /// Open a changed file as a diff in the selected workroom's tab strip, in preview mode
+  /// (single-click in the Changes panel). `source` is the row's group — git worktree, jj `@`, or jj
+  /// `@-` — so the diff resolves against the right revision. No-op if nothing's selected.
+  func openDiffPreview(_ file: ChangedFile, source: DiffSource) {
+    guard let target = selectedTarget else { return }
+    terminals.openDiffPreview(
+      DiffDescriptor(path: file.path, change: file.change, source: source, isPreview: true),
+      for: target)
+  }
+
+  /// Open a changed file as a *persisted* diff tab (double-click in the Changes panel) — skips
+  /// preview mode. No-op if nothing's selected.
+  func openDiffPersistent(_ file: ChangedFile, source: DiffSource) {
+    guard let target = selectedTarget else { return }
+    terminals.openDiffPersistent(
+      DiffDescriptor(path: file.path, change: file.change, source: source, isPreview: false),
+      for: target)
+  }
+
   /// The focused pane's surface for the selected target (the focused tab is the focused pane), or nil
   /// when nothing's selected / no terminal exists. Drives the Go menu's scroll items (issue #42).
   private var focusedSurface: GhosttySurfaceView? {
     guard let target = selectedTarget else { return nil }
-    return terminals.focusedTab(for: target)?.view
+    return terminals.focusedTab(for: target)?.surface
   }
 
   /// Scroll the focused terminal to the top / bottom of its scrollback (issue #42). Driven by the Go

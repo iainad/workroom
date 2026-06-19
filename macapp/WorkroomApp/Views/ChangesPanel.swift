@@ -215,60 +215,67 @@ private struct PendingPRAction: Identifiable {
 }
 
 /// One changed-file row: a colored change-kind letter (M/A/D/…), the filename, then its parent
-/// directory dimmed (issue #24 feedback). Clicking opens the file in the configured app (Settings →
-/// "Open file paths in"; falls back to the file's default app), resolving the repo-relative path
-/// against the workroom directory — and opens it *inside the workroom's editor window* (the folder
-/// is passed as the project), so it doesn't land in whatever editor window happened to be frontmost.
-/// The directory yields first when space is tight (truncates from the head). The change kind is
-/// spelled out in the accessibility label so it isn't color-only.
+/// directory dimmed (issue #24 feedback). Clicking opens the file's diff in the workroom's tab strip
+/// (issue #66): a single click opens it in preview mode (eagerly — the diff appears at once), a quick
+/// double-click persists it. `source` is the row's group (git worktree / jj `@` / jj `@-`), so the
+/// diff resolves against the right revision. The directory yields first when space is tight
+/// (truncates from the head). The change kind is spelled out in the accessibility label.
 private struct ChangedFileRow: View {
   let file: ChangedFile
-  /// The workroom directory the repo-relative `file.path` is resolved against. `nil` ⇒ not openable.
-  let directory: String?
+  /// Which revision this row's diff comes from — the Changes group it's rendered under.
+  let source: DiffSource
+  @EnvironmentObject var store: AppStore
   @State private var hovering = false
+  /// Time of the last click, so a quick second click promotes the preview tab to persisted (eager
+  /// single/double discrimination — the single click never waits).
+  @State private var lastClick: Date?
   private let theme = ThemeService.shared
 
   var body: some View {
     let (dir, name) = ChangesPanel.splitPath(file.path)
-    Button {
-      if let directory {
-        TerminalLinkOpener.openFilePath(file.path, cwd: directory, project: directory)
-      }
-    } label: {
-      HStack(spacing: 6) {
-        Text(letter)
-          .font(.system(.callout, design: .monospaced))
-          .foregroundStyle(color)
-          .frame(width: 14, alignment: .leading)
-        Text(name)
+    HStack(spacing: 6) {
+      Text(letter)
+        .font(.system(.callout, design: .monospaced))
+        .foregroundStyle(color)
+        .frame(width: 14, alignment: .leading)
+      Text(name)
+        .font(.callout)
+        .lineLimit(1).truncationMode(.middle)
+        .layoutPriority(1)
+      if !dir.isEmpty {
+        Text(dir)
           .font(.callout)
-          .lineLimit(1).truncationMode(.middle)
-          .layoutPriority(1)
-        if !dir.isEmpty {
-          Text(dir)
-            .font(.callout)
-            .foregroundStyle(.secondary)
-            .lineLimit(1).truncationMode(.head)
-        }
-        Spacer(minLength: 0)
+          .foregroundStyle(.secondary)
+          .lineLimit(1).truncationMode(.head)
       }
-      .padding(.vertical, 2)
-      .padding(.horizontal, 4)
-      .frame(maxWidth: .infinity, alignment: .leading)
-      .background(
-        RoundedRectangle(cornerRadius: 5)
-          .fill(theme.tokens.hover.opacity(hovering && directory != nil ? 1 : 0))
-      )
-      .contentShape(Rectangle())
+      Spacer(minLength: 0)
     }
-    .buttonStyle(.plain)
+    .padding(.vertical, 2)
+    .padding(.horizontal, 4)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .background(
+      RoundedRectangle(cornerRadius: 5)
+        .fill(theme.tokens.hover.opacity(hovering ? 1 : 0))
+    )
+    .contentShape(Rectangle())
     .onHover { hovering = $0 }
-    .disabled(directory == nil)
-    .help(directory == nil ? "" : "Open \(file.path)")
+    .onTapGesture {
+      let now = Date()
+      if let last = lastClick, now.timeIntervalSince(last) < 0.35 {
+        store.openDiffPersistent(file, source: source)  // quick second click → persist
+        lastClick = nil
+      } else {
+        store.openDiffPreview(file, source: source)  // eager: open the preview immediately
+        lastClick = now
+      }
+    }
+    .help("Open diff for \(file.path)")
     .accessibilityElement(children: .ignore)
+    .accessibilityAddTraits(.isButton)
+    .accessibilityIdentifier("changes.file.\(file.path)")
     .accessibilityLabel(
       dir.isEmpty
-        ? "\(name), \(changeWord), open" : "\(name), \(changeWord), in \(dir), open")
+        ? "\(name), \(changeWord), open diff" : "\(name), \(changeWord), in \(dir), open diff")
   }
 
   private var letter: String {
@@ -510,9 +517,9 @@ struct ChangesPanel: View {
       // `jjWorkingCopy != nil` is the discriminator — a failed probe leaves it nil, so failures fall
       // to the git path (which renders the failure message under a branch header, as before).
       if let workingCopy = status.jjWorkingCopy {
-        jjContent(workingCopy: workingCopy, parent: status.jjParent, directory: target?.path)
+        jjContent(workingCopy: workingCopy, parent: status.jjParent)
       } else {
-        gitContent(sid: sid, status: status, directory: target?.path)
+        gitContent(sid: sid, status: status)
       }
     }
   }
@@ -520,7 +527,7 @@ struct ChangesPanel: View {
   /// Git repos: the branch header, sync state, then the working-tree change list (or clean/failure).
   /// CI is GitHub-derived, so it lives in the Pull Request section — not here.
   @ViewBuilder
-  private func gitContent(sid: SidebarID, status: WorkroomStatus, directory: String?) -> some View {
+  private func gitContent(sid: SidebarID, status: WorkroomStatus) -> some View {
     VStack(alignment: .leading, spacing: 10) {
       HStack(spacing: 6) {
         Text(gitBranchLabel(sid: sid, status: status))
@@ -537,7 +544,7 @@ struct ChangesPanel: View {
       } else if status.isClean {
         cleanState
       } else {
-        fileList(status.changedFiles ?? [], in: directory)
+        fileList(status.changedFiles ?? [], source: .gitWorktree)
       }
     }
     .padding(12)
@@ -546,9 +553,7 @@ struct ChangesPanel: View {
   /// jj repos: two collapsible groups — the working copy (`@`, expanded by default) and its parent
   /// (`@-`, collapsed by default), each with a changed-file count in its header.
   @ViewBuilder
-  private func jjContent(workingCopy: JJCommitChanges, parent: JJParentState?, directory: String?)
-    -> some View
-  {
+  private func jjContent(workingCopy: JJCommitChanges, parent: JJParentState?) -> some View {
     VStack(alignment: .leading, spacing: 10) {
       ChangesDisclosureGroup(
         title: "Working Copy", meta: workingCopy, count: workingCopy.files.count,
@@ -557,10 +562,10 @@ struct ChangesPanel: View {
         if workingCopy.files.isEmpty {
           cleanState
         } else {
-          fileList(workingCopy.files, in: directory)
+          fileList(workingCopy.files, source: .jjWorkingCopy)
         }
       }
-      parentGroup(parent, directory: directory)
+      parentGroup(parent)
     }
     .padding(12)
   }
@@ -568,7 +573,7 @@ struct ChangesPanel: View {
   /// The Parent Commit (`@-`) group. Each `JJParentState` renders explicitly so a merge or an
   /// unavailable probe is shown, never silently dropped; `.root`/`nil` hides the group entirely.
   @ViewBuilder
-  private func parentGroup(_ parent: JJParentState?, directory: String?) -> some View {
+  private func parentGroup(_ parent: JJParentState?) -> some View {
     switch parent {
     case .changes(let commit):
       ChangesDisclosureGroup(
@@ -578,7 +583,7 @@ struct ChangesPanel: View {
         if commit.files.isEmpty {
           parentMessage("No changes in this commit")
         } else {
-          fileList(commit.files, in: directory)
+          fileList(commit.files, source: .jjParent)
         }
       }
     case .merge(let n):
@@ -647,11 +652,11 @@ struct ChangesPanel: View {
   }
 
   @ViewBuilder
-  private func fileList(_ files: [ChangedFile], in directory: String?) -> some View {
+  private func fileList(_ files: [ChangedFile], source: DiffSource) -> some View {
     let shown = Array(files.prefix(renderCap))
     VStack(alignment: .leading, spacing: 1) {
       ForEach(shown) { file in
-        ChangedFileRow(file: file, directory: directory)
+        ChangedFileRow(file: file, source: source)
       }
       if files.count > shown.count {
         Text("Showing first \(shown.count) of \(files.count)")

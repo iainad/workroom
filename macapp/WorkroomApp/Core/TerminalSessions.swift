@@ -1,12 +1,74 @@
 import AppKit
 
-/// One terminal tab: a stable id, the single surface it owns, and the strip title. With splits (issue
-/// #3) a tab is still exactly one surface — a "split" composes several tabs into one on-screen layout
-/// (see `PaneLayout`), it does not nest surfaces inside a tab. `TerminalTab` stays a value type on
-/// purpose: live-title updates mutate a copy and reassign the dict, which is what drives `@Published`
-/// (a reference type would not). The surface is a shared reference the tab owns; `teardown(_:)` frees it.
+/// One tab in a target's strip. A tab is exactly one PANE: historically always a terminal surface,
+/// and since issue #66 it can instead host non-terminal content (a file diff today; more kinds
+/// later), so `content` is a `TabContent` union. With splits (issue #3) a tab is still exactly one
+/// pane — a "split" composes several tabs into one on-screen layout (see `PaneLayout`), it does not
+/// nest panes inside a tab. The split tree, focus, ⌘1–9, reorder, and close-successor all key on the
+/// tab's `id`, so a content tab is a first-class peer of a terminal tab with no special casing — a
+/// split can mix a terminal pane and a diff pane. Terminal-only state lives INSIDE the `.terminal`
+/// payload, so a content tab carries none of it. `TerminalTab` stays a value type on purpose: a
+/// live-title/progress/preview update mutates a copy and reassigns the dict, which is what drives
+/// `@Published` (a reference type would not). The surface, when present, is a shared reference the tab
+/// owns; `teardown(_:)` frees it (a no-op for content tabs — they have no surface).
 struct TerminalTab: Identifiable {
   let id = UUID()
+  var content: TabContent
+
+  /// The terminal surface this tab owns, or nil for a content (e.g. diff) tab. The single accessor
+  /// every surface-specific path (occlusion, theme reload, teardown, run-state) funnels through, so
+  /// a content tab transparently does *fewer* surface operations — never more.
+  var surface: GhosttySurfaceView? {
+    if case .terminal(let s) = content { return s.view }
+    return nil
+  }
+
+  /// What the tab strip displays: a terminal's live/idle title, or a content tab's own title (a
+  /// diff's filename).
+  var title: String {
+    switch content {
+    case .terminal(let s): return s.liveTitle ?? s.defaultTitle
+    case .diff(let d): return (d.path as NSString).lastPathComponent
+    }
+  }
+
+  /// A content tab still in VS-Code-style preview mode (italic chip, replaced by the next preview);
+  /// always false for terminals.
+  var isPreview: Bool {
+    if case .diff(let d) = content { return d.isPreview }
+    return false
+  }
+
+  /// Whether a command is actively *working* in this terminal (issue #28) — drives the chip underline
+  /// and the sidebar spinner. Driven solely by OSC 9;4 progress, like Ghostty/Muxy. Always false for
+  /// content tabs (no surface, no progress).
+  var isRunning: Bool {
+    if case .terminal(let s) = content { return s.progressActive == true }
+    return false
+  }
+
+  /// A terminal tab wrapping a freshly-created surface.
+  static func terminal(view: GhosttySurfaceView, defaultTitle: String) -> TerminalTab {
+    TerminalTab(content: .terminal(TerminalState(view: view, defaultTitle: defaultTitle)))
+  }
+
+  /// A diff content tab from its descriptor (issue #66).
+  static func diff(_ descriptor: DiffDescriptor) -> TerminalTab {
+    TerminalTab(content: .diff(descriptor))
+  }
+}
+
+/// A tab's content: a terminal surface, or non-terminal content (issue #66). A closed set — the
+/// renderer, occlusion, teardown, and theme reload switch on it exhaustively, so adding a kind is a
+/// compiler-guided change (you can't forget a site).
+enum TabContent {
+  case terminal(TerminalState)
+  case diff(DiffDescriptor)
+}
+
+/// The state a terminal tab owns: its surface plus the live-title/progress the surface reports. Kept
+/// in the `.terminal` payload so a content tab carries none of it.
+struct TerminalState {
   /// The 1:1 terminal surface this tab owns.
   let view: GhosttySurfaceView
   /// Shown until the surface reports a title — and again whenever it reports an empty one.
@@ -14,22 +76,11 @@ struct TerminalTab: Identifiable {
   /// The surface's latest non-empty title (OSC 0/2 via shell integration): the running command while
   /// busy, the working directory when idle. Nil until the first report (issue #2).
   var liveTitle: String?
-
   /// OSC 9;4 progress — the *only* signal that drives `isRunning`, matching how Ghostty and Muxy work
   /// (neither ties "busy" to the title). `true` while the running program reports it's working,
-  /// `false`/`nil` when it's idle, done, or never reported any. Reset at `command_finished`; the surface
-  /// also clears it via a 15s safety timer, so a program that sets progress but never sends REMOVE (or a
-  /// long-idle TUI) can't pin the spinner on (issue #28 follow-up).
+  /// `false`/`nil` when it's idle, done, or never reported any. Reset at `command_finished`; the
+  /// surface also clears it via a 15s safety timer (issue #28 follow-up).
   var progressActive: Bool?
-
-  /// What the tab strip displays.
-  var title: String { liveTitle ?? defaultTitle }
-
-  /// Whether a command is actively *working* in this terminal (issue #28) — drives the chip underline
-  /// and the sidebar spinner. Driven solely by OSC 9;4 progress, like Ghostty/Muxy: a long-lived
-  /// foreground program (claude, codex, a dev server) idling at its own prompt reports no progress, so
-  /// it no longer spins forever. The command title (`liveTitle`) names the tab only — never "busy".
-  var isRunning: Bool { progressActive == true }
 }
 
 /// Owns the live terminals for each target (a workroom or a project root) for the app session, so
@@ -173,7 +224,7 @@ final class TerminalSessions: ObservableObject {
   func view(
     forTab tabID: TerminalTab.ID, inTarget targetID: TerminalTarget.ID
   ) -> GhosttySurfaceView? {
-    tabsByTarget[targetID]?[tabID]?.view
+    tabsByTarget[targetID]?[tabID]?.surface
   }
 
   /// The focused tab (selection), falling back to the first tab in strip order.
@@ -213,11 +264,91 @@ final class TerminalSessions: ObservableObject {
   /// Open a new solo terminal at the end of the strip and focus it (⌘T). Does not touch the split.
   @discardableResult
   func addTab(for target: TerminalTarget) -> TerminalTab {
-    let tab = makeTab(for: target, cwd: target.path)
+    let tab = makeTerminalTab(for: target, cwd: target.path)
     insert(tab, for: target)
     setFocused(tab.id, for: target.id)
     reconcileOcclusion(for: target)
     return tab
+  }
+
+  // MARK: Content tabs (issue #66)
+  //
+  //   single-click file ─▶ openDiffPreview ─┬─ persisted tab for this file+rev exists → focus it (Inv C)
+  //                                          ├─ a preview tab exists → retarget IN PLACE, same id (Inv B)
+  //                                          └─ else → new preview tab           (≤1 preview/target: Inv A)
+  //   double-click file ─▶ openDiffPersistent ─ create-or-promote a persisted tab
+  //   double-click chip / "Keep Open" ─▶ persist ─ flip preview → persisted
+
+  /// Open a file diff as the target's single PREVIEW content tab (VS-Code semantics). Returns the id
+  /// of the tab now shown. A preview tab is replaced in place by the next previewed file, so its tab
+  /// id (and thus its strip slot / split position) is stable across retargets.
+  @discardableResult
+  func openDiffPreview(_ descriptor: DiffDescriptor, for target: TerminalTarget) -> TerminalTab.ID {
+    var desc = descriptor
+    desc.isPreview = true
+    // Already open for this exact file + revision (preview or persisted) → just select it (Inv C).
+    if let existing = diffTab(matching: desc, in: target.id) {
+      focus(existing, for: target)
+      return existing
+    }
+    // Retarget the lone preview tab in place — keeps its id, slot, and split position (Inv B).
+    if let previewID = previewTabID(in: target.id), var tab = tabsByTarget[target.id]?[previewID] {
+      tab.content = .diff(desc)
+      tabsByTarget[target.id]?[previewID] = tab
+      focus(previewID, for: target)
+      return previewID
+    }
+    // First diff for this target → a fresh preview tab (Inv A).
+    let tab = TerminalTab.diff(desc)
+    insert(tab, for: target)
+    setFocused(tab.id, for: target.id)
+    reconcileOcclusion(for: target)
+    return tab.id
+  }
+
+  /// Open a file diff as a PERSISTED content tab (double-click in Changes). If a tab already shows
+  /// this file + revision, promote it (clear preview) and focus it; else append a persisted tab.
+  @discardableResult
+  func openDiffPersistent(_ descriptor: DiffDescriptor, for target: TerminalTarget)
+    -> TerminalTab.ID
+  {
+    var desc = descriptor
+    desc.isPreview = false
+    if let existing = diffTab(matching: desc, in: target.id) {
+      persist(existing, for: target)
+      focus(existing, for: target)
+      return existing
+    }
+    let tab = TerminalTab.diff(desc)
+    insert(tab, for: target)
+    setFocused(tab.id, for: target.id)
+    reconcileOcclusion(for: target)
+    return tab.id
+  }
+
+  /// Persist a preview content tab (double-click its chip, or "Keep Open" in its menu). No-op unless
+  /// it's a preview diff tab.
+  func persist(_ tabID: TerminalTab.ID, for target: TerminalTarget) {
+    guard var tab = tabsByTarget[target.id]?[tabID], case .diff(var d) = tab.content, d.isPreview
+    else { return }
+    d.isPreview = false
+    tab.content = .diff(d)
+    tabsByTarget[target.id]?[tabID] = tab
+  }
+
+  /// The id of an open diff tab showing the same file + revision as `descriptor`, if any.
+  private func diffTab(matching descriptor: DiffDescriptor, in target: TerminalTarget.ID)
+    -> TerminalTab.ID?
+  {
+    tabsByTarget[target]?.first { _, tab in
+      if case .diff(let d) = tab.content { return d.sameFile(as: descriptor) }
+      return false
+    }?.key
+  }
+
+  /// The id of the target's single preview content tab, if one exists (the ≤1-preview invariant).
+  private func previewTabID(in target: TerminalTarget.ID) -> TerminalTab.ID? {
+    tabsByTarget[target]?.first { _, tab in tab.isPreview }?.key
   }
 
   /// Open the dedicated "run command" terminal (issue #7): a solo tab that launches `command` in
@@ -294,10 +425,10 @@ final class TerminalSessions: ObservableObject {
   /// already exited). Only run tabs wire `onCloseRequested`. Shared by `addRunTab` (append + focus) and
   /// `respawnRunTab` (in-place restart, issue #40).
   private func makeRunTab(for target: TerminalTarget, command: String, cwd: String) -> TerminalTab {
-    let tab = makeTab(for: target, cwd: cwd, command: command, title: "Run")
+    let tab = makeTerminalTab(for: target, cwd: cwd, command: command, title: "Run")
     let targetID = target.id
     let tabID = tab.id
-    tab.view.onCloseRequested = { [weak self] in
+    tab.surface?.onCloseRequested = { [weak self] in
       guard let self, let target = self.target(forID: targetID) else { return }
       self.closeTab(tabID, for: target)
     }
@@ -315,10 +446,10 @@ final class TerminalSessions: ObservableObject {
   /// exists at a time.
   func splitFocusedPane(for target: TerminalTarget, edge: PaneEdge) {
     guard let focused = focusedTab(for: target) else { return }
-    guard fits(splitting: focused.view, orientation: edge.orientation) else { return }
+    guard fits(splitting: focused.surface, orientation: edge.orientation) else { return }
 
-    let cwd = focused.view.lastKnownCwd ?? target.path
-    let newTab = makeTab(for: target, cwd: cwd)
+    let cwd = focused.surface?.lastKnownCwd ?? target.path
+    let newTab = makeTerminalTab(for: target, cwd: cwd)
     tabsByTarget[target.id, default: [:]][newTab.id] = newTab
 
     if let existing = splitByTarget[target.id], existing.contains(focused.id) {
@@ -514,8 +645,10 @@ final class TerminalSessions: ObservableObject {
     let config = GhosttyApp.shared.config
     for tabs in tabsByTarget.values {
       for tab in tabs.values {
-        if let config { tab.view.updateConfig(config) }
-        tab.view.applyColorScheme(isDark: isDark)
+        // Content tabs have no surface to re-theme.
+        guard let surface = tab.surface else { continue }
+        if let config { surface.updateConfig(config) }
+        surface.applyColorScheme(isDark: isDark)
       }
     }
   }
@@ -528,7 +661,9 @@ final class TerminalSessions: ObservableObject {
   func reconcileOcclusion(for target: TerminalTarget) {
     let visible = Set(visibleTabIDs(for: target))
     for tab in (tabsByTarget[target.id] ?? [:]).values {
-      tab.view.setVisible(visible.contains(tab.id))
+      // Only terminal tabs own a GPU surface to occlude; a content tab (diff) pauses itself by
+      // unmounting from the window when it leaves the screen, so there's nothing to toggle here.
+      tab.surface?.setVisible(visible.contains(tab.id))
     }
   }
 
@@ -544,24 +679,41 @@ final class TerminalSessions: ObservableObject {
   /// command sticks until `command_finished` clears it.
   private func updateTitle(_ title: String, forTab tabID: TerminalTab.ID, target: TerminalTarget.ID)
   {
-    guard var tab = tabsByTarget[target]?[tabID] else { return }
-    let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !trimmed.isEmpty, !Self.isDirectoryTitle(trimmed, cwd: tab.view.lastKnownCwd) else {
+    guard let tab = tabsByTarget[target]?[tabID], case .terminal(let s) = tab.content else {
       return
     }
-    guard tab.liveTitle != trimmed else { return }
-    tab.liveTitle = trimmed
+    let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty, !Self.isDirectoryTitle(trimmed, cwd: s.view.lastKnownCwd) else {
+      return
+    }
+    guard s.liveTitle != trimmed else { return }
+    mutateTerminalState(tabID, target: target) { $0.liveTitle = trimmed }
+  }
+
+  /// Mutate the `.terminal` payload of a tab in place and republish (the `@Published`-driving
+  /// reassign). A no-op if the tab is missing or isn't a terminal — so the OSC callbacks (only ever
+  /// wired for terminal tabs) stay correct even if a content tab id is ever passed.
+  private func mutateTerminalState(
+    _ tabID: TerminalTab.ID, target: TerminalTarget.ID, _ body: (inout TerminalState) -> Void
+  ) {
+    guard var tab = tabsByTarget[target]?[tabID], case .terminal(var s) = tab.content else {
+      return
+    }
+    body(&s)
+    tab.content = .terminal(s)
     tabsByTarget[target]?[tabID] = tab
   }
 
   /// The shell returned to its prompt (OSC 133 D): drop the finished command's title back to the default
   /// (issue #2) and clear any OSC 9;4 progress, so the indicator stops the moment the command exits.
   private func handleCommandFinished(forTab tabID: TerminalTab.ID, target: TerminalTarget.ID) {
-    guard var tab = tabsByTarget[target]?[tabID], tab.liveTitle != nil || tab.progressActive != nil
+    guard let tab = tabsByTarget[target]?[tabID], case .terminal(let s) = tab.content,
+      s.liveTitle != nil || s.progressActive != nil
     else { return }
-    tab.liveTitle = nil
-    tab.progressActive = nil
-    tabsByTarget[target]?[tabID] = tab
+    mutateTerminalState(tabID, target: target) {
+      $0.liveTitle = nil
+      $0.progressActive = nil
+    }
   }
 
   /// Apply an OSC 9;4 progress report (issue #28 follow-up). `active` is false only for the REMOVE state
@@ -570,9 +722,10 @@ final class TerminalSessions: ObservableObject {
   private func updateProgress(
     _ active: Bool, forTab tabID: TerminalTab.ID, target: TerminalTarget.ID
   ) {
-    guard var tab = tabsByTarget[target]?[tabID], tab.progressActive != active else { return }
-    tab.progressActive = active
-    tabsByTarget[target]?[tabID] = tab
+    guard let tab = tabsByTarget[target]?[tabID], case .terminal(let s) = tab.content,
+      s.progressActive != active
+    else { return }
+    mutateTerminalState(tabID, target: target) { $0.progressActive = active }
   }
 
   /// Whether `title` is just the working directory (the idle title the shell/prompt sets) rather than a
@@ -615,8 +768,11 @@ final class TerminalSessions: ObservableObject {
   /// Whether splitting `view` in `orientation` would leave both halves ≥ `minPaneSize` (D4). When the
   /// pane has no laid-out size yet (e.g. in tests, or before first layout) the guard can't evaluate, so
   /// it permits the split and lets the renderer's clamp handle sizing.
-  private func fits(splitting view: GhosttySurfaceView, orientation: SplitOrientation) -> Bool {
-    let available = orientation == .horizontal ? view.bounds.width : view.bounds.height
+  private func fits(splitting surface: GhosttySurfaceView?, orientation: SplitOrientation) -> Bool {
+    // A content pane (e.g. a diff) has no surface bounds to evaluate — permit the split and let the
+    // renderer's points-based clamp size it, the same as a not-yet-laid-out terminal pane.
+    guard let surface else { return true }
+    let available = orientation == .horizontal ? surface.bounds.width : surface.bounds.height
     guard available > 0 else { return true }
     return (available - Self.dividerThickness) / 2 >= Self.minPaneSize
   }
@@ -651,13 +807,13 @@ final class TerminalSessions: ObservableObject {
     orderByTarget[target.id] = order
   }
 
-  private func makeTab(
+  private func makeTerminalTab(
     for target: TerminalTarget, cwd: String, command: String? = nil, title: String? = nil
   ) -> TerminalTab {
     let count = (counts[target.id] ?? 0) + 1
     counts[target.id] = count
     let view = makeView(target, cwd, command)
-    let tab = TerminalTab(view: view, defaultTitle: title ?? "Terminal \(count)")
+    let tab = TerminalTab.terminal(view: view, defaultTitle: title ?? "Terminal \(count)")
 
     let targetID = target.id
     let tabID = tab.id
@@ -703,6 +859,7 @@ final class TerminalSessions: ObservableObject {
   }
 
   /// Tear down a tab's surface (clears callbacks before freeing, so no in-flight libghostty callback
-  /// touches a dead view).
-  private func teardown(_ tab: TerminalTab) { tab.view.tearDown() }
+  /// touches a dead view). A no-op for a content tab — it owns no surface, so there's nothing to free
+  /// (and the refactor therefore frees *strictly fewer* surfaces than before — no new free races).
+  private func teardown(_ tab: TerminalTab) { tab.surface?.tearDown() }
 }

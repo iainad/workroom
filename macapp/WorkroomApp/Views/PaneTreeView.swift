@@ -39,7 +39,8 @@ struct PaneTreeView: View {
         ForEach(Array(layout.tabIDs.enumerated()), id: \.element) { index, tabID in
           if let tab = sessions.tab(tabID, for: target), let rect = plan.panes[tabID] {
             PaneLeafView(
-              tabID: tabID, view: tab.view, sessions: sessions, title: tab.title,
+              tabID: tabID, content: tab.content, directory: target.path, sessions: sessions,
+              title: tab.title,
               focused: surfaceActive && tabID == focusedID, multiPane: multiPane,
               paneIndex: index + 1, paneCount: layout.tabIDs.count, coordinateSpace: Self.space,
               onDragChanged: { beginOrUpdateDrag(tabID: tabID, at: $0) },
@@ -280,7 +281,11 @@ enum PaneTreeLayout {
 /// the strip ✕ / ⌘W, so the pane needs no close affordance of its own.)
 private struct PaneLeafView: View {
   let tabID: TerminalTab.ID
-  let view: GhosttySurfaceView
+  /// The pane's content — a terminal surface or non-terminal content (issue #66). All the pane chrome
+  /// (focus ring, dim scrim, drag handle, a11y) wraps *both* kinds; only the centre swaps.
+  let content: TabContent
+  /// The workroom directory, handed to a diff pane so its `DiffResolver` runs against the right repo.
+  let directory: String
   @ObservedObject var sessions: TerminalSessions
   let title: String
   let focused: Bool
@@ -298,7 +303,7 @@ private struct PaneLeafView: View {
   private let theme = ThemeService.shared
 
   var body: some View {
-    TerminalContainerView(view: view, isFocusedPane: focused)
+    paneContent
       // Dim every pane that isn't the focused one so the active terminal reads instantly — across both
       // splits and co-displayed workrooms (an unfocused workroom passes `surfaceActive: false`, so all
       // its panes arrive here `focused == false`). A solo terminal is always logically focused, so it
@@ -340,10 +345,28 @@ private struct PaneLeafView: View {
       .accessibilityAddTraits(focused && multiPane ? .isSelected : [])
   }
 
-  /// "Terminal <title>" solo; "Terminal <title>, pane N of M" in a split — so VoiceOver announces
-  /// both which terminal it is and where it sits in the group.
+  /// The pane's centre: a hosted terminal surface, or a diff viewer for a content tab. Clipped to the
+  /// same rounded shape the focus border draws (the terminal host already clips itself).
+  @ViewBuilder private var paneContent: some View {
+    switch content {
+    case .terminal(let s):
+      TerminalContainerView(view: s.view, isFocusedPane: focused)
+    case .diff(let descriptor):
+      DiffViewer(descriptor: descriptor, directory: directory)
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+  }
+
+  private var isTerminal: Bool {
+    if case .terminal = content { return true }
+    return false
+  }
+
+  /// "Terminal <title>" (or just the content tab's title), plus "pane N of M" in a split — so
+  /// VoiceOver announces both what the pane is and where it sits in the group.
   private var accessibilityLabel: String {
-    multiPane ? "Terminal \(title), pane \(paneIndex) of \(paneCount)" : "Terminal \(title)"
+    let base = isTerminal ? "Terminal \(title)" : title
+    return multiPane ? "\(base), pane \(paneIndex) of \(paneCount)" : base
   }
 
   /// A small semi-transparent grip chip at the pane's top-center — drag it to move the pane (onto

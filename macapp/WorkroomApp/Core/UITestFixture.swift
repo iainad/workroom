@@ -28,6 +28,14 @@ enum UITestFixture {
     UserDefaults.standard.bool(forKey: "WorkroomUITestManyChanges")
   }
 
+  /// When set (`-WorkroomUITestGitWorkroom 1`), the fixture workroom reports a **git** working tree
+  /// (a flat changed-file list, no jj groups) instead of the default jj change — so the diff-viewer
+  /// UI tests can exercise the `.gitWorktree` diff source. Default (unset) keeps the jj scenario the
+  /// other tests rely on.
+  static var gitWorkroomMode: Bool {
+    UserDefaults.standard.bool(forKey: "WorkroomUITestGitWorkroom")
+  }
+
   /// Stable display name of the fixture project (also its sidebar accessibility id suffix:
   /// `sidebar.project.<name>`). Deliberately obvious so it never reads as a real project in logs.
   static let projectName = "UITestProject"
@@ -64,6 +72,20 @@ enum UITestFixture {
   /// inspector render its jj-log header and the filename / dimmed-directory file list with no real
   /// repo — visual QA never has to touch (or expose) the developer's actual projects.
   static var workroomStatus: WorkroomStatus {
+    gitWorkroomMode ? gitWorkroomStatus : jjWorkroomStatus
+  }
+
+  /// The git variant of the fixture workroom (`-WorkroomUITestGitWorkroom 1`): a dirty git working
+  /// tree with a flat changed-file list and no jj groups, so the Changes panel renders the git path
+  /// and its rows open `.gitWorktree` diffs.
+  static var gitWorkroomStatus: WorkroomStatus {
+    WorkroomStatus(
+      dirty: true, changedFiles: changedFiles, insertions: 411, deletions: 222, ci: .passing,
+      branchForCI: "feature/login",
+      lastChecked: Self.checkedAt, ciCheckedAt: Self.checkedAt, prCheckedAt: Self.checkedAt)
+  }
+
+  private static var jjWorkroomStatus: WorkroomStatus {
     WorkroomStatus(
       dirty: true,
       changedFiles: changedFiles,
@@ -143,4 +165,34 @@ enum UITestFixture {
   /// A fixed timestamp for the seeded statuses' "last checked" stamps (deterministic; the value
   /// isn't displayed, only its non-nil-ness gates the loading state).
   private static let checkedAt = Date(timeIntervalSince1970: 1_700_000_000)
+
+  // MARK: - Diff content (issue #66)
+
+  /// A deterministic canned diff for the diff viewer in fixture mode — so the UI tests render a real
+  /// `DiffViewer` without shelling out to git/jj against the fake temp directory. The content encodes
+  /// the file path and the `DiffSource` (git worktree / jj `@` / jj `@-`) so a test can assert it
+  /// opened the *right* file's diff from the *right* revision. Two paths get special states for
+  /// coverage: `binary.bin` → binary, `clean.txt` → empty.
+  static func diff(for descriptor: DiffDescriptor) -> DiffResult {
+    let name = (descriptor.path as NSString).lastPathComponent
+    if name == "binary.bin" { return .binary }
+    if name == "clean.txt" { return .empty }
+    let tag: String
+    switch descriptor.source {
+    case .gitWorktree: tag = "git-worktree"
+    case .jjWorkingCopy: tag = "jj-working-copy"
+    case .jjParent: tag = "jj-parent"
+    }
+    let raw = """
+      diff --git a/\(descriptor.path) b/\(descriptor.path)
+      @@ -1,4 +1,5 @@
+       context line one
+      -removed old line
+      +added line for \(tag)
+      +marker \(descriptor.path)
+       context line two
+       context line three
+      """
+    return .diff(UnifiedDiff.parse(raw))
+  }
 }

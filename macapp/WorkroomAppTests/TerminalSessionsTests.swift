@@ -95,7 +95,7 @@ final class TerminalSessionsTests: XCTestCase {
   func testIsRunningDrivenByProgressNotTitle() {
     let s = makeSessions()
     s.addTab(for: target)
-    let view = s.tabs(for: target).first!.view
+    let view = s.tabs(for: target).first!.surface!
 
     // A fresh tab sits at the prompt — nothing running.
     XCTAssertFalse(s.isRunning(forTargetID: target.id))
@@ -119,7 +119,7 @@ final class TerminalSessionsTests: XCTestCase {
   func testCommandFinishedClearsProgress() {
     let s = makeSessions()
     s.addTab(for: target)
-    let view = s.tabs(for: target).first!.view
+    let view = s.tabs(for: target).first!.surface!
 
     view.handleProgressReport(true)
     XCTAssertTrue(s.isRunning(forTargetID: target.id))
@@ -135,7 +135,7 @@ final class TerminalSessionsTests: XCTestCase {
   func testTruncatedDirectoryTitleIsTreatedAsDirectory() {
     let s = makeSessions()
     s.addTab(for: target)
-    let view = s.tabs(for: target).first!.view
+    let view = s.tabs(for: target).first!.surface!
     view.handlePwd("/var/data/dev/workroom/macapp/WorkroomApp")  // ≥4 deep → zsh truncates
 
     view.onTitleChange?("…/workroom/macapp/WorkroomApp")
@@ -149,11 +149,11 @@ final class TerminalSessionsTests: XCTestCase {
     s.addTab(for: target)
 
     // Progress reported in the second tab makes the whole target "running".
-    s.tabs(for: target)[1].view.handleProgressReport(true)
+    s.tabs(for: target)[1].surface!.handleProgressReport(true)
     XCTAssertTrue(s.isRunning(forTargetID: target.id))
 
     // It clears once that tab goes idle (the first never reported progress).
-    s.tabs(for: target)[1].view.handleProgressReport(false)
+    s.tabs(for: target)[1].surface!.handleProgressReport(false)
     XCTAssertFalse(s.isRunning(forTargetID: target.id))
   }
 
@@ -167,7 +167,7 @@ final class TerminalSessionsTests: XCTestCase {
   func testRunningCommandShowsThenClearsWhenFinished() {
     let s = makeSessions()
     s.addTab(for: target)
-    let view = s.tabs(for: target).first!.view
+    let view = s.tabs(for: target).first!.surface!
 
     // A running command takes over from the default…
     view.onTitleChange?("npm run dev")
@@ -185,7 +185,7 @@ final class TerminalSessionsTests: XCTestCase {
   func testDirectoryTitlesAreIgnoredSoTheCommandSurvives() {
     let s = makeSessions()
     s.addTab(for: target)
-    let view = s.tabs(for: target).first!.view
+    let view = s.tabs(for: target).first!.surface!
     view.handlePwd("/var/data/proj")  // cwd outside $HOME, so its `~` form is itself
 
     // The directory title the shell sets at the prompt is ignored → default stays.
@@ -205,7 +205,7 @@ final class TerminalSessionsTests: XCTestCase {
     let s = makeSessions()
     s.addTab(for: target)
     s.addTab(for: target)
-    s.tabs(for: target)[1].view.onTitleChange?("vim")
+    s.tabs(for: target)[1].surface!.onTitleChange?("vim")
     XCTAssertEqual(s.tabs(for: target).map(\.title), ["Terminal 1", "vim"])
   }
 
@@ -269,7 +269,7 @@ final class TerminalSessionsTests: XCTestCase {
       return GhosttySurfaceView(workingDirectory: cwd)
     }
     s.addTab(for: target)  // first surface spawns at the target path
-    s.tabs(for: target).first!.view.handlePwd("/work/here")
+    s.tabs(for: target).first!.surface!.handlePwd("/work/here")
     s.splitFocusedPane(for: target, orientation: .horizontal)
     XCTAssertEqual(cwds.count, 2)
     XCTAssertEqual(cwds.last, "/work/here")  // the split inherits the focused pane's cwd
@@ -278,7 +278,7 @@ final class TerminalSessionsTests: XCTestCase {
   func testSplitRefusedWhenPaneTooSmall() {
     let s = makeSessions()
     s.addTab(for: target)
-    let view = s.tabs(for: target).first!.view
+    let view = s.tabs(for: target).first!.surface!
     view.frame = CGRect(x: 0, y: 0, width: 100, height: 100)  // < 2 × minPaneSize
     s.splitFocusedPane(for: target, orientation: .horizontal)
     XCTAssertEqual(s.tabs(for: target).count, 1)  // refused — no sliver
@@ -502,5 +502,127 @@ final class TerminalSessionsTests: XCTestCase {
     removed.removeAll()
     s.reap(target.id)  // remaining tab reaped
     XCTAssertEqual(removed, [t1])
+  }
+
+  // MARK: Content (diff) tabs (issue #66)
+
+  private func diffDesc(_ path: String, _ source: DiffSource = .gitWorktree) -> DiffDescriptor {
+    DiffDescriptor(path: path, change: .modified, source: source, isPreview: true)
+  }
+
+  func testOpenDiffPreviewCreatesAndFocusesPreviewTab() {
+    let s = makeSessions()
+    let id = s.openDiffPreview(diffDesc("dir/a.swift"), for: target)
+    let tabs = s.tabs(for: target)
+    XCTAssertEqual(tabs.count, 1)
+    XCTAssertEqual(s.activeTab(for: target)?.id, id)
+    XCTAssertTrue(tabs.first!.isPreview)
+    XCTAssertEqual(tabs.first?.title, "a.swift")  // basename only
+    XCTAssertNil(tabs.first?.surface)  // a content tab owns no surface
+  }
+
+  /// A second preview retargets the lone preview tab IN PLACE — same id (keeps slot), still ≤1
+  /// preview (Inv A + Inv B).
+  func testSecondPreviewRetargetsInPlaceKeepingID() {
+    let s = makeSessions()
+    let first = s.openDiffPreview(diffDesc("a.swift"), for: target)
+    let second = s.openDiffPreview(diffDesc("b.swift"), for: target)
+    XCTAssertEqual(first, second)
+    XCTAssertEqual(s.tabs(for: target).count, 1)
+    XCTAssertEqual(s.tabs(for: target).first?.title, "b.swift")
+    XCTAssertTrue(s.tabs(for: target).first!.isPreview)
+  }
+
+  func testPreviewTabCoexistsWithTerminalAndStaysSingle() {
+    let s = makeSessions()
+    s.addTab(for: target)  // a terminal
+    let diff = s.openDiffPreview(diffDesc("a.swift"), for: target)
+    XCTAssertEqual(s.tabs(for: target).count, 2)
+    XCTAssertEqual(s.activeTab(for: target)?.id, diff)
+    // Select the terminal, then preview another file → still the SAME single preview tab.
+    let term = s.tabs(for: target).first { $0.surface != nil }!.id
+    s.select(term, for: target)
+    let diff2 = s.openDiffPreview(diffDesc("c.swift"), for: target)
+    XCTAssertEqual(diff, diff2)
+    XCTAssertEqual(s.tabs(for: target).count, 2)
+  }
+
+  func testOpenDiffPersistentCreatesNonPreview() {
+    let s = makeSessions()
+    let id = s.openDiffPersistent(
+      DiffDescriptor(path: "a.swift", change: .added, source: .gitWorktree, isPreview: false),
+      for: target)
+    XCTAssertFalse(s.tabs(for: target).first!.isPreview)
+    XCTAssertEqual(s.activeTab(for: target)?.id, id)
+  }
+
+  func testPersistPromotesPreviewSoItIsNoLongerRetargeted() {
+    let s = makeSessions()
+    let id = s.openDiffPreview(diffDesc("a.swift"), for: target)
+    s.persist(id, for: target)
+    XCTAssertFalse(s.tabs(for: target).first!.isPreview)
+    // No preview tab remains, so a new file opens a NEW tab instead of retargeting.
+    let id2 = s.openDiffPreview(diffDesc("b.swift"), for: target)
+    XCTAssertNotEqual(id, id2)
+    XCTAssertEqual(s.tabs(for: target).count, 2)
+  }
+
+  /// Opening a file that already has a tab re-selects it rather than duplicating (Inv C).
+  func testOpeningAlreadyOpenFileReselectsIt() {
+    let s = makeSessions()
+    let persisted = s.openDiffPersistent(
+      DiffDescriptor(path: "a.swift", change: .modified, source: .gitWorktree, isPreview: false),
+      for: target)
+    s.addTab(for: target)  // focus moves to a terminal
+    let again = s.openDiffPreview(diffDesc("a.swift"), for: target)
+    XCTAssertEqual(persisted, again)
+    XCTAssertFalse(s.tabs(for: target).first { $0.id == persisted }!.isPreview)  // stays persisted
+  }
+
+  /// The same path from different revisions are distinct tabs (jj working copy vs parent).
+  func testSameFileDifferentSourceAreDistinctTabs() {
+    let s = makeSessions()
+    let wc = s.openDiffPersistent(
+      DiffDescriptor(path: "a.swift", change: .modified, source: .jjWorkingCopy, isPreview: false),
+      for: target)
+    let parent = s.openDiffPersistent(
+      DiffDescriptor(path: "a.swift", change: .modified, source: .jjParent, isPreview: false),
+      for: target)
+    XCTAssertNotEqual(wc, parent)
+    XCTAssertEqual(s.tabs(for: target).count, 2)
+  }
+
+  func testCloseContentTabFallsBackToTerminal() {
+    let s = makeSessions()
+    s.addTab(for: target)
+    let diff = s.openDiffPreview(diffDesc("a.swift"), for: target)  // focused
+    s.closeTab(diff, for: target)
+    XCTAssertEqual(s.tabs(for: target).count, 1)
+    XCTAssertNotNil(s.activeTab(for: target)?.surface)  // revealed the terminal
+  }
+
+  func testReapClearsContentTabs() {
+    let s = makeSessions()
+    s.openDiffPreview(diffDesc("a.swift"), for: target)
+    s.reap(target.id)
+    XCTAssertTrue(s.tabs(for: target).isEmpty)
+  }
+
+  /// Splitting with a diff pane focused spawns a TERMINAL beside it — a mixed split, no surface
+  /// required on the focused (diff) pane (the fit guard permits a content pane).
+  func testSplitWithDiffFocusedSpawnsTerminalBeside() {
+    let s = makeSessions()
+    let diff = s.openDiffPreview(diffDesc("a.swift"), for: target)
+    s.splitFocusedPane(for: target, orientation: .horizontal)
+    XCTAssertEqual(s.tabs(for: target).count, 2)
+    XCTAssertEqual(s.split(for: target)?.tabIDs.count, 2)
+    XCTAssertTrue(s.split(for: target)!.contains(diff))
+    XCTAssertNotNil(s.activeTab(for: target)?.surface)  // the new pane is a terminal
+  }
+
+  func testContentTabIsNeverRunning() {
+    let s = makeSessions()
+    s.openDiffPreview(diffDesc("a.swift"), for: target)
+    XCTAssertFalse(s.isRunning(forTargetID: target.id))
   }
 }

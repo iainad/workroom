@@ -47,7 +47,7 @@ final class RunCommandTests: XCTestCase {
 
   /// The run terminal's surface view (so a test can simulate child-exit via `handleChildExited`).
   private func runView(_ store: AppStore, _ target: TerminalTarget) -> GhosttySurfaceView? {
-    store.runTabID(for: target.id).flatMap { store.terminals.tab($0, for: target)?.view }
+    store.runTabID(for: target.id).flatMap { store.terminals.tab($0, for: target)?.surface }
   }
 
   // MARK: Storage
