@@ -1130,22 +1130,22 @@ final class GhosttySurfaceView: NSView {
   // unwind: closing a pane frees its surface, and doing that mid-event (while `rightMouseDown` still
   // holds a surface pointer for its balancing RELEASE) is a use-after-free crash.
   @objc private func contextNewTerminal() {
-    DispatchQueue.main.async { AppStore.shared.newTerminalInSelectedTarget() }
+    DispatchQueue.main.async { WindowRegistry.shared.keyStore?.newTerminalInSelectedTarget() }
   }
   @objc private func contextCloseTerminal() {
-    DispatchQueue.main.async { AppStore.shared.closeCurrentTerminalTab() }
+    DispatchQueue.main.async { WindowRegistry.shared.keyStore?.closeCurrentTerminalTab() }
   }
   @objc private func contextSplitRight() {
-    DispatchQueue.main.async { AppStore.shared.splitFocusedRight() }
+    DispatchQueue.main.async { WindowRegistry.shared.keyStore?.splitFocusedRight() }
   }
   @objc private func contextSplitLeft() {
-    DispatchQueue.main.async { AppStore.shared.splitFocusedLeft() }
+    DispatchQueue.main.async { WindowRegistry.shared.keyStore?.splitFocusedLeft() }
   }
   @objc private func contextSplitDown() {
-    DispatchQueue.main.async { AppStore.shared.splitFocusedDown() }
+    DispatchQueue.main.async { WindowRegistry.shared.keyStore?.splitFocusedDown() }
   }
   @objc private func contextSplitUp() {
-    DispatchQueue.main.async { AppStore.shared.splitFocusedUp() }
+    DispatchQueue.main.async { WindowRegistry.shared.keyStore?.splitFocusedUp() }
   }
 
   @objc func paste(_ sender: Any?) {

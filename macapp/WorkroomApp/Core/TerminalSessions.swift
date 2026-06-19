@@ -196,6 +196,12 @@ final class TerminalSessions: ObservableObject {
   /// terminal-subtree expand flag when a close drops a target below the 2-tab disclosure threshold).
   func tabCount(forTargetID id: TerminalTarget.ID) -> Int { (tabsByTarget[id] ?? [:]).count }
 
+  /// Whether any target owns the tab `id`. Tab ids are unique across windows, so `WindowRegistry`
+  /// uses this to route an OS-notification click to the window that owns the tab (issue #70).
+  func containsTab(_ id: TerminalTab.ID) -> Bool {
+    tabsByTarget.values.contains { $0[id] != nil }
+  }
+
   /// The set of target ids that currently own at least one terminal — the "active" targets backing
   /// the Workrooms View tab bar (issue #23). Filtered on **non-empty** because `closeTab` leaves an
   /// emptied target as `[:]` (key present) while `reap` removes the key entirely; both must read as

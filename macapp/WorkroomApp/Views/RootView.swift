@@ -185,21 +185,25 @@ struct RootView: View {
     // Only ever populated while the inspector is closed, so it never overlaps the open inspector.
     .overlay(alignment: .bottomTrailing) { ToastStack() }
     .onAppear {
-      // Wire the chokepoint's terminal step once: ThemeService owns theme application, the surface
-      // iteration stays in TerminalSessions (issue #36).
-      ThemeService.shared.onApplyTerminals = { [weak terminals = store.terminals] force in
-        terminals?.applyThemeToAll(force: force)
-      }
+      // Register this window's terminals for theme sweeps — every window stays themed when the theme
+      // changes (issue #70/#36; ThemeService owns application, the surface iteration stays in
+      // TerminalSessions). Weakly held, so a closed window drops out on its own.
+      ThemeService.shared.registerTerminals(store.terminals)
       applyAppearance()
     }
+    .onDisappear { ThemeService.shared.unregisterTerminals(store.terminals) }
     .onChange(of: theme) { _ in applyAppearance() }
+    // Present only in the key window — the notification is broadcast to every window's RootView, so
+    // without this guard the sheet would pop in all of them (issue #70, OV #6).
     .onReceive(NotificationCenter.default.publisher(for: .showThemePicker)) { _ in
+      guard store.hostWindow?.isKeyWindow ?? false else { return }
       showThemePicker = true
     }
     .sheet(isPresented: $showThemePicker) {
       ThemePicker(presentedAsSheet: true)
     }
     .onReceive(NotificationCenter.default.publisher(for: .showKeyboardShortcuts)) { _ in
+      guard store.hostWindow?.isKeyWindow ?? false else { return }
       showKeyboardShortcuts = true
     }
     .sheet(isPresented: $showKeyboardShortcuts) {

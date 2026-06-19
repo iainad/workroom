@@ -6,8 +6,10 @@ import UserNotifications
 @main
 struct WorkroomApp: App {
   @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
-  @StateObject private var store = AppStore.shared
   @StateObject private var updater = Updater()
+  /// App-level coordinator for the multi-window world (issue #70): key-window routing, per-window
+  /// store registration, run-command ownership, and the aggregated menu-bar/Dock notification count.
+  @StateObject private var registry = WindowRegistry.shared
   /// Whether to show the menu bar item (issue #33). Same key as the Settings checkbox, so toggling
   /// it there inserts/removes the item live.
   @Default(.showMenuBarItem) private var showMenuBarItem
@@ -25,15 +27,15 @@ struct WorkroomApp: App {
   }
 
   var body: some Scene {
-    WindowGroup {
-      RootView()
-        .environmentObject(store)
-        .environmentObject(store.notifications)
-        .environmentObject(store.terminals)
+    // Value-based scene (issue #70): SwiftUI mints one window — and one fresh `AppStore` — per
+    // `WindowSeed`, guaranteeing independent per-window state (and sidestepping the documented
+    // `@StateObject`-in-`WindowGroup` cross-window sharing bug). ⌘N opens a new seed; the launch
+    // window gets `.launch` (restores the saved selection).
+    WindowGroup(for: WindowSeed.self) { $seed in
+      RootWindow(seed: seed ?? .launch)
         .frame(minWidth: 900, minHeight: 560)
-        .task { await store.bootstrap() }
     }
-    .commands { WorkroomCommands(updater: updater, store: store) }
+    .commands { WorkroomCommands(updater: updater) }
 
     Settings {
       SettingsView()
@@ -47,13 +49,45 @@ struct WorkroomApp: App {
     // truth. Not gated to Release: two items when Debug + Release run side by side is harmless, and
     // the Debug build needs it to be QA-able (unlike the singleton ⌘§ hotkey).
     MenuBarExtra(isInserted: $showMenuBarItem) {
-      MenuBarNotificationsView()
-        .environmentObject(store)
-        .environmentObject(store.notifications)
+      MenuBarNotificationsView(registry: registry)
     } label: {
-      MenuBarLabel(notifications: store.notifications)
+      MenuBarLabel(registry: registry)
     }
     .menuBarExtraStyle(.window)
+  }
+}
+
+/// Identity for a window scene (issue #70). `restore` is true only for the window SwiftUI brings up
+/// at launch — combined with `ProjectStore.consumeInitialRestore()` that single window reapplies the
+/// persisted selection; every ⌘N window carries a fresh `restore == false` seed and opens blank.
+struct WindowSeed: Codable, Hashable {
+  let id: UUID
+  let restore: Bool
+  /// The launch window: a fresh id allowed to restore the saved selection.
+  static var launch: WindowSeed { WindowSeed(id: UUID(), restore: true) }
+}
+
+/// One window's root. The value-based `WindowGroup` gives each window its own `RootWindow`, so the
+/// `@StateObject` below is a fresh per-window `AppStore` sharing the one `ProjectStore`. It injects
+/// that store into the environment, exposes it to menu commands via `focusedSceneObject`, and
+/// registers the window↔store pair with `WindowRegistry` (issue #70).
+struct RootWindow: View {
+  let seed: WindowSeed
+  @StateObject private var store = AppStore(projectStore: .shared)
+
+  var body: some View {
+    RootView()
+      .environmentObject(store)
+      .environmentObject(store.notifications)
+      .environmentObject(store.terminals)
+      .focusedSceneObject(store)
+      .background(
+        WindowAccessor { window in
+          WindowRegistry.shared.register(window: window, store: store)
+          store.attachWindow(window)
+        }
+      )
+      .task { await store.bootstrap(restore: seed.restore) }
   }
 }
 
@@ -109,7 +143,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
       if flags == .command, let chars = event.charactersIgnoringModifiers,
         let digit = Int(chars), (1...9).contains(digit)
       {
-        Task { @MainActor in AppStore.shared.focusTerminalTab(at: digit - 1) }
+        Task { @MainActor in WindowRegistry.shared.keyStore?.focusTerminalTab(at: digit - 1) }
         return nil  // consume so it doesn't reach the terminal
       }
       // ⌥⌘1–9: switch to the Nth workroom tab (issue #23), the workroom-level counterpart to ⌘1–9.
@@ -118,7 +152,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
       // (Digit chars don't collide with the ⌥⌘R / arrow-key checks below.)
       if flags == [.command, .option], let chars = event.charactersIgnoringModifiers,
         let digit = Int(chars), (1...9).contains(digit),
-        MainActor.assumeIsolated({ AppStore.shared.focusWorkroomTab(at: digit - 1) })
+        MainActor.assumeIsolated({
+          WindowRegistry.shared.keyStore?.focusWorkroomTab(at: digit - 1) ?? false
+        })
       {
         return nil
       }
@@ -126,37 +162,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
       // before the terminal swallows it, like ⌘1–9. Consumed unconditionally (⌘R has no terminal use
       // we want to preserve); a no-op when nothing's selected / no command is configured.
       if flags == .command, event.charactersIgnoringModifiers?.lowercased() == "r" {
-        Task { @MainActor in AppStore.shared.runOrFocusRunCommand() }
+        Task { @MainActor in WindowRegistry.shared.keyStore?.runOrFocusRunCommand() }
         return nil
       }
       // ⇧⌘R: stop the selected workroom's run command if it's running (issue #7). Caught here (not
       // just the menu key-equivalent) so it fires reliably before the terminal, like ⌘R. No-op when
       // nothing's running; consumed regardless (it's reserved in `isAppShortcut` anyway).
       if flags == [.command, .shift], event.charactersIgnoringModifiers?.lowercased() == "r" {
-        Task { @MainActor in AppStore.shared.stopSelectedRunCommand() }
+        Task { @MainActor in WindowRegistry.shared.keyStore?.stopSelectedRunCommand() }
         return nil
       }
       // ⌥⌘R: restart the selected workroom's run command if it's running (issue #7). Caught here for
       // reliability, like ⌘R/⇧⌘R. No-op when nothing's running. (The arrow-key checks below match by
       // keyCode, so "r" doesn't collide with tab/pane navigation.)
       if flags == [.command, .option], event.charactersIgnoringModifiers?.lowercased() == "r" {
-        Task { @MainActor in AppStore.shared.restartSelectedRunCommand() }
+        Task { @MainActor in WindowRegistry.shared.keyStore?.restartSelectedRunCommand() }
         return nil
       }
       // ⌥⌘←/→: previous/next terminal tab (issue #29). Caught here like ⌘1–9 so it fires before the
       // terminal; consumed when it switches a tab, and reserved in `isAppShortcut` anyway so it never
       // reaches the terminal as input. (⌥⌘↑/↓ are unbound — they pass through to the terminal.)
       if flags == [.command, .option], event.keyCode == 123 || event.keyCode == 124,
-        MainActor.assumeIsolated({ AppStore.shared.cycleTerminalTab(forward: event.keyCode == 124) }
-        )
+        MainActor.assumeIsolated({
+          WindowRegistry.shared.keyStore?.cycleTerminalTab(forward: event.keyCode == 124) ?? false
+        })
       {
         return nil
       }
       // ⇧⌥⌘←/→: previous/next workroom tab (issue #29), the workroom-level counterpart to ⌥⌘←/→.
       // Consumed when it switches; reserved in `isAppShortcut` anyway, like ⌥⌘←/→.
       if flags == [.command, .option, .shift], event.keyCode == 123 || event.keyCode == 124,
-        MainActor.assumeIsolated({ AppStore.shared.cycleWorkroomTab(forward: event.keyCode == 124) }
-        )
+        MainActor.assumeIsolated({
+          WindowRegistry.shared.keyStore?.cycleWorkroomTab(forward: event.keyCode == 124) ?? false
+        })
       {
         return nil
       }
@@ -166,7 +204,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
       // down 125 / up 126.)
       let arrows: [UInt16: PaneDirection] = [123: .left, 124: .right, 125: .down, 126: .up]
       if flags == [.command, .control], let direction = arrows[event.keyCode],
-        MainActor.assumeIsolated({ AppStore.shared.focusPane(direction) })
+        MainActor.assumeIsolated({ WindowRegistry.shared.keyStore?.focusPane(direction) ?? false })
       {
         return nil
       }
@@ -214,7 +252,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
       // The source fires on the main queue, so we're main-actor-isolated in practice (same pattern
       // as the NSEvent monitor above) — assert it so we can touch the store synchronously.
       MainActor.assumeIsolated {
-        AppStore.shared.gracefullyStopAllRunCommands(timeout: 4) {
+        WindowRegistry.shared.gracefullyStopAllWindows(timeout: 4) {
           exit(EXIT_SUCCESS)
         }
       }
@@ -273,7 +311,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
       let tabID = (info["tabID"] as? String).flatMap(UUID.init(uuidString:))
       let notifID = (info["notifID"] as? String).flatMap(UUID.init(uuidString:))
       Task { @MainActor in
-        AppStore.shared.openTerminal(targetID: targetID, tabID: tabID, notifID: notifID)
+        // Route to the window that owns this tab (tab ids are unique across windows, issue #70),
+        // falling back to the key window; bring it forward, then open the terminal there.
+        let registry = WindowRegistry.shared
+        let store = tabID.flatMap { registry.ownerOf(tabID: $0) } ?? registry.keyStore
+        store?.hostWindow?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        store?.openTerminal(targetID: targetID, tabID: tabID, notifID: notifID)
       }
     }
     completionHandler()
@@ -315,9 +359,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
   @MainActor
   private func stopRunCommandsThenTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply
   {
-    let store = AppStore.shared
-    guard store.hasLiveRunCommand else { return .terminateNow }
-    store.gracefullyStopAllRunCommands(timeout: 5) {
+    let registry = WindowRegistry.shared
+    // Mark the app as terminating so a window's own close handler doesn't also prompt/stop (#70).
+    registry.isTerminating = true
+    guard registry.hasAnyLiveRunCommand else { return .terminateNow }
+    // Stop every window's run commands, not just the focused one's.
+    registry.gracefullyStopAllWindows(timeout: 5) {
       sender.reply(toApplicationShouldTerminate: true)
     }
     return .terminateLater
@@ -457,10 +504,11 @@ extension FocusedValues {
 /// regardless of which pane has focus.
 struct WorkroomCommands: Commands {
   @ObservedObject var updater: Updater
-  /// The shared store, so the View ▸ Projects toggle can both *drive* and *reflect* the sidebar's
-  /// visibility — its checkmark tracks `sidebarVisible` live (a `Commands` body re-evaluates when an
-  /// `@ObservedObject` it holds changes).
-  @ObservedObject var store: AppStore
+  /// The focused window's store (issue #70). Optional — nil when no Workroom window is key (e.g. a
+  /// dialog is frontmost); actions then no-op and toggle bindings read false. `@FocusedObject`
+  /// re-evaluates this `Commands` body when the focused store changes, so checkmarks like Projects
+  /// track the focused window's `sidebarVisible` live (the role the old `@ObservedObject` played).
+  @FocusedObject private var store: AppStore?
   @FocusedValue(\.workroomSelected) private var workroomSelected
   @FocusedValue(\.hasTerminal) private var hasTerminal
   @FocusedValue(\.hasNotifications) private var hasNotifications
@@ -486,6 +534,16 @@ struct WorkroomCommands: Commands {
   // Drives the quick dark/light toggle (⌘⇧L, issue #57). RootView's `.onChange(of: theme)` applies
   // it through the single theme chokepoint; same key as the sidebar's 3-state cycle button.
   @Default(.theme) private var theme
+  /// Opens a new Workroom window (issue #70) — a fresh `WindowSeed` so the window starts blank.
+  @Environment(\.openWindow) private var openWindow
+
+  /// A `Binding<Bool>` onto a `Bool` property of the focused store — reads false and ignores writes
+  /// when no window is focused (issue #70). Backs the menu toggles that drive per-window state.
+  private func storeFlag(_ keyPath: ReferenceWritableKeyPath<AppStore, Bool>) -> Binding<Bool> {
+    Binding(
+      get: { store?[keyPath: keyPath] ?? false },
+      set: { store?[keyPath: keyPath] = $0 })
+  }
 
   var body: some Commands {
     CommandGroup(after: .appInfo) {
@@ -525,7 +583,7 @@ struct WorkroomCommands: Commands {
     // sidebar is visible; it binds `store.sidebarVisible`, which drives the split view's column
     // visibility. Keeps the conventional ⌃⌘S shortcut.
     CommandGroup(replacing: .sidebar) {
-      Toggle("Projects", isOn: $store.sidebarVisible)
+      Toggle("Projects", isOn: storeFlag(\.sidebarVisible))
         .keyboardShortcut("s", modifiers: [.command, .control])
     }
 
@@ -537,13 +595,13 @@ struct WorkroomCommands: Commands {
       Toggle(
         "Changes",
         isOn: Binding(
-          get: { showNotifications && !store.changesSectionCollapsed },
+          get: { showNotifications && !(store?.changesSectionCollapsed ?? true) },
           set: { on in
             if on {
               showNotifications = true
-              store.changesSectionCollapsed = false
+              store?.changesSectionCollapsed = false
             } else {
-              store.changesSectionCollapsed = true
+              store?.changesSectionCollapsed = true
             }
           })
       )
@@ -554,13 +612,13 @@ struct WorkroomCommands: Commands {
       Toggle(
         "Pull Request",
         isOn: Binding(
-          get: { showNotifications && !store.prSectionCollapsed },
+          get: { showNotifications && !(store?.prSectionCollapsed ?? true) },
           set: { on in
             if on {
               showNotifications = true
-              store.prSectionCollapsed = false
+              store?.prSectionCollapsed = false
             } else {
-              store.prSectionCollapsed = true
+              store?.prSectionCollapsed = true
             }
           })
       )
@@ -572,13 +630,13 @@ struct WorkroomCommands: Commands {
       Toggle(
         "Notifications",
         isOn: Binding(
-          get: { showNotifications && !store.notificationsSectionCollapsed },
+          get: { showNotifications && !(store?.notificationsSectionCollapsed ?? true) },
           set: { on in
             if on {
               showNotifications = true
-              store.notificationsSectionCollapsed = false
+              store?.notificationsSectionCollapsed = false
             } else {
-              store.notificationsSectionCollapsed = true
+              store?.notificationsSectionCollapsed = true
             }
           })
       )
@@ -602,15 +660,15 @@ struct WorkroomCommands: Commands {
       // Split the focused pane with a new terminal beside it (issue #3): ⌘D right, ⇧⌘D down; left/up
       // have no standard key, so they're menu-only.
       Divider()
-      Button("Split Right") { AppStore.shared.splitFocusedRight() }
+      Button("Split Right") { store?.splitFocusedRight() }
         .keyboardShortcut("d", modifiers: .command)
         .disabled(hasTerminal != true)
-      Button("Split Left") { AppStore.shared.splitFocusedLeft() }
+      Button("Split Left") { store?.splitFocusedLeft() }
         .disabled(hasTerminal != true)
-      Button("Split Down") { AppStore.shared.splitFocusedDown() }
+      Button("Split Down") { store?.splitFocusedDown() }
         .keyboardShortcut("d", modifiers: [.command, .shift])
         .disabled(hasTerminal != true)
-      Button("Split Up") { AppStore.shared.splitFocusedUp() }
+      Button("Split Up") { store?.splitFocusedUp() }
         .disabled(hasTerminal != true)
 
       // Separate our View items from the system "Enter Full Screen" item that follows.
@@ -622,13 +680,13 @@ struct WorkroomCommands: Commands {
     // discoverability (the monitor consumes them, so no double-fire). Run is disabled when no command
     // is configured; Restart/Stop only while it's running.
     CommandMenu("Run") {
-      Button("Run") { AppStore.shared.runOrFocusRunCommand() }
+      Button("Run") { store?.runOrFocusRunCommand() }
         .keyboardShortcut("r", modifiers: .command)
         .disabled(hasRunCommand != true)
-      Button("Restart") { AppStore.shared.restartSelectedRunCommand() }
+      Button("Restart") { store?.restartSelectedRunCommand() }
         .keyboardShortcut("r", modifiers: [.command, .option])
         .disabled(runCommandActive != true)
-      Button("Stop") { AppStore.shared.stopSelectedRunCommand() }
+      Button("Stop") { store?.stopSelectedRunCommand() }
         .keyboardShortcut("r", modifiers: [.command, .shift])
         .disabled(runCommandActive != true)
     }
@@ -642,22 +700,24 @@ struct WorkroomCommands: Commands {
       Toggle("Copy on Select", isOn: $copyOnSelect)
     }
 
-    // Drop the WindowGroup's auto-provided File ▸ New Window (⌘N). Workroom is single-window
-    // (see NSWindow.allowsAutomaticWindowTabbing = false) — a second window just spawns a
-    // redundant sidebar. Our own File-menu items below anchor at `after: .newItem`, so they
-    // still render even though this group's default content is now empty.
-    CommandGroup(replacing: .newItem) {}
+    // File ▸ New Window (⌘N, issue #70): opens a window with its own independent state — no open
+    // workrooms or tabs, only the shared project list (a fresh `WindowSeed` so it starts blank).
+    // Replaces the standard WindowGroup item so the label/shortcut are explicit.
+    CommandGroup(replacing: .newItem) {
+      Button("New Window") { openWindow(value: WindowSeed(id: UUID(), restore: false)) }
+        .keyboardShortcut("n", modifiers: .command)
+    }
 
     CommandGroup(after: .newItem) {
       Button("New Project…") {
-        AppStore.shared.requestAddProject = true
+        store?.requestAddProject = true
       }
       .keyboardShortcut("o", modifiers: .command)
 
       Divider()
 
       Button("New Terminal") {
-        AppStore.shared.newTerminalInSelectedTarget()
+        store?.newTerminalInSelectedTarget()
       }
       .keyboardShortcut("t", modifiers: .command)
       .disabled(workroomSelected != true)
@@ -675,7 +735,7 @@ struct WorkroomCommands: Commands {
       // ⌘W: "Close Terminal" sits above the standard File ▸ Close, so it wins the ⌘W
       // equivalent while enabled (Close keeps no shortcut).
       Button("Close Terminal") {
-        AppStore.shared.closeCurrentTerminalTab()
+        store?.closeCurrentTerminalTab()
       }
       .keyboardShortcut("w", modifiers: .command)
       .disabled(hasTerminal != true)
@@ -687,11 +747,11 @@ struct WorkroomCommands: Commands {
       // enabled state tracks selection live (the `@ObservedObject store` re-evaluates this body).
       // Disabled with no selection or a missing directory.
       Button("Reveal in Finder") {
-        if let path = store.selectedTarget?.path {
+        if let path = store?.selectedTarget?.path {
           NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
         }
       }
-      .disabled(store.selectedTarget == nil || store.selectedTarget?.isMissing == true)
+      .disabled(store?.selectedTarget == nil || store?.selectedTarget?.isMissing == true)
 
       // Gate the close-terminal confirmation (default on). A set-and-forget preference, so a divider
       // sets it apart from the File actions above (like the Quit toggle); no shortcut. Binds the same
@@ -705,10 +765,10 @@ struct WorkroomCommands: Commands {
     // the ⇧⌘N jump to the oldest pending notification. ⌘[ / ⌘] are reserved from the terminal in
     // GhosttySurfaceView.isAppShortcut so these key equivalents fire.
     CommandMenu("Go") {
-      Button("Back") { AppStore.shared.navigateBack() }
+      Button("Back") { store?.navigateBack() }
         .keyboardShortcut("[", modifiers: .command)
         .disabled(canNavigateBack != true)
-      Button("Forward") { AppStore.shared.navigateForward() }
+      Button("Forward") { store?.navigateForward() }
         .keyboardShortcut("]", modifiers: .command)
         .disabled(canNavigateForward != true)
 
@@ -716,10 +776,10 @@ struct WorkroomCommands: Commands {
       // menu key-equivalent fires before the terminal, so it works even in an enhanced-keyboard TUI.
       // Disabled when no terminal is focused.
       Divider()
-      Button("Scroll to Top") { AppStore.shared.scrollFocusedTerminalToTop() }
+      Button("Scroll to Top") { store?.scrollFocusedTerminalToTop() }
         .keyboardShortcut(.upArrow, modifiers: .command)
         .disabled(hasTerminal != true)
-      Button("Scroll to Bottom") { AppStore.shared.scrollFocusedTerminalToBottom() }
+      Button("Scroll to Bottom") { store?.scrollFocusedTerminalToBottom() }
         .keyboardShortcut(.downArrow, modifiers: .command)
         .disabled(hasTerminal != true)
 
@@ -728,16 +788,16 @@ struct WorkroomCommands: Commands {
       // monitor consumes them, so no double-fire — like the Run menu). Disabled when there's nothing
       // to cycle between (≤1 tab).
       Divider()
-      Button("Next Terminal Tab") { AppStore.shared.cycleTerminalTab(forward: true) }
+      Button("Next Terminal Tab") { store?.cycleTerminalTab(forward: true) }
         .keyboardShortcut(.rightArrow, modifiers: [.command, .option])
         .disabled(multipleTerminalTabs != true)
-      Button("Previous Terminal Tab") { AppStore.shared.cycleTerminalTab(forward: false) }
+      Button("Previous Terminal Tab") { store?.cycleTerminalTab(forward: false) }
         .keyboardShortcut(.leftArrow, modifiers: [.command, .option])
         .disabled(multipleTerminalTabs != true)
-      Button("Next Workroom Tab") { AppStore.shared.cycleWorkroomTab(forward: true) }
+      Button("Next Workroom Tab") { store?.cycleWorkroomTab(forward: true) }
         .keyboardShortcut(.rightArrow, modifiers: [.command, .option, .shift])
         .disabled(multipleWorkroomTabs != true)
-      Button("Previous Workroom Tab") { AppStore.shared.cycleWorkroomTab(forward: false) }
+      Button("Previous Workroom Tab") { store?.cycleWorkroomTab(forward: false) }
         .keyboardShortcut(.leftArrow, modifiers: [.command, .option, .shift])
         .disabled(multipleWorkroomTabs != true)
 
@@ -745,7 +805,7 @@ struct WorkroomCommands: Commands {
 
       // Jump to the run terminal if one exists (issue #7) — navigation only, so it's named distinctly
       // from the Run menu's "Run" (which starts the command). Disabled when there's none to go to.
-      Button("Run Terminal") { AppStore.shared.revealRunTerminal() }
+      Button("Run Terminal") { store?.revealRunTerminal() }
         .disabled(hasRunTerminal != true)
 
       Divider()
@@ -753,7 +813,7 @@ struct WorkroomCommands: Commands {
       // ⇧⌘N: jump to the oldest pending notification (bottom of the panel). Opening dismisses it,
       // so repeated presses walk the backlog oldest→newest. Disabled when there are none.
       Button("Next Notification") {
-        AppStore.shared.openOldestNotification()
+        store?.openOldestNotification()
       }
       .keyboardShortcut("n", modifiers: [.command, .shift])
       .disabled(hasNotifications != true)

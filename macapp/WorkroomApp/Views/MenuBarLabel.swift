@@ -6,10 +6,12 @@ import SwiftUI
 /// in the menu bar's text colour beside it. Observing the store here (not in the non-View `App`)
 /// is what makes the menu bar item update live as notifications arrive and clear.
 struct MenuBarLabel: View {
-  @ObservedObject var notifications: NotificationCenterStore
+  /// The app-level registry, which sums every window's unread count (issue #70). Observed so the
+  /// menu-bar item updates live as notifications arrive and clear in any window.
+  @ObservedObject var registry: WindowRegistry
 
   var body: some View {
-    let total = notifications.total
+    let total = registry.aggregateUnread
     if total > 0 {
       HStack(spacing: 3) {
         Image("MenuBarIcon")

@@ -40,4 +40,15 @@ final class ProjectStore: ObservableObject {
 
   /// Project paths with an in-flight create/delete (for per-row progress + disabling).
   @Published var busyProjects: Set<String> = []
+
+  /// Whether the persisted last-session selection is still up for grabs (issue #70). The first
+  /// window to launch with `restore == true` consumes it and restores the saved selection; every
+  /// other window — including every ⌘N window — gets `false` and so starts blank.
+  private var pendingInitialRestore = true
+
+  /// Claim the one-time launch restore. Returns true exactly once (for the first restoring window).
+  func consumeInitialRestore() -> Bool {
+    defer { pendingInitialRestore = false }
+    return pendingInitialRestore
+  }
 }

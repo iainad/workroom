@@ -75,11 +75,16 @@ final class ThemeService {
   /// result computed against the old theme is discarded as stale.
   private(set) var generation: Int = 0
 
-  /// Set once at startup (by the app) to the terminal re-theme step — keeps the surface iteration
-  /// in `TerminalSessions` while `applyActiveTheme()` stays the single chokepoint every trigger
-  /// routes through. `force` re-themes even when the appearance is unchanged (a same-mode theme
-  /// switch).
-  var onApplyTerminals: ((_ force: Bool) -> Void)?
+  /// Every window's live terminal sessions (issue #70). Each window registers its `TerminalSessions`
+  /// here so a theme change re-themes terminals in *all* windows — the old single `onApplyTerminals`
+  /// callback was overwritten by the last window to appear, leaving other windows un-themed (OV #5).
+  /// Weak, so a closed window drops out automatically. The surface iteration stays in
+  /// `TerminalSessions`; `applyActiveTheme()` remains the single chokepoint every trigger routes through.
+  private let terminalSinks = NSHashTable<TerminalSessions>.weakObjects()
+
+  /// Register/unregister a window's terminal sessions for theme sweeps (issue #70).
+  func registerTerminals(_ sessions: TerminalSessions) { terminalSinks.add(sessions) }
+  func unregisterTerminals(_ sessions: TerminalSessions) { terminalSinks.remove(sessions) }
 
   init() {
     let isDark = Self.isCurrentAppearanceDark()
@@ -120,7 +125,7 @@ final class ThemeService {
     let isDark = Self.isCurrentAppearanceDark()
     tokens = ThemeTokens(preview: Self.themePreview(named: Self.activeThemeName(isDark: isDark)))
     generation &+= 1
-    onApplyTerminals?(force)
+    for sessions in terminalSinks.allObjects { sessions.applyThemeToAll(force: force) }
     NotificationCenter.default.post(name: .themeDidChange, object: nil)
   }
 

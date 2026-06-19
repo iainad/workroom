@@ -45,14 +45,28 @@ struct PendingProjectDeletion: Identifiable {
 /// the main thread inside WorkroomCLI), keeping the UI responsive.
 @MainActor
 final class AppStore: ObservableObject {
-  static let shared = AppStore(projectStore: .shared)
-
   /// Shared, app-wide project data (issue #70). Holds the project list and everything derived from
   /// it that is identical across windows (root labels, VCS/CI status cache, GitHub-CLI status, busy
   /// set). The properties below proxy through to it, and `init` re-publishes its `objectWillChange`,
   /// so views/menus observing this store still re-render when the shared data changes.
   let projectStore: ProjectStore
   private var projectStoreObservation: AnyCancellable?
+
+  /// The `NSWindow` hosting this store, resolved once the view tree is in a window (issue #70). Weak:
+  /// the window outlives the store's need for it, and the registry holds the authoritative mapping.
+  weak var hostWindow: NSWindow?
+  /// Retains the close-guard delegate proxy (the window holds its delegate weakly) for this window's
+  /// lifetime (issue #70, A3).
+  private var closeGuard: WindowCloseGuard?
+
+  /// Only the active (last-key) window writes the shared sidebar prefs to UserDefaults, so multiple
+  /// windows don't clobber each other's selection / collapse / tab order; the single restored window
+  /// reads them on launch (issue #70, CQ1). `lastActiveStore` is modal-safe (a quit alert / Settings
+  /// becoming key never changes it). Defaults to `true` until the first window registers, so the
+  /// initial single window persists from the very first edit.
+  private var persistsSidebarPrefs: Bool {
+    WindowRegistry.shared.lastActiveStore.map { $0 === self } ?? true
+  }
 
   /// The list of configured projects — proxied to the shared `ProjectStore` so every window sees the
   /// same list. (Storage moved out of `AppStore`; the get/set proxy keeps all existing call sites,
@@ -68,7 +82,9 @@ final class AppStore: ObservableObject {
   /// and restored in `apply()`.
   @Published var selectedTargetID: SidebarID? {
     didSet {
-      Defaults[.sidebarSelection] = Self.targetIDString(for: selectedTargetID)
+      if persistsSidebarPrefs {
+        Defaults[.sidebarSelection] = Self.targetIDString(for: selectedTargetID)
+      }
       // Record the new location for back/forward (issue #26), unless we're replaying history.
       if !isNavigatingHistory { recordCurrentLocation() }
       // Freshen the newly-selected workroom's status (incl. CI) — debounced so arrow-key
@@ -84,7 +100,7 @@ final class AppStore: ObservableObject {
   /// expand/collapse appeared to "stick" until you moved the mouse. `@Published` fires
   /// `objectWillChange` synchronously, so the tree updates on the click itself. Persisted via `didSet`.
   @Published var collapsedProjects: Set<String> = Defaults[.collapsedProjects] {
-    didSet { Defaults[.collapsedProjects] = collapsedProjects }
+    didSet { if persistsSidebarPrefs { Defaults[.collapsedProjects] = collapsedProjects } }
   }
   /// Remembered workroom tab-bar order (issue #23), as `TerminalTarget.ID` strings. `@Published`
   /// (not read via `@Default` in the view) because a `@Default` write doesn't reliably re-render the
@@ -92,7 +108,7 @@ final class AppStore: ObservableObject {
   /// back to its old slot. Persisted via `didSet`; initialised from `Defaults`. Stale ids resolve away
   /// in `orderedWorkroomTargets`, so it's self-healing.
   @Published var workroomTabOrder: [TerminalTarget.ID] = Defaults[.workroomTabOrder] {
-    didSet { Defaults[.workroomTabOrder] = workroomTabOrder }
+    didSet { if persistsSidebarPrefs { Defaults[.workroomTabOrder] = workroomTabOrder } }
   }
   /// Whether the projects sidebar column is visible. The single source of truth for the
   /// `NavigationSplitView` column visibility *and* the View ▸ Projects checkmark — a bare AppKit
@@ -274,9 +290,9 @@ final class AppStore: ObservableObject {
   /// successful load (see `apply`). Consumed there so a later refresh can't resurrect it.
   private var pendingRestoreSelection: TerminalTarget.ID?
 
-  /// `internal` (not `private`) so unit tests can build a non-singleton store (`AppStore()`),
-  /// inject `projects`, and drive the real recording/navigation paths. Production always uses the
-  /// `shared` singleton; `init` does no CLI work (only `bootstrap()`/`load()` do).
+  /// Production builds one store per window (issue #70), each sharing `ProjectStore.shared`; tests
+  /// build an isolated `AppStore()` (own fresh `ProjectStore`), inject `projects`, and drive the real
+  /// recording/navigation paths. `init` does no CLI work (only `bootstrap()`/`load()` do).
   init(projectStore: ProjectStore? = nil) {
     // Default to a fresh, isolated store (so `AppStore()` in tests never touches the singleton);
     // production passes `.shared`. Constructed here in the main-actor init body, not as a default
@@ -326,14 +342,30 @@ final class AppStore: ObservableObject {
     // view: see `NotificationCenterStore.onTotalChange` for why a view-driven badge misses
     // background notifications. `DockBadge` draws into the tile's `contentView` (not `badgeLabel`,
     // which a linked framework suppresses here). Captures no `self`, so there's no retain cycle.
-    notifications.onTotalChange = { count in
-      DockBadge.apply(count)
+    notifications.onTotalChange = { _ in
+      // Combined count across all windows (issue #70) — the registry sums every window's total and
+      // updates the menu-bar label + Dock badge, so a second window can't clobber the first's count.
+      WindowRegistry.shared.recomputeBadge()
     }
     // A click into a co-displayed split pane's terminal focuses that workroom (issue #23 follow-up),
     // so commands target it. History-suppressed (the routing method) — glancing between panes isn't
     // navigation.
     terminals.onSurfaceFocused = { [weak self] targetID in
       self?.focusWorkroomMemberFromSurface(targetID)
+    }
+  }
+
+  /// Bind this store to its host `NSWindow` once the view tree resolves it (issue #70). Idempotent —
+  /// `WindowAccessor` may resolve the same window more than once.
+  func attachWindow(_ window: NSWindow) {
+    hostWindow = window
+    // Intercept the window close so a live run command is confirmed + gracefully stopped before the
+    // window (and its surfaces) tear down — otherwise closing a window orphans its dev server, the
+    // per-window form of issue #7 (issue #70, A3). A forwarding proxy keeps SwiftUI's own delegate.
+    if !(window.delegate is WindowCloseGuard) {
+      let guardDelegate = WindowCloseGuard(store: self, forwarding: window.delegate)
+      closeGuard = guardDelegate
+      window.delegate = guardDelegate
     }
   }
 
@@ -961,7 +993,15 @@ final class AppStore: ObservableObject {
     case .stopped:
       restartRunCommand(for: target)  // re-run a stopped-but-open tab (close + respawn)
     case .armed, .none:
-      startRunCommand(for: target)
+      // Single-owner across windows (issue #70, OV-2): if another window already runs this
+      // workroom's command, focus its run terminal rather than forking a second server on the same
+      // port (which the app's own pid/process-group lifecycle would then fight over).
+      if let owner = WindowRegistry.shared.runOwner(for: target.id, excluding: self) {
+        owner.hostWindow?.makeKeyAndOrderFront(nil)
+        owner.revealRunTerminal()
+      } else {
+        startRunCommand(for: target)
+      }
     }
   }
 
@@ -1120,7 +1160,7 @@ final class AppStore: ObservableObject {
   /// can't race libghostty's teardown (the same reason quit avoids a mass-free). The surfaces are
   /// captured for the wait, keeping them alive to poll. The command stays in the foreground — no
   /// backgrounding — so a dev server's keyboard shortcuts / `binding.pry` keep working.
-  private func gracefullyStopRuns(
+  func gracefullyStopRuns(
     _ targetIDs: [TerminalTarget.ID], timeout: TimeInterval = 6, then: @escaping () -> Void
   ) {
     var views: [GhosttySurfaceView] = []
@@ -1271,13 +1311,27 @@ final class AppStore: ObservableObject {
 
   /// Initial launch: render config-only (instant, no VCS calls), then refresh warnings.
   /// Branch labels hydrate asynchronously off both passes (see `resolveBranches`).
-  func bootstrap() async {
+  /// Load this window's view of the projects. `restore` is true only for the window SwiftUI restores
+  /// at launch; combined with the one-shot `consumeInitialRestore()` it means exactly one window
+  /// reapplies the persisted selection and every other (incl. every ⌘N) window starts blank (#70).
+  func bootstrap(restore: Bool = true) async {
     if UITestFixture.isActive {
       loadFixture()
       return
     }
-    await load(warnings: "none")
-    await load(warnings: "fast")
+    // Drop the saved selection unless this is the one launch window allowed to restore it, so a new
+    // window opens with nothing selected (no workroom, no terminal).
+    if !(restore && projectStore.consumeInitialRestore()) {
+      pendingRestoreSelection = nil
+    }
+    if projectStore.projects.isEmpty {
+      await load(warnings: "none")
+      await load(warnings: "fast")
+    } else {
+      // Another window already loaded the shared project list — don't refork the CLI (issue #70,
+      // OV #2). Just resolve this (possibly blank) window's selection against the existing list.
+      apply(projectStore.projects)
+    }
   }
 
   func reload() async {
@@ -1574,31 +1628,53 @@ final class AppStore: ObservableObject {
   /// matches reality; on failure we reload (so it reappears if it still exists) and
   /// surface the error.
   func deleteWorkroom(_ workroom: Workroom, in project: Project) {
+    let sid = SidebarID.workroom(project: project.path, name: workroom.name)
     let targetID = TerminalTarget.workroomID(project: project.path, name: workroom.name)
-    // Capture the live run surface (if any) BEFORE tearing anything down: we Ctrl-C it and let the
-    // dev server exit before reaping the surface + deleting the worktree, so it isn't orphaned by the
-    // bare reap (a PTY hangup — SIGHUP — which Puma ignores) and left running against a deleted
-    // directory (issue #7).
-    // Optimistic: drop it from the sidebar model + selection/split/status now (snappy UI). The
-    // terminals stay alive for the graceful stop; reap + VCS teardown follow once the process exits.
+    // Optimistic shared-model removal, visible in every window: drop it from the project list and its
+    // shared VCS/CI status now (snappy UI). Terminals stay alive for the graceful stop; the reap +
+    // VCS teardown follow once the process exits, so a dev server isn't orphaned against a deleted dir.
     removeWorkroomLocally(workroom, in: project)
-    // Drop the deleted workroom from the split first (it re-points selection to a survivor), then fall
-    // back to clearing selection if it was the deleted workroom (issue #23 follow-up self-heal).
-    removeWorkroomSplitMember(.workroom(project: project.path, name: workroom.name))
-    if selectedTargetID == .workroom(project: project.path, name: workroom.name) {
-      selectedTargetID = nil
+    workroomStatuses[sid] = nil
+    // Clear the deleted workroom from EVERY window's split + selection (issue #70, OV #7) — another
+    // window may have had it open/selected; "stale-id self-heal" only fixes model lookup, not live
+    // surfaces or processes.
+    let stores = affectedStores
+    for store in stores { store.detachTarget(sid) }
+    // Ctrl-C the run command and reap the surfaces in every window that held this workroom, then run
+    // the VCS teardown once — no dev server in any window left running against the deleted directory
+    // (issue #7/#70). No live run command anywhere → immediate.
+    stopRunsAcrossWindows([targetID], stores: stores) { [weak self] in
+      for store in stores { store.reapTargetLocally(targetID) }
+      self?.startWorkroomTeardown(workroom, in: project)
     }
-    // Drop the gone workroom's VCS/CI status so a stale badge can't linger (issue #24).
-    workroomStatuses[.workroom(project: project.path, name: workroom.name)] = nil
+  }
 
-    let finishTeardown = { [weak self] in
-      guard let self else { return }
-      self.reapTargetLocally(targetID)
-      self.startWorkroomTeardown(workroom, in: project)
+  /// Self plus every other window's store, de-duplicated by identity (issue #70). In tests no windows
+  /// are registered, so this is just `[self]` and single-window behaviour is unchanged.
+  private var affectedStores: [AppStore] {
+    var seen: Set<ObjectIdentifier> = [ObjectIdentifier(self)]
+    return [self]
+      + WindowRegistry.shared.allStores.filter { seen.insert(ObjectIdentifier($0)).inserted }
+  }
+
+  /// Per-window: drop a target from this window's split, then clear selection if it pointed there
+  /// (issue #70). Used by the delete flows to clean up every window that held the target.
+  func detachTarget(_ sid: SidebarID) {
+    removeWorkroomSplitMember(sid)
+    if selectedTargetID == sid { selectedTargetID = nil }
+  }
+
+  /// Gracefully stop `ids`' run commands across the given windows, then run `then` once all have
+  /// stopped (issue #7/#70) — so the VCS teardown never deletes a directory a dev server still holds.
+  private func stopRunsAcrossWindows(
+    _ ids: [TerminalTarget.ID], stores: [AppStore], then: @escaping () -> Void
+  ) {
+    let group = DispatchGroup()
+    for store in stores {
+      group.enter()
+      store.gracefullyStopRuns(ids) { group.leave() }
     }
-    // SIGINT the run process and wait for it to exit before reaping + deleting the worktree (so the
-    // dev server isn't left running against a deleted directory); no live run command → immediate.
-    gracefullyStopRuns([targetID], then: finishTeardown)
+    group.notify(queue: .main, execute: then)
   }
 
   /// Reaps a single terminal target's in-app surface and clears all the per-target state
@@ -1606,7 +1682,7 @@ final class AppStore: ObservableObject {
   /// project delete (which reaps a root + every workroom target) reuses the exact same
   /// cleanup — no second, drifting copy. Run only AFTER any live run process has been
   /// gracefully stopped (issue #7), so the dev server isn't orphaned against a deleted dir.
-  private func reapTargetLocally(_ targetID: TerminalTarget.ID) {
+  func reapTargetLocally(_ targetID: TerminalTarget.ID) {
     terminals.reap(targetID)
     // `reap` only fires `onTabsRemoved` (which clears run state) when tabs existed; a target armed
     // for auto-run but deleted before its pane mounted has none, so clear directly too (issue #7).
@@ -1672,10 +1748,21 @@ final class AppStore: ObservableObject {
   /// per-workroom teardown as `deleteWorkroom`, whose VCS removal leaves refs intact.
   func deleteProject(_ project: Project, deleteWorkrooms: Bool) {
     let targetIDs = removeProjectLocally(project)
+    let stores = affectedStores
+    // Clear the project's targets (root + each workroom) from every OTHER window's split + selection
+    // too — `removeProjectLocally` only cleaned up this window (issue #70, OV #7).
+    let sids =
+      [SidebarID.root(project: project.path)]
+      + project.workrooms.map { SidebarID.workroom(project: project.path, name: $0.name) }
+    for store in stores where store !== self {
+      for sid in sids { store.detachTarget(sid) }
+    }
 
-    let finishTeardown = { [weak self] in
+    // ALWAYS stop runs in every window BEFORE any disk teardown so no dev server holds a deleted dir
+    // (issue #7/#70), then reap each target in every window, then run the CLI teardown once.
+    stopRunsAcrossWindows(targetIDs, stores: stores) { [weak self] in
       guard let self else { return }
-      for id in targetIDs { self.reapTargetLocally(id) }
+      for store in stores { for id in targetIDs { store.reapTargetLocally(id) } }
       Task {
         let log =
           deleteWorkrooms
@@ -1690,8 +1777,6 @@ final class AppStore: ObservableObject {
         }
       }
     }
-    // ALWAYS stop runs BEFORE any disk teardown so no dev server holds a deleted dir (issue #7).
-    gracefullyStopRuns(targetIDs, then: finishTeardown)
   }
 
   /// Optimistic, synchronous removal of a project from every piece of in-memory state — the
