@@ -145,10 +145,10 @@ private struct ToastView: View {
     let subtext = item.title.isEmpty ? nil : item.body
     return VStack(alignment: .leading, spacing: 2) {
       if !headline.isEmpty {
-        Text(headline).font(.callout).fontWeight(.semibold).lineLimit(1)
+        Text(headline).font(.body).fontWeight(.semibold).lineLimit(1)
       }
       if let subtext, !subtext.isEmpty {
-        Text(subtext).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+        Text(subtext).font(.footnote).foregroundStyle(.secondary).lineLimit(2)
       }
       HStack(spacing: 4) {
         if !item.source.isEmpty {
@@ -157,7 +157,7 @@ private struct ToastView: View {
         }
         Text(item.date, style: .relative)
       }
-      .font(.caption2)
+      .font(.caption)
       // `.secondary`, not `.tertiary` (the inspector row's choice): on the toast's translucent
       // material `.tertiary` washes out — barely legible in dark mode.
       .foregroundStyle(.secondary)

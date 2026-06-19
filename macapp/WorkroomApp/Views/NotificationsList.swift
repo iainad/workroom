@@ -27,7 +27,15 @@ struct NotificationsList: View {
       .accessibilityElement(children: .ignore)
       .accessibilityLabel("No notifications")
     } else {
-      List {
+      // A plain `VStack`, not a `List` or a `ScrollView`: the inspector pane hosts this body inside
+      // a native `NSScrollView` (`InspectorSplitView`) that does the scrolling and sizes itself to
+      // the body's *natural* height. A `List`/`ScrollView` is a greedy scroll container with no
+      // finite intrinsic height, so nesting one here collapses the body and clips the rows. A `List`
+      // also clips its first row under a built-in top inset, forces a minimum row margin, and paints
+      // its own (light) background. A transparent `VStack` gives exact control over the row
+      // margins/spacing and lets the themed inspector background show through — matching the
+      // Changes/PR panels, which are built the same way.
+      VStack(spacing: 0) {
         // Newest first; the store appends chronologically.
         ForEach(notifications.items.reversed()) { item in
           NotificationRow(item: item, flash: store.flashNotifID == item.id) {
@@ -36,7 +44,8 @@ struct NotificationsList: View {
           }
         }
       }
-      .listStyle(.inset)
+      .padding(.horizontal, 4)
+      .padding(.vertical, 6)
     }
   }
 }
@@ -58,8 +67,8 @@ private struct NotificationRow: View {
   var body: some View {
     Button(action: onOpen) {
       content
-        .padding(.vertical, 4)
-        .padding(.horizontal, 6)
+        .padding(.vertical, 8)
+        .padding(.horizontal, 10)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
           RoundedRectangle(cornerRadius: 5).fill(rowFill)
@@ -72,6 +81,20 @@ private struct NotificationRow: View {
     // A new row mounts with `flash == true`; an already-mounted row flashes if the flag flips on.
     .onAppear { if flash { runFlash() } }
     .onChange(of: flash) { _, now in if now { runFlash() } }
+  }
+
+  /// Shared abbreviated relative formatter ("2 min. ago", "just now").
+  private static let relativeFormatter: RelativeDateTimeFormatter = {
+    let f = RelativeDateTimeFormatter()
+    f.unitsStyle = .abbreviated
+    return f
+  }()
+
+  /// An approximate "time ago" string for `date`. Under ~10s reads "just now" rather than a jittery
+  /// "0 sec. ago".
+  static func timeAgo(_ date: Date) -> String {
+    if Date().timeIntervalSince(date) < 10 { return "just now" }
+    return relativeFormatter.localizedString(for: date, relativeTo: Date())
   }
 
   /// Accent tint while flashing, else the usual subtle hover fill.
@@ -112,7 +135,9 @@ private struct NotificationRow: View {
             Text(item.source).lineLimit(1)
             Text("·")
           }
-          Text(item.date, style: .relative)
+          // A static approximate "time ago" (e.g. "2 min. ago"), not the ticking `.relative` timer
+          // that counted up second-by-second. Recomputed whenever the list re-renders.
+          Text(Self.timeAgo(item.date))
         }
         .font(.caption2)
         .foregroundStyle(.tertiary)
