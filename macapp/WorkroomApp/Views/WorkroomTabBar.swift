@@ -116,14 +116,25 @@ struct WorkroomTabBar: View {
   /// neighbour. Shown only between two adjacent tabs that are **both** idle — not selected, not
   /// hovered — and never mid-drag, so the divider quietly vanishes around the tab you're pointing at or
   /// have focused (the highlight already sets those apart). Like a segmented control dropping the
-  /// divider next to its active segment.
+  /// divider next to its active segment. Also dropped at a split group's **outer** boundary (exactly
+  /// one neighbour is a member): the `splitWell` bracket already separates the group there, so a
+  /// hairline would double up against its rounded border. Interior member↔member boundaries keep theirs.
   private func showsLeadingSeparator(at index: Int) -> Bool {
     guard index > 0, draggingID == nil else { return false }
     let here = tabs[index].sid
     let prev = tabs[index - 1].sid
     if here == selectedID || prev == selectedID { return false }
     if hoveredID == here || hoveredID == prev { return false }
+    let members = splitMemberSet
+    if members.contains(here) != members.contains(prev) { return false }
     return true
+  }
+
+  /// The split group's members (≥2), or empty when there's no split — used to drop the separator at
+  /// the group's outer edges (see `showsLeadingSeparator`).
+  private var splitMemberSet: Set<SidebarID> {
+    guard let members = store.workroomSplit?.tabIDs, members.count >= 2 else { return [] }
+    return Set(members)
   }
 
   /// A rounded outline bracketing the workroom-split members' contiguous run, so the grouping is

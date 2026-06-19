@@ -224,14 +224,25 @@ struct TerminalTabStrip: View {
   /// neighbour. Shown only between two adjacent tabs that are **both** idle — not active, not hovered —
   /// and never during a drag (reorder or drop-into-pane), so the divider quietly vanishes around the
   /// tab you're pointing at or have focused. Drawn between split-grouped members too (inside the
-  /// `splitWell` bracket), so every idle boundary reads consistently. Mirrors `WorkroomTabBar`.
+  /// `splitWell` bracket), but dropped at the group's **outer** boundary (exactly one neighbour is a
+  /// member) where the bracket already separates it — a hairline there doubles up against its rounded
+  /// border. Mirrors `WorkroomTabBar`.
   private func showsLeadingSeparator(at index: Int) -> Bool {
     guard index > 0, draggingID == nil, chipPaneDrag == nil else { return false }
     let here = tabs[index].id
     let prev = tabs[index - 1].id
     if here == activeID || prev == activeID { return false }
     if hoveredTab == here || hoveredTab == prev { return false }
+    let members = splitMemberSet
+    if members.contains(here) != members.contains(prev) { return false }
     return true
+  }
+
+  /// The split group's members (≥2), or empty when there's no split — used to drop the separator at
+  /// the group's outer edges (see `showsLeadingSeparator`).
+  private var splitMemberSet: Set<TerminalTab.ID> {
+    guard let members = sessions.split(for: target)?.tabIDs, members.count >= 2 else { return [] }
+    return Set(members)
   }
 
   /// Commit the reorder on drop, then clear drag state (animated, so everything settles).
