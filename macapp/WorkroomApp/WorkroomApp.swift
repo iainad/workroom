@@ -65,6 +65,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
   /// The global ⌘§ show/hide shortcut while enabled, else nil (issue #13). Registered/torn down by
   /// `updateGlobalHotkey()` to follow the `globalHotkey` setting.
   private var showHideHotkey: GlobalHotkey?
+  /// The global ⌥§ quick-terminal shortcut while enabled, else nil (issue #39). Registered/torn down
+  /// alongside `showHideHotkey` by `updateGlobalHotkey()` under the same `globalHotkey` setting.
+  private var quickTerminalHotkey: GlobalHotkey?
+  /// The quick terminal (issue #39) — a ~/ shell in its own chrome-less window. One persistent
+  /// controller; its window/surface come and go as it's summoned/closed.
+  private let quickTerminal = QuickTerminalController()
+  /// Retains the `.showQuickTerminal` observer (posted by the toolbar button) for the app's lifetime.
+  private var quickTerminalObserver: NSObjectProtocol?
   /// Observes the `globalHotkey` setting so toggling it takes effect immediately.
   private var hotkeyObservation: Task<Void, Never>?
   /// Catches SIGTERM so a signalled quit stops run commands gracefully (issue #7). Retained so the
@@ -86,6 +94,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
       let flags = event.modifierFlags.intersection([.command, .shift, .option, .control])
+      // ⌘W closes the quick terminal (issue #39) when its window is key. The menu's "Close Terminal"
+      // ⌘W targets the main window's tabs and would otherwise win, so catch it here (like ⌘R / ⌘1–9
+      // above) and route to the quick-terminal window — its delegate (QuickTerminalController) tears
+      // the surface down. Gated on the key window being a QuickTerminalWindow, so ⌘W still closes a
+      // main-window terminal tab everywhere else.
+      if flags == .command, event.charactersIgnoringModifiers == "w",
+        let quickTerminalWindow = (event.window ?? NSApp.keyWindow) as? QuickTerminalWindow
+      {
+        quickTerminalWindow.performClose(nil)
+        return nil
+      }
       // ⌘1–9: focus the Nth tab (caught here so it fires before the terminal swallows the digit).
       if flags == .command, let chars = event.charactersIgnoringModifiers,
         let digit = Int(chars), (1...9).contains(digit)
@@ -168,6 +187,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
       }
     }
 
+    // The main-toolbar Quick-Terminal button (issue #39) posts this; the controller lives here, out
+    // of the SwiftUI view's reach. The ⌥§ hotkey calls the controller directly (see updateGlobalHotkey).
+    quickTerminalObserver = NotificationCenter.default.addObserver(
+      forName: .showQuickTerminal, object: nil, queue: .main
+    ) { [weak self] _ in
+      MainActor.assumeIsolated { self?.quickTerminal.show() }
+    }
+
     installSigtermHandler()
   }
 
@@ -196,23 +223,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     sigtermSource = source
   }
 
-  /// Register or tear down the global ⌘§ hotkey to match the `globalHotkey` setting.
-  /// Idempotent — only (un)registers when the desired state differs from the current one — so it's
-  /// safe to call on launch and on every change. Carbon's RegisterEventHotKey is system-wide and
-  /// needs no permission; the key/modifier live in `GlobalHotkey.commandSection`.
+  /// Register or tear down the global hotkeys — ⌘§ show/hide (issue #13) and ⌥§ quick terminal
+  /// (issue #39) — to match the `globalHotkey` setting. Idempotent — only (un)registers when the
+  /// desired state differs from the current one — so it's safe to call on launch and on every change.
+  /// Carbon's RegisterEventHotKey is system-wide and needs no permission; the key/modifiers live in
+  /// `GlobalHotkey.commandSection` / `.optionSection` (each with a distinct hotkey id so they coexist).
   private func updateGlobalHotkey() {
     // The "Workroom Dev" build runs alongside the release build, and a Carbon hotkey is
-    // system-wide — two instances registering ⌘§ would fight over it. The release build owns the
-    // global show/hide; the Debug build never claims it. Compiling the body out (rather than an
-    // early `return`) keeps both configs warning-clean and covers launch + the Settings toggle +
-    // the `globalHotkey` observer, which all route through this method.
+    // system-wide — two instances registering the same combo would fight over it. The release build
+    // owns the global hotkeys; the Debug build never claims them (so ⌥§ is button-only in Debug).
+    // Compiling the body out (rather than an early `return`) keeps both configs warning-clean and
+    // covers launch + the Settings toggle + the `globalHotkey` observer, which all route through here.
     #if !DEBUG
       if Defaults[.globalHotkey] {
         if showHideHotkey == nil {
           showHideHotkey = GlobalHotkey.commandSection { AppDelegate.toggleAppVisibility() }
         }
+        if quickTerminalHotkey == nil {
+          quickTerminalHotkey = GlobalHotkey.optionSection { [weak self] in
+            MainActor.assumeIsolated { self?.quickTerminal.toggle() }
+          }
+        }
       } else {
         showHideHotkey = nil  // GlobalHotkey.deinit unregisters
+        quickTerminalHotkey = nil
       }
     #endif
   }
@@ -613,6 +647,16 @@ struct WorkroomCommands: Commands {
       }
       .keyboardShortcut("t", modifiers: .command)
       .disabled(workroomSelected != true)
+
+      // Quick terminal at ~/ in its own chrome-less window (issue #39) — same open/focus action as
+      // the toolbar button. Always enabled (needs no workroom). Shows ⌥§ as its equivalent: no
+      // double-fire, because the registered Carbon hotkey consumes ⌥§ system-wide before it reaches
+      // the menu (Release). In a Debug-only dev run (no Release build owning the global ⌥§), the
+      // menu equivalent is what makes the shortcut work — handy for QA.
+      Button("Quick Terminal") {
+        NotificationCenter.default.post(name: .showQuickTerminal, object: nil)
+      }
+      .keyboardShortcut("§", modifiers: .option)
 
       // ⌘W: "Close Terminal" sits above the standard File ▸ Close, so it wins the ⌘W
       // equivalent while enabled (Close keeps no shortcut).

@@ -122,11 +122,11 @@ struct RootView: View {
         "This removes the workroom's directory and runs its teardown script. For Git, the branch is left in place."
       )
     }
-    // Top toolbar (issue #26): the back/forward chevrons (snug, one item) pinned to the leading
-    // `.navigation` area beside the sidebar toggle; the notifications bell pinned to the trailing
-    // `.primaryAction` area (where it opens the right-hand inspector). Both split-view level so
-    // they're present even in the empty state — the detail toolbar's document actions (Open in…/
-    // Reveal/Copy Path) only attach when a target is selected, and slot in before the bell.
+    // Top toolbar (issue #26, #39): the back/forward chevrons + the quick terminal (snug, one item)
+    // pinned to the leading `.navigation` area beside the sidebar toggle; the notifications bell
+    // pinned to the trailing `.primaryAction` area. Both split-view level so they're present even in
+    // the empty state — the detail toolbar's document actions (Open in…/Reveal/Copy Path) only attach
+    // when a target is selected, and slot in before the bell.
     .toolbar {
       ToolbarItem(placement: .navigation) {
         HStack(spacing: 0) {
@@ -146,6 +146,16 @@ struct RootView: View {
           .help("Forward")
           .accessibilityLabel("Forward")
           .disabled(!store.canGoForward)
+          // Quick terminal (issue #39): grouped with the history nav, to the right of forward.
+          Button {
+            // Opens / focuses the quick terminal; AppDelegate owns the controller.
+            NotificationCenter.default.post(name: .showQuickTerminal, object: nil)
+          } label: {
+            Image(systemName: "macwindow.badge.plus")
+          }
+          .help("Quick Terminal (⌥§)")
+          .accessibilityLabel("Quick Terminal")
+          .accessibilityIdentifier("toolbar.quickTerminal")
         }
       }
       ToolbarItem(placement: .primaryAction) {

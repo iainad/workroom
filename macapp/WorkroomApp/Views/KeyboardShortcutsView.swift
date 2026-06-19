@@ -150,6 +150,7 @@ extension KeyboardShortcutsView {
         ShortcutItem(label: "Settings", keys: "⌘,"),
         ShortcutItem(label: "Quit", keys: "⌘Q"),
         ShortcutItem(label: "Show/Hide Workroom (global)", keys: "⌘§"),
+        ShortcutItem(label: "Quick Terminal (global)", keys: "⌥§"),
       ]),
   ]
 }

@@ -18,7 +18,9 @@ final class GhosttySurfaceView: NSView {
   /// runtime callbacks (via `ghostty_surface_userdata`) read it; all writes happen on the main thread.
   nonisolated(unsafe) private(set) var surface: ghostty_surface_t?
 
-  private let workingDirectory: String
+  /// The cwd the surface spawned its shell in. `internal` (not `private`) so tests can assert it
+  /// (e.g. the quick terminal at `~/`).
+  let workingDirectory: String
 
   /// When non-nil/non-empty, the surface launches this command instead of a login shell, and keeps
   /// the pane open after it exits (`wait_after_command`). Used by the "run command" feature (issue
