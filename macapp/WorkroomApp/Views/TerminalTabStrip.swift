@@ -146,7 +146,9 @@ struct TerminalTabStrip: View {
       }
     }
     .padding(.top, 4)
-    .padding(.bottom, 2)
+    // Flush with the content below — the active tab's `bg` fill bridges the panel→bg colour step so
+    // the strip reads as part of the terminal panel (Chrome-style). No bottom gap.
+    .padding(.bottom, 0)
   }
 
   /// The "new terminal" (+) button. Lives inside the scrolling tab row, immediately after the last tab
@@ -326,12 +328,23 @@ private struct TerminalTabChip: View {
     }
     .padding(.leading, 10)
     .padding(.trailing, 4)  // tighter than the leading inset — the ✕ sits near the chip's edge
-    .padding(.vertical, 4)
-    // The active tab gets a distinctly stronger fill (tabActive) than the faint hover wash, so the
-    // selected tab reads at a glance; a solid lifted chip while dragging.
+    .padding(.vertical, 6)
+    // Chrome-style merge: the active tab is filled with the terminal background (`bg`) and rounded
+    // only on top (square bottom), so it reads as the same surface as the panel below it — bridging
+    // the panel→bg colour step with no divider line. Inactive tabs keep the faint hover wash on a
+    // full pill; the recessed `panel` bar shows through the clear idle fill.
     .background {
-      RoundedRectangle(cornerRadius: 6)
-        .fill(isActive ? theme.tokens.tabActive : (isHovered ? theme.tokens.hover : Color.clear))
+      if isActive {
+        UnevenRoundedRectangle(
+          topLeadingRadius: 6, bottomLeadingRadius: 0, bottomTrailingRadius: 0,
+          topTrailingRadius: 6,
+          style: .continuous
+        )
+        .fill(theme.tokens.bg)
+      } else {
+        RoundedRectangle(cornerRadius: 6, style: .continuous)
+          .fill(isHovered ? theme.tokens.hover : Color.clear)
+      }
     }
     .background {
       RoundedRectangle(cornerRadius: 6)
