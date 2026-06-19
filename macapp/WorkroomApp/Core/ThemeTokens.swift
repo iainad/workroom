@@ -65,12 +65,9 @@ struct ThemeTokens {
       tag, attribute, punctuation, escape
   }
 
-  // Focused-pane border + unfocused-pane scrim (issue #23 follow-up). Both Color (SwiftUI) and
-  // NSColor (AppKit) forms.
+  // Focused-pane border + unfocused-pane scrim (issue #23 follow-up).
   let focused: Color
   let terminalDim: Color
-  let nsFocused: NSColor
-  let nsTerminalDim: NSColor
 
   let colorScheme: ColorScheme
 
@@ -148,12 +145,11 @@ struct ThemeTokens {
     ]
 
     // The unfocused-pane scrim is the terminal's own background, so it's invisible *over* the
-    // background and only washes the pane's text toward it (issue #23 follow-up). The focus border
-    // is a soft mid-tone foreground that reads as "the focused one" against the faint hairline.
-    nsTerminalDim = bgColor
-    nsFocused = fgColor.withAlphaComponent(0.55)
+    // background and only washes the pane's text toward it (issue #23 follow-up). The focus border is
+    // the SAME hairline as an unfocused pane (`border`, fg @ 0.12), just a little darker — so the
+    // focused pane reads as "the focused one" without a heavy extra ring around it.
     terminalDim = Color(nsColor: bgColor)
-    focused = Color(nsColor: fgColor.withAlphaComponent(0.55))
+    focused = Color(nsColor: fgColor.withAlphaComponent(0.3))
 
     colorScheme = Self.luminance(of: bgColor) > 0.5 ? .light : .dark
   }

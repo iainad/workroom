@@ -50,6 +50,9 @@ struct TerminalTabStrip: View {
     let dropIndex =
       chipPaneDrag != nil ? nil : draggedIndex.map { dropTargetIndex(tabs, draggedIndex: $0) }
     let draggedWidth = draggingID.flatMap { widths[$0] } ?? 0
+    // Members of the split group (≥2), so a grouped chip's selected pill can inset itself to sit
+    // *inside* the `splitWell` bracket rather than overrunning it.
+    let groupMembers = splitMemberSet
 
     HStack(spacing: 0) {
       ScrollView(.horizontal, showsIndicators: false) {
@@ -76,7 +79,8 @@ struct TerminalTabStrip: View {
             TerminalTabChip(
               tab: tab, isActive: tab.id == activeID, isHovered: isHovered,
               isDragging: isDragging, hasActivity: hasActivity, runState: runState,
-              showLeadingSeparator: showsLeadingSeparator(at: index)
+              showLeadingSeparator: showsLeadingSeparator(at: index),
+              isGrouped: groupMembers.contains(tab.id)
             ) {
               store.requestCloseTerminalTab(tab.id, for: target)
             }
@@ -237,6 +241,9 @@ struct TerminalTabStrip: View {
     if hoveredTab == here || hoveredTab == prev { return false }
     let members = splitMemberSet
     if members.contains(here) != members.contains(prev) { return false }
+    // Non-grouped tabs now each carry their own border, which separates them — a hairline would just
+    // double up. The separator survives only between two split-grouped members (inside the bracket).
+    if !members.contains(here) { return false }
     return true
   }
 
@@ -279,6 +286,9 @@ private struct TerminalTabChip: View {
   let runState: RunState?
   /// Draw a hairline on the leading edge, separating two adjacent idle tabs (computed by the strip).
   let showLeadingSeparator: Bool
+  /// A member of a split group — its fill insets so it sits *inside* the group's bracket, never
+  /// overrunning it (the bracket hugs the chip run, so a full-bleed pill would cover the border).
+  let isGrouped: Bool
   let onClose: () -> Void
   private let theme = ThemeService.shared
 
@@ -329,22 +339,15 @@ private struct TerminalTabChip: View {
     .padding(.leading, 10)
     .padding(.trailing, 4)  // tighter than the leading inset — the ✕ sits near the chip's edge
     .padding(.vertical, 6)
-    // Chrome-style merge: the active tab is filled with the terminal background (`bg`) and rounded
-    // only on top (square bottom), so it reads as the same surface as the panel below it — bridging
-    // the panel→bg colour step with no divider line. Inactive tabs keep the faint hover wash on a
-    // full pill; the recessed `panel` bar shows through the clear idle fill.
+    // Every tab is a self-contained pill, rounded on all four corners — no tab bleeds into the panel
+    // (the focused pane isn't necessarily the one directly below the strip, e.g. a split). The active
+    // tab is filled with the terminal background (`bg`) so it stands distinct from the recessed strip;
+    // inactive tabs keep the faint hover wash, the `panel` bar showing through the clear idle fill. A
+    // grouped chip insets its pill so it nests inside the `splitWell` bracket instead of overrunning it.
     .background {
-      if isActive {
-        UnevenRoundedRectangle(
-          topLeadingRadius: 6, bottomLeadingRadius: 0, bottomTrailingRadius: 0,
-          topTrailingRadius: 6,
-          style: .continuous
-        )
-        .fill(theme.tokens.bg)
-      } else {
-        RoundedRectangle(cornerRadius: 6, style: .continuous)
-          .fill(isHovered ? theme.tokens.hover : Color.clear)
-      }
+      RoundedRectangle(cornerRadius: 6, style: .continuous)
+        .fill(isActive ? theme.tokens.bg : (isHovered ? theme.tokens.hover : Color.clear))
+        .padding(isGrouped ? EdgeInsets(top: 2, leading: 3, bottom: 2, trailing: 3) : EdgeInsets())
     }
     .background {
       RoundedRectangle(cornerRadius: 6)
@@ -359,6 +362,14 @@ private struct TerminalTabChip: View {
     .background {
       GeometryReader { geo in
         Color.clear.preference(key: TabWidthKey.self, value: [tab.id: geo.size.width])
+      }
+    }
+    // A non-grouped tab carries its own rounded border so it reads as a framed chip; grouped tabs are
+    // framed by the shared `splitWell` bracket instead, so they skip it.
+    .overlay {
+      if !isGrouped {
+        RoundedRectangle(cornerRadius: 6, style: .continuous)
+          .strokeBorder(theme.tokens.border, lineWidth: 1)
       }
     }
     // Hairline between two idle neighbours, centred in the *visible* whitespace between the two

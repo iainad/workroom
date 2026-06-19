@@ -317,10 +317,8 @@ private struct PaneLeafView: View {
       // layer. The scrim is the terminal's own background colour (`.terminalDim`) so it washes the text
       // toward the background — the BG itself barely changes in any mode. An activity flash lifts the
       // dim so the pulse is visible on a backgrounded pane.
-      // Only a split (multiPane) gets the rounded-12 card chrome — the dim scrim on unfocused panes
-      // and the focus border — so each pane reads as a distinct, selectable surface. A SOLO terminal
-      // is always focused and goes full-bleed (Chrome-style merge with the tab strip above), so it
-      // draws neither: a floating rounded outline would only fight the merge.
+      // The dim scrim is split-only: it marks the *unfocused* panes, and a solo terminal is always
+      // focused so it has nothing to dim.
       .overlay {
         if multiPane {
           RoundedRectangle(cornerRadius: 12)
@@ -330,21 +328,22 @@ private struct PaneLeafView: View {
             .animation(reduceMotion ? nil : .easeInOut(duration: 0.07), value: focused)
         }
       }
+      // A rounded-12 border frames every terminal, the same in a split or solo: `borderColor` is the
+      // focus tint on the focused pane (a solo terminal is always focused, so it always gets it) and a
+      // neutral hairline on unfocused split panes — all at 1.5pt.
       .overlay {
-        if multiPane {
-          RoundedRectangle(cornerRadius: 12)
-            .strokeBorder(borderColor, lineWidth: 1.5)
-            .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: flashing)
-            .animation(reduceMotion ? nil : .easeInOut(duration: 0.08), value: focused)
-        }
+        RoundedRectangle(cornerRadius: 12)
+          .strokeBorder(borderColor, lineWidth: 1.5)
+          .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: flashing)
+          .animation(reduceMotion ? nil : .easeInOut(duration: 0.08), value: focused)
       }
       .overlay(alignment: .top) { handle }
-      // Splits keep the 2pt inter-pane gutter (plus the surrounding panel gutter from
-      // WorkroomTerminalsView) so the rounded panes read as separate cards. A solo terminal drops it
-      // to 0 to sit edge-to-edge for the full-bleed Chrome merge. The 2pt surface shift when a tab
-      // joins/leaves a split is accepted — surface identity is held by `.id(tabID)` on the host (not
-      // this padding), so no surface is re-parented (issue #3).
-      .padding(multiPane ? 2 : 0)
+      // A uniform 2pt pad on EVERY pane (solo or split) — split panes need it as the inter-pane gutter
+      // (plus the surrounding panel gutter from WorkroomTerminalsView) so the rounded panes read as
+      // separate cards, and a solo pane keeps the same pad so the panel doesn't shift when you switch
+      // between a solo tab and a grouped/split one. Surface identity is held by `.id(tabID)` on the
+      // host (not this padding), so no surface is re-parented across the change (issue #3).
+      .padding(2)
       // Non-terminal panes (a diff) have no first responder to claim focus on click, so a click
       // anywhere in the body focuses the pane. Gated on `!isTerminal` ONLY — the content type is
       // stable for a pane's lifetime, so the gesture is never attached/detached mid-interaction

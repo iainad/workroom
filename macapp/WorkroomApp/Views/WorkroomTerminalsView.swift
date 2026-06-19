@@ -31,7 +31,6 @@ struct WorkroomTerminalsView: View {
   var body: some View {
     let tabs = sessions.tabs(for: target)
     let active = sessions.activeTab(for: target)
-    let isSplit = sessions.isSplitVisible(for: target)
     // The terminal (or empty state) fills the pane; the tab bar rides on safeAreaInset so it only
     // ever takes its natural height — otherwise the tab bar's horizontal ScrollView grabs the
     // vertical slack when there's no terminal below it and balloons.
@@ -50,12 +49,12 @@ struct WorkroomTerminalsView: View {
             Color.clear.preference(key: ContentFrameKey.self, value: geo.frame(in: .global))
           }
         )
-        // Chrome-style merge: a solo terminal goes full-bleed (edge-to-edge) so the active tab reads
-        // as one continuous content surface with the panel below it; a split keeps the 6pt panel
-        // gutter that frames its rounded panes. Top is always 0 so the tab strip sits flush on the
-        // content (the active tab bridges the panel→bg colour step).
-        .padding(.horizontal, isSplit ? 6 : 0)
-        .padding(.bottom, isSplit ? 6 : 0)
+        // The 6pt panel gutter frames the content the same way whether solo or split — so an ungrouped
+        // terminal keeps the matching left/right/bottom margins, not just a split's rounded panes. Top
+        // is always 0 so the tab strip sits flush on the content (the active tab bridges the panel→bg
+        // colour step) — the Chrome-style merge with the strip above.
+        .padding(.horizontal, 6)
+        .padding(.bottom, 6)
         .padding(.top, 0)
       } else {
         ContentUnavailableView {
