@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import Defaults
 import Foundation
 import SwiftUI
@@ -44,9 +45,22 @@ struct PendingProjectDeletion: Identifiable {
 /// the main thread inside WorkroomCLI), keeping the UI responsive.
 @MainActor
 final class AppStore: ObservableObject {
-  static let shared = AppStore()
+  static let shared = AppStore(projectStore: .shared)
 
-  @Published var projects: [Project] = []
+  /// Shared, app-wide project data (issue #70). Holds the project list and everything derived from
+  /// it that is identical across windows (root labels, VCS/CI status cache, GitHub-CLI status, busy
+  /// set). The properties below proxy through to it, and `init` re-publishes its `objectWillChange`,
+  /// so views/menus observing this store still re-render when the shared data changes.
+  let projectStore: ProjectStore
+  private var projectStoreObservation: AnyCancellable?
+
+  /// The list of configured projects — proxied to the shared `ProjectStore` so every window sees the
+  /// same list. (Storage moved out of `AppStore`; the get/set proxy keeps all existing call sites,
+  /// incl. `projects[i] = …` / `projects.removeAll`, working unchanged.)
+  var projects: [Project] {
+    get { projectStore.projects }
+    set { projectStore.projects = newValue }
+  }
   @Published var selectedProjectID: Project.ID?
   /// The selected terminal target — a `.root` or a `.workroom` (never `.project`), or nil
   /// when nothing is selected (the launch state). `.project` is not a target; clicking a
@@ -126,20 +140,32 @@ final class AppStore: ObservableObject {
   @Published var expandedTerminalTargets: Set<TerminalTarget.ID> = []
   /// Per-project resolved root branch/bookmark labels, hydrated asynchronously after each
   /// load (see `resolveBranches`). Absent ⇒ the root row shows a dim "root" until resolved.
-  @Published var rootRefs: [Project.ID: RootRef] = [:]
+  var rootRefs: [Project.ID: RootRef] {
+    get { projectStore.rootRefs }
+    set { projectStore.rootRefs = newValue }
+  }
   /// Per-workroom (and per-root) VCS + CI status driving the ambient badges and the Changes
   /// detail panel (issue #24), keyed by `SidebarID`. Resolved app-side (see
   /// `WorkroomStatusResolver`), best-effort/"last checked" — NOT real-time. Ephemeral:
   /// deliberately NOT persisted (operational state, unlike the sidebar prefs above). Hydrated
   /// after each load, on selection, and on focus; see `AppStore+WorkroomStatus.swift`.
-  @Published var workroomStatuses: [SidebarID: WorkroomStatus] = [:]
+  var workroomStatuses: [SidebarID: WorkroomStatus] {
+    get { projectStore.workroomStatuses }
+    set { projectStore.workroomStatuses = newValue }
+  }
   /// Whether the GitHub CLI is usable for the PR/CI probes (machine-global). Optimistic default so
   /// no warning flashes before the first check; refreshed by `refreshGitHubCLI()` and read by the
   /// Pull Request inspector section. Drives a warning + gates the `gh` probes when not available.
-  @Published var githubCLIStatus: GitHubCLIStatus = .available
+  var githubCLIStatus: GitHubCLIStatus {
+    get { projectStore.githubCLIStatus }
+    set { projectStore.githubCLIStatus = newValue }
+  }
   /// When `githubCLIStatus` was last probed (its own short TTL, so we don't re-run `gh auth status`
   /// on every selection).
-  var ghStatusCheckedAt: Date?
+  var ghStatusCheckedAt: Date? {
+    get { projectStore.ghStatusCheckedAt }
+    set { projectStore.ghStatusCheckedAt = newValue }
+  }
   /// A PR write action (Phase 2b) is running — disables the PR actions menu so it can't double-fire.
   @Published var prActionInFlight = false
 
@@ -184,7 +210,10 @@ final class AppStore: ObservableObject {
   @Published var errorTitle: String?
   @Published var isLoading = false
   /// Project paths with an in-flight create/delete (for per-row progress + disabling).
-  @Published var busyProjects: Set<String> = []
+  var busyProjects: Set<String> {
+    get { projectStore.busyProjects }
+    set { projectStore.busyProjects = newValue }
+  }
   /// Set by the "Add Project" menu command to trigger the sidebar's file importer.
   @Published var requestAddProject = false
   /// A workroom awaiting delete confirmation; setting it raises the confirmation prompt.
@@ -248,7 +277,17 @@ final class AppStore: ObservableObject {
   /// `internal` (not `private`) so unit tests can build a non-singleton store (`AppStore()`),
   /// inject `projects`, and drive the real recording/navigation paths. Production always uses the
   /// `shared` singleton; `init` does no CLI work (only `bootstrap()`/`load()` do).
-  init() {
+  init(projectStore: ProjectStore? = nil) {
+    // Default to a fresh, isolated store (so `AppStore()` in tests never touches the singleton);
+    // production passes `.shared`. Constructed here in the main-actor init body, not as a default
+    // argument (default args are evaluated nonisolated, which can't call a @MainActor initializer).
+    let store = projectStore ?? ProjectStore()
+    self.projectStore = store
+    // Re-publish the shared project store's changes so views and menus observing THIS store
+    // re-render when the proxied `projects` / `rootRefs` / `workroomStatuses` / … change (issue #70).
+    projectStoreObservation = store.objectWillChange.sink { [weak self] _ in
+      self?.objectWillChange.send()
+    }
     pendingRestoreSelection = Defaults[.sidebarSelection]
     // Route each terminal's activity (OSC/bell) through the notification spine, gated on
     // focus, and raise a native banner only when the app is backgrounded.
