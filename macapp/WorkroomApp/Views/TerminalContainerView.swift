@@ -74,16 +74,30 @@ struct TerminalContainerView: NSViewRepresentable {
     view.setVisible(true)
   }
 
-  /// Make the focused pane first responder, but only when it isn't already (so re-rendering a focused
-  /// solo pane, or a divider drag, doesn't churn the responder chain). Never steals focus for a
-  /// non-focused pane. This covers the same-window-reuse path; the freshly-mounted-container path (where
-  /// `container.window` is still nil when this async runs) is covered by the surface's own
-  /// `viewDidMoveToWindow`, driven by the `wantsFocus` flag `mount` sets.
+  /// Keep this surface's AppKit first-responder state in sync with whether it's the focused pane.
+  ///
+  /// Focused: claim first responder when it isn't already (so re-rendering a focused solo pane, or a
+  /// divider drag, doesn't churn the responder chain). This covers the same-window-reuse path; the
+  /// freshly-mounted-container path (where `container.window` is still nil when this async runs) is
+  /// covered by the surface's own `viewDidMoveToWindow`, driven by the `wantsFocus` flag `mount` sets.
+  ///
+  /// Not focused: resign first responder if this surface still holds it. Focus moving to a sibling
+  /// **diff** pane is pure SwiftUI — it claims no AppKit responder — so without this the terminal
+  /// stays the window's first responder while the diff is logically focused. A later click on the
+  /// terminal then calls `makeFirstResponder(self)` on a view that's *already* first responder, which
+  /// AppKit short-circuits: `becomeFirstResponder` (hence `onFocused`) never fires and the click can't
+  /// refocus the terminal. Terminal→terminal doesn't need this (the new pane claiming first responder
+  /// resigns the old one), so the guard makes this a no-op there.
   private func applyFocus(in container: NSView) {
-    guard isFocusedPane else { return }
     DispatchQueue.main.async {
-      guard let window = container.window, window.firstResponder !== view else { return }
-      window.makeFirstResponder(view)
+      guard let window = container.window else { return }
+      if isFocusedPane {
+        guard window.firstResponder !== view else { return }
+        window.makeFirstResponder(view)
+      } else {
+        guard window.firstResponder === view else { return }
+        window.makeFirstResponder(nil)  // → the window; lets a later click refocus this terminal
+      }
     }
   }
 }

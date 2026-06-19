@@ -44,7 +44,8 @@ struct PaneTreeView: View {
               focused: surfaceActive && tabID == focusedID, multiPane: multiPane,
               paneIndex: index + 1, paneCount: layout.tabIDs.count, coordinateSpace: Self.space,
               onDragChanged: { beginOrUpdateDrag(tabID: tabID, at: $0) },
-              onDragEnded: { commitDrag(plan: plan) }
+              onDragEnded: { commitDrag(plan: plan) },
+              onActivate: { sessions.select(tabID, for: target) }
             )
             .frame(width: rect.width, height: rect.height)
             .position(x: rect.midX, y: rect.midY)
@@ -295,6 +296,11 @@ private struct PaneLeafView: View {
   let coordinateSpace: String
   let onDragChanged: (CGPoint) -> Void
   let onDragEnded: () -> Void
+  /// Focus this pane (mirrors a click into a terminal pane's body). Wired only for non-terminal
+  /// content — a terminal surface focuses itself via first responder; a diff pane is pure SwiftUI
+  /// with no responder hook, so without this a click in its body never focuses it (only the strip
+  /// chip would).
+  let onActivate: () -> Void
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @State private var flashing = false
   @State private var hovering = false
@@ -330,6 +336,13 @@ private struct PaneLeafView: View {
       // that keeps the surface in the exact same place. (The focus border draws inside the bounds,
       // so it never moves the surface; only this padding does.)
       .padding(2)
+      // Non-terminal panes (a diff) have no first responder to claim focus on click, so a click
+      // anywhere in the body focuses the pane. Gated on `!isTerminal` ONLY — the content type is
+      // stable for a pane's lifetime, so the gesture is never attached/detached mid-interaction
+      // (gating on `focused` would flip the modifier's structural branch on every focus, tearing
+      // down and rebuilding the DiffViewer — a reload flash + lag). A terminal pane skips this
+      // entirely; its surface eats SwiftUI gestures and focuses via first responder.
+      .modifier(ActivateOnPress(enabled: !isTerminal, onActivate: onActivate))
       .onHover { hovering = $0 }
       .onChange(of: sessions.activityPulses[tabID]) { _, _ in
         guard multiPane, !focused else { return }
@@ -407,6 +420,24 @@ private struct PaneLeafView: View {
     // hairline that still frames the surface.
     if focused || flashing { return theme.tokens.focused }
     return theme.tokens.border
+  }
+}
+
+/// Focus a non-terminal pane on click. `enabled` is gated on content type only (stable for the
+/// pane's lifetime) so the conditional never flips and churns the wrapped view's identity. A
+/// `simultaneousGesture` tap (not a drag) so it fires promptly on click-up without fighting the
+/// diff's own scroll / text-selection gestures — a `minimumDistance: 0` drag would stall while the
+/// system disambiguates it from a scroll.
+private struct ActivateOnPress: ViewModifier {
+  let enabled: Bool
+  let onActivate: () -> Void
+
+  func body(content: Content) -> some View {
+    if enabled {
+      content.simultaneousGesture(TapGesture().onEnded { onActivate() })
+    } else {
+      content
+    }
   }
 }
 
