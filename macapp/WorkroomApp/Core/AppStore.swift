@@ -275,6 +275,7 @@ final class AppStore: ObservableObject {
       if let runTab = self.runStates[targetID]?.tab, ids.contains(runTab) {
         self.runStates[targetID] = nil
         self.clearRunPidFile(for: targetID)  // forget the captured pid (issue #7)
+        self.resetRunToast(for: targetID)  // run gone → drop its toast state (issue #67)
       }
       // Closing the last terminal in a co-displayed split pane leaves an empty pane whose only
       // affordance is the remove-from-split ✕ — close it for the user by dropping the now-empty
@@ -446,10 +447,182 @@ final class AppStore: ObservableObject {
     }
   }
 
+  /// How a run ended — the bit `RunState` doesn't carry (issue #67). The run toast derives its final
+  /// status from this: a clean exit reads "Exited", a non-zero exit reads "Failed (exit N)", a
+  /// user-initiated Stop reads "Stopped" (you did it — not an error), and a surface that never spawned
+  /// reads "Failed to start". Kept as a small side-table next to `runStates` rather than bloating
+  /// `RunState.stopped`'s associated values (which the heavily-tested state machine pattern-matches in
+  /// many places). `.stoppedByUser` vs `.exited` is decided by the `interrupted` flag the state machine
+  /// already tracks. `nil` = the run hasn't ended (starting/running/restarting) — no outcome yet.
+  enum RunOutcome: Equatable {
+    case exited(code: Int32)  // process exited on its own; code 0 = clean, != 0 = failure
+    case stoppedByUser  // a Stop/Restart Ctrl-C drove the exit
+    case failedToStart  // the surface never spawned (ghostty_surface_new returned nil)
+  }
+
   /// Run-STATE is owned here (not on `TerminalSessions`) so the toolbar, sidebar, menu, and RootView
   /// — which all observe this store — react to start/stop/exit from one `@Published` source (OV-A).
   /// `TerminalSessions` only creates/focuses the tab and reports its removal via `onTabsRemoved`.
   @Published private(set) var runStates: [TerminalTarget.ID: RunState] = [:]
+
+  /// Per-target end-of-run outcome for the run toast (issue #67). Set on exit / failed start, cleared
+  /// when a fresh run starts for that target. Derived-from, not duplicating, `runStates`.
+  @Published private(set) var runOutcomes: [TerminalTarget.ID: RunOutcome] = [:]
+
+  // MARK: Run toast (issue #67) — DERIVED view-model, dismissal, native banner
+
+  /// A live run-status toast, DERIVED from `runStates` + `runOutcomes` (no parallel stored array, so it
+  /// can't drift). The bottom-right toast surface renders these above the notification toasts.
+  struct RunToastItem: Identifiable, Equatable {
+    var id: TerminalTarget.ID { targetID }
+    let targetID: TerminalTarget.ID
+    let tabID: TerminalTab.ID
+    let source: String  // "platform / fix-auth"
+    let command: String  // the configured run command, e.g. "npm run dev"
+    let status: Status
+    enum Status: Equatable {
+      case running  // spinner (covers .running(interrupted:) too — still alive)
+      case restarting  // spinner, graceful restart in flight
+      case exited  // clean exit, code 0
+      case failed(code: Int32)  // non-zero exit (a crash)
+      case stopped  // user hit Stop/Restart — not an error
+      case failedToStart  // the surface never spawned
+      var isTerminal: Bool {
+        switch self {
+        case .running, .restarting: return false
+        case .exited, .failed, .stopped, .failedToStart: return true
+        }
+      }
+    }
+  }
+
+  /// Targets whose run toast was explicitly dismissed (✕) or auto-dismissed after a terminal state.
+  /// Cleared when a fresh run starts. Open-terminal does NOT add here — it lets the visibility rule
+  /// hide the toast while the run is on screen, so it reappears when you navigate away.
+  @Published private(set) var dismissedRunToasts: Set<TerminalTarget.ID> = []
+  /// Pending auto-dismiss timers, one per target, cancelled on restart so a stale timer can't dismiss
+  /// the next run's toast (review: timer cancellation on restart).
+  private var runToastDismissWork: [TerminalTarget.ID: DispatchWorkItem] = [:]
+  /// How long a terminal-state run toast lingers before auto-dismissing.
+  private static let runToastLinger: TimeInterval = 6
+  /// Test seam: how a delayed auto-dismiss is scheduled. Production schedules on the main queue; tests
+  /// capture the returned `DispatchWorkItem` to fire (or assert cancellation of) it deterministically.
+  var scheduleRunToastDismiss: (TimeInterval, @escaping () -> Void) -> DispatchWorkItem = {
+    delay, body in
+    let work = DispatchWorkItem(block: body)
+    DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+    return work
+  }
+
+  /// Whether a finished run warrants a native banner: only genuine failures (a non-zero exit or a
+  /// failed start), never a clean exit or a user-initiated Stop (Arch #7, issue #67). Pure so the
+  /// policy is unit-testable without `NSApp`/`SystemNotifier`; the app-active gate is the (already
+  /// tested) `NotificationGate`.
+  static func runOutcomeIsBannerWorthy(_ outcome: RunOutcome?) -> Bool {
+    switch outcome {
+    case .exited(let code): return code != 0
+    case .failedToStart: return true
+    case .stoppedByUser, .none: return false
+    }
+  }
+
+  /// The run toasts to show right now. Derived each access: a target contributes a toast when it has a
+  /// run state with a tab, the user hasn't dismissed it, and its run tab isn't currently on screen
+  /// (you don't need a toast for what you're looking at — split-aware via `visibleTabIDs`).
+  var runToastItems: [RunToastItem] {
+    runStates.compactMap { targetID, state -> RunToastItem? in
+      guard let tabID = state.tab else { return nil }  // .armed has no tab → no toast
+      guard !dismissedRunToasts.contains(targetID) else { return nil }
+      if let target = selectedTarget, target.id == targetID,
+        terminals.visibleTabIDs(for: target).contains(tabID)
+      {
+        return nil  // the run tab is on screen — hide; it reappears when you navigate away
+      }
+      let status: RunToastItem.Status
+      switch state {
+      case .armed: return nil
+      case .running: status = .running
+      case .restarting: status = .restarting
+      case .stopped:
+        switch runOutcomes[targetID] {
+        case .exited(let code): status = code == 0 ? .exited : .failed(code: code)
+        case .stoppedByUser: status = .stopped
+        case .failedToStart: status = .failedToStart
+        case .none: status = .stopped  // stopped without a recorded outcome → neutral
+        }
+      }
+      let command =
+        project(forTargetID: targetID).map {
+          runConfig(forProject: $0.path).command.trimmingCharacters(in: .whitespacesAndNewlines)
+        } ?? ""
+      return RunToastItem(
+        targetID: targetID, tabID: tabID, source: notificationSource(forTargetID: targetID),
+        command: command, status: status)
+    }
+    .sorted { $0.targetID < $1.targetID }  // stable order across renders
+  }
+
+  /// ✕ on the run toast: a real dismiss — it won't reappear for this run (until the next start).
+  func dismissRunToast(for targetID: TerminalTarget.ID) {
+    runToastDismissWork[targetID]?.cancel()
+    runToastDismissWork[targetID] = nil
+    dismissedRunToasts.insert(targetID)
+  }
+
+  /// "Open terminal" on the run toast: jump to the run terminal. The toast then hides because its tab
+  /// is on screen (visibility rule) — NOT dismissed, so it reappears if you navigate away.
+  func openRunToast(for targetID: TerminalTarget.ID) {
+    guard let tabID = runStates[targetID]?.tab else { return }
+    openTerminal(targetID: targetID, tabID: tabID)
+  }
+
+  /// Clear toast dismissal + cancel any pending auto-dismiss for a target — called when a fresh run
+  /// starts (so the new run always gets a toast) and when the run goes away (close/reap/delete).
+  private func resetRunToast(for targetID: TerminalTarget.ID) {
+    runToastDismissWork[targetID]?.cancel()
+    runToastDismissWork[targetID] = nil
+    dismissedRunToasts.remove(targetID)
+  }
+
+  /// After a run reaches a terminal state, auto-dismiss its toast once the linger elapses (unless the
+  /// user already dismissed/opened it, or a restart cancelled the timer).
+  private func scheduleRunToastAutoDismiss(for targetID: TerminalTarget.ID) {
+    runToastDismissWork[targetID]?.cancel()
+    let work = scheduleRunToastDismiss(Self.runToastLinger) { [weak self] in
+      guard let self else { return }
+      self.dismissedRunToasts.insert(targetID)
+      self.runToastDismissWork[targetID] = nil
+    }
+    runToastDismissWork[targetID] = work
+  }
+
+  /// Post a native banner for a backgrounded run that FAILED, but only while the app isn't frontmost —
+  /// the in-app toast is invisible then (Arch #7, issue #67). Reuses `NotificationGate` +
+  /// `SystemNotifier`; the synthesized notification is NOT added to the inspector history (run status
+  /// is transient). A click routes through `openTerminal` via the payload's `userInfo`.
+  private func postRunFailureBannerIfBackgrounded(
+    targetID: TerminalTarget.ID, tabID: TerminalTab.ID, title: String, body: String
+  ) {
+    guard NotificationGate.shouldPostBanner(recorded: true, appActive: NSApp.isActive) else {
+      return
+    }
+    let note = WorkroomNotification(
+      id: UUID(), targetID: targetID, tabID: tabID, kind: .osc,
+      source: notificationSource(forTargetID: targetID), title: title, body: body, date: Date(),
+      count: 1)
+    Task { @MainActor in
+      if await systemNotifier.ensureAuthorized() { systemNotifier.post(note) }
+    }
+  }
+
+  /// The owning project of a target by id (mirrors `notificationSource`'s scan) — for the run toast's
+  /// command label.
+  private func project(forTargetID id: TerminalTarget.ID) -> Project? {
+    projects.first { p in
+      TerminalTarget.rootID(project: p.path) == id
+        || p.workrooms.contains { TerminalTarget.workroomID(project: p.path, name: $0.name) == id }
+    }
+  }
 
   /// Whether the target's run command is currently running. Drives the toolbar Run↔Stop/Restart
   /// toggle and the sidebar run dot.
@@ -633,26 +806,47 @@ final class AppStore: ObservableObject {
   }
 
   /// Start the project's run command in `target`'s directory, in a dedicated run terminal. No-op
-  /// without a configured command or for a missing target. If a run tab already exists it's focused,
-  /// not duplicated (one run terminal per target).
-  func startRunCommand(for target: TerminalTarget) {
+  /// without a configured command or for a missing target. One run terminal per target (a second start
+  /// is a no-op, not a duplicate).
+  ///
+  /// Issue #67: the run starts in the BACKGROUND by default — `focus` is false, so it doesn't steal the
+  /// foreground tab; a toast surfaces its status. `focus: true` is only for auto-run on a freshly
+  /// created workroom where the run would be the sole tab (Arch #5) — there we DO show it.
+  func startRunCommand(for target: TerminalTarget, focus: Bool = false) {
     guard !target.isMissing, let project = project(forTarget: target) else { return }
     let config = runConfig(forProject: project.path)
     guard config.hasCommand else { return }
     if let existing = runStates[target.id]?.tab {
-      terminals.focus(existing, for: target)
+      // issue #67: a plain start never steals focus — only the auto-run-only-tab case passes focus.
+      if focus { terminals.focus(existing, for: target) }
       return
     }
     let pidPath = makeRunPidPath()
     let line = runCommandLine(
       config.command.trimmingCharacters(in: .whitespacesAndNewlines), pidPath: pidPath)
-    let tab = terminals.addRunTab(for: target, command: line, cwd: target.path)
+    let tab = terminals.addRunTab(for: target, command: line, cwd: target.path, focus: focus)
+    runOutcomes[target.id] = nil  // a fresh run clears the prior outcome (issue #67)
+    resetRunToast(for: target.id)  // a new run always gets a fresh toast (clear dismiss + timer)
+    // Background start spawns the surface off-window (`addRunTab(focus:false)`); if that failed there's
+    // no process — surface the failure rather than a lying "running" toast. (Foreground starts spawn on
+    // mount, so the surface is legitimately nil here — skip the check.)
+    if !focus, tab.surface?.didSpawnFail == true {
+      runOutcomes[target.id] = .failedToStart
+      runStates[target.id] = .stopped(tab: tab.id)
+      scheduleRunToastAutoDismiss(for: target.id)
+      postRunFailureBannerIfBackgrounded(
+        targetID: target.id, tabID: tab.id, title: "Run failed to start",
+        body: config.command.trimmingCharacters(in: .whitespacesAndNewlines))
+      return
+    }
     runStates[target.id] = .running(tab: tab.id, interrupted: false)
     runPidFiles[target.id] = pidPath  // after the tab exists, so cleanup can't wipe it
     captureRunSession(for: target.id, pidPath: pidPath)  // record the session for reliable stop
     // Child-exit flips run-state to stopped; the pane stays open (wait_after_command). The captured
     // `target` value is stable for the workroom's lifetime (a delete reaps everything anyway).
-    tab.surface?.onChildExited = { [weak self] _ in self?.markRunExited(for: target) }
+    tab.surface?.onChildExited = { [weak self] code in
+      self?.markRunExited(for: target, exitCode: code)
+    }
   }
 
   /// Respawn the run command in place of `oldTab` (issue #40): the replacement takes the old run tab's
@@ -672,27 +866,41 @@ final class AppStore: ObservableObject {
     let pidPath = makeRunPidPath()
     let line = runCommandLine(
       config.command.trimmingCharacters(in: .whitespacesAndNewlines), pidPath: pidPath)
+    // Issue #67: a restart PRESERVES focus rather than always backgrounding — if the user was viewing
+    // the run tab, the replacement stays focused; if it was already backgrounded, it stays so. Capture
+    // this BEFORE `respawnRunTab` closes the old tab (which would move focus to a successor).
+    let wasFocused = terminals.focusedTab(for: target)?.id == oldTab
     let tab = terminals.respawnRunTab(
-      replacing: oldTab, for: target, command: line, cwd: target.path)
+      replacing: oldTab, for: target, command: line, cwd: target.path, focus: wasFocused)
+    runOutcomes[target.id] = nil  // a fresh run clears the prior outcome (issue #67)
+    resetRunToast(for: target.id)  // restart re-arms the toast + cancels a stale timer
+    if !wasFocused, tab.surface?.didSpawnFail == true {
+      runOutcomes[target.id] = .failedToStart
+      runStates[target.id] = .stopped(tab: tab.id)
+      scheduleRunToastAutoDismiss(for: target.id)
+      postRunFailureBannerIfBackgrounded(
+        targetID: target.id, tabID: tab.id, title: "Run failed to start",
+        body: config.command.trimmingCharacters(in: .whitespacesAndNewlines))
+      return
+    }
     runStates[target.id] = .running(tab: tab.id, interrupted: false)
     runPidFiles[target.id] = pidPath  // after respawnRunTab's closeTab cleanup, so it survives
     captureRunSession(for: target.id, pidPath: pidPath)  // record the session for reliable stop
-    tab.surface?.onChildExited = { [weak self] _ in self?.markRunExited(for: target) }
+    tab.surface?.onChildExited = { [weak self] code in
+      self?.markRunExited(for: target, exitCode: code)
+    }
   }
 
   /// Toggle a specific target's run command from the sidebar: running → stop; otherwise start (or
-  /// re-run a stopped-but-open tab). Acts on the given target (not the selection). On start, also
-  /// navigates the detail pane to that target so the just-started run tab is visible — it's already
-  /// the focused tab within the target, so selecting the target shows it (issue #7).
+  /// re-run a stopped-but-open tab). Acts on the given target (not the selection). Issue #67: a start
+  /// runs in the background and does NOT navigate to the target — the run toast is the feedback.
   func toggleRunCommand(for target: TerminalTarget) {
     if isRunCommandRunning(for: target.id) {
       stopRunCommand(for: target)
     } else {
-      restartRunCommand(for: target)  // no run tab → start; stopped-but-open tab → re-run
-      if let sid = Self.sidebarID(forTargetID: target.id, in: projects) {
-        selectedTargetID = sid
-        selectedProjectID = Self.projectPath(of: sid)
-      }
+      // Issue #67: starting from the sidebar no longer navigates to the workroom — the run goes to the
+      // background and the toast is the feedback. Open it from the toast / ⌘R / Go ▸ Run Terminal.
+      restartRunCommand(for: target)  // no run tab → start in background; stopped-but-open → re-run
     }
   }
 
@@ -803,16 +1011,26 @@ final class AppStore: ObservableObject {
   /// the restart's close+respawn — which frees the old surface — MUST be deferred to the next runloop
   /// tick; freeing the surface synchronously here is a re-entrant use-after-free that crashes the app.
   /// The deferred guard re-reads the state, so a tab the user closed in between isn't double-closed.
-  private func markRunExited(for target: TerminalTarget) {
+  private func markRunExited(for target: TerminalTarget, exitCode: UInt32) {
     switch runStates[target.id] {
-    case .running(let tab, _):
+    case .running(let tab, let interrupted):
       // The PTY child exited — but a server may have forked free of it and still be alive (bin/dev;
       // issue #7). SIGINT the whole session, then wait it out and SIGKILL any straggler, so a forked
       // server can't linger and trip "A server is already running" on the next start.
       let sid = runSessions[target.id] ?? -1
       interruptRun(for: target.id)
       clearRunPidFile(for: target.id)
+      // Record how the run ended for the toast (issue #67): a Stop/Restart Ctrl-C (`interrupted`) is a
+      // user action, not a failure; otherwise it exited on its own — code 0 is clean, non-zero a crash.
+      let code = Int32(truncatingIfNeeded: exitCode)
+      runOutcomes[target.id] = interrupted ? .stoppedByUser : .exited(code: code)
       runStates[target.id] = .stopped(tab: tab)
+      scheduleRunToastAutoDismiss(for: target.id)  // terminal state → linger then auto-dismiss
+      if Self.runOutcomeIsBannerWorthy(runOutcomes[target.id]) {
+        // A backgrounded run crashed — push a native banner if the app isn't frontmost (Arch #7).
+        postRunFailureBannerIfBackgrounded(
+          targetID: target.id, tabID: tab, title: "Run failed", body: "exited with code \(code)")
+      }
       waitForSessionsExit(sid > 1 ? [sid] : [], deadline: Date().addingTimeInterval(6)) {}
     case .restarting:
       // The launcher exited, but the server it forked may still be shutting down (Puma drains its
@@ -991,15 +1209,17 @@ final class AppStore: ObservableObject {
     // tab #1, or a no-op if the config was cleared between arming and mount.
     if isArmed {
       runStates[target.id] = nil
-      startRunCommand(for: target)
+      // Arch #5 (issue #67): when "open terminal in new workrooms" is ON there's a shell tab to show,
+      // so background the auto-run (toast surfaces it). When it's OFF the run would be the workroom's
+      // only tab — focus it, or the new workroom would look empty while the server runs hidden.
+      startRunCommand(for: target, focus: !opensShell)
     }
 
-    // "Open a terminal in new workrooms": open a plain shell. Independent of auto-run — when both
-    // fire, the run command stays tab #1 and focused (the prominent thing) and this shell is tab #2,
-    // available behind it. `addTab` focuses the new shell, so re-focus the run tab afterwards.
+    // "Open a terminal in new workrooms": open a plain shell as the visible tab. When auto-run also
+    // fired, the run stays backgrounded (above) and this shell is the focused tab the user lands on
+    // (`addTab` focuses it). Issue #67: no longer re-focus the run tab — backgrounding it is the point.
     if opensShell {
       terminals.addTab(for: target)
-      if isArmed, let runTab = runStates[target.id]?.tab { terminals.focus(runTab, for: target) }
     }
 
     // An armed run that couldn't start (config cleared after arming) still needs a usable terminal;
@@ -1354,6 +1574,8 @@ final class AppStore: ObservableObject {
     // Same for a created-then-deleted-before-mount target marked to open a shell on create.
     pendingOpenTerminal.remove(targetID)
     clearRunPidFile(for: targetID)
+    runOutcomes[targetID] = nil
+    resetRunToast(for: targetID)  // deleted target → drop any run toast state (issue #67)
     logs[targetID] = nil
     // Drop the gone target's notifications and pull any banners it already delivered.
     systemNotifier.withdraw(tabIDs: notifications.removeForTarget(targetID))

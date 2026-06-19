@@ -117,7 +117,7 @@ final class RunCommandTests: XCTestCase {
     let t = target(store, "/a", "main")
     store.startRunCommand(for: t)
     let first = store.runTabID(for: t.id)
-    store.startRunCommand(for: t)  // already exists → focus, no second spawn
+    store.startRunCommand(for: t)  // already exists → no-op (issue #67: no re-focus)
     XCTAssertEqual(store.runTabID(for: t.id), first)
     XCTAssertEqual(store.terminals.tabCount(forTargetID: t.id), 1)
   }
@@ -284,22 +284,24 @@ final class RunCommandTests: XCTestCase {
     XCTAssertEqual(store.terminals.tabCount(forTargetID: t.id), 1, "one shell terminal opened")
   }
 
-  func testOpenTerminalOnCreateAlongsideAutoRunOpensBothRunTabFocused() {
+  func testOpenTerminalOnCreateAlongsideAutoRunBackgroundsTheRun() {
     let store = makeStore([project("/a", workrooms: ["main"])])
     store.setRunConfig(RunConfig(command: "echo hi", autoRun: true), forProject: "/a")
     let t = target(store, "/a", "main")
 
-    // Both armed at create: auto-run becomes tab #1 (focused, prominent), the setting's shell is
-    // tab #2 (available behind it). The run command runs and the run tab stays focused.
+    // Issue #67 / Arch #5: both armed at create → because "open terminal in new workrooms" is on there
+    // IS a shell tab to show, so the auto-run is BACKGROUNDED (running, but not focused) and the plain
+    // shell is the focused tab the user lands on. (Was: the run stayed focused — reversed by #67.)
     store.armAutoRun(forWorkroom: t.id)
     store.armOpenTerminal(forWorkroom: t.id)
     store.ensureInitialTerminal(for: t)
 
-    XCTAssertTrue(store.isRunCommandRunning(for: t.id))
+    XCTAssertTrue(store.isRunCommandRunning(for: t.id), "run still starts, just in the background")
     XCTAssertEqual(store.terminals.tabCount(forTargetID: t.id), 2, "run tab + shell tab")
-    XCTAssertEqual(
-      store.terminals.activeTab(for: t)?.id, store.runTabID(for: t.id),
-      "the run command, not the extra shell, stays focused")
+    let active = store.terminals.activeTab(for: t)?.id
+    XCTAssertNotNil(active)
+    XCTAssertNotEqual(
+      active, store.runTabID(for: t.id), "the shell is focused, the run is backgrounded")
   }
 
   func testOpenTerminalMarkerIsOneShot() {
@@ -522,5 +524,267 @@ final class RunCommandTests: XCTestCase {
     XCTAssertFalse(completed)
     settle(0.5)
     XCTAssertTrue(completed, "a wedged process still proceeds after the timeout (SIGHUP fallback)")
+  }
+
+  // MARK: Background run, status outcomes, run toast (issue #67)
+
+  func testStartRunsInBackgroundWithoutStealingFocus() {
+    let store = makeStore([project("/a", workrooms: ["main"])])
+    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    let t = target(store, "/a", "main")
+    store.selectedTargetID = .workroom(project: "/a", name: "main")
+    let shell = store.terminals.addTab(for: t).id  // a tab the user is on (addTab focuses it)
+
+    store.startRunCommand(for: t)  // issue #67: starts in the background
+
+    XCTAssertTrue(store.isRunCommandRunning(for: t.id))
+    XCTAssertEqual(
+      store.terminals.activeTab(for: t)?.id, shell, "a background start must not steal focus")
+    XCTAssertNotEqual(store.terminals.activeTab(for: t)?.id, store.runTabID(for: t.id))
+  }
+
+  func testToggleStartDoesNotNavigate() {
+    let store = makeStore([project("/a", workrooms: ["main"])])
+    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    let t = target(store, "/a", "main")
+    store.selectedTargetID = nil  // unrelated selection state
+
+    store.toggleRunCommand(for: t)  // sidebar ▶ → start
+
+    XCTAssertTrue(store.isRunCommandRunning(for: t.id))
+    XCTAssertNil(store.selectedTargetID, "issue #67: starting from the sidebar must not navigate")
+  }
+
+  func testCleanExitMapsToExitedOutcome() {
+    let store = makeStore([project("/a", workrooms: ["main"])])
+    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    let t = target(store, "/a", "main")
+    store.startRunCommand(for: t)
+
+    runView(store, t)?.handleChildExited(exitCode: 0)
+
+    XCTAssertEqual(store.runOutcomes[t.id], .exited(code: 0))
+  }
+
+  func testNonZeroExitMapsToFailedOutcome() {
+    let store = makeStore([project("/a", workrooms: ["main"])])
+    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    let t = target(store, "/a", "main")
+    store.startRunCommand(for: t)
+
+    runView(store, t)?.handleChildExited(exitCode: 137)
+
+    XCTAssertEqual(
+      store.runOutcomes[t.id], .exited(code: 137), "a non-zero exit is recorded as such")
+  }
+
+  func testUserStopThenExitMapsToStopped() {
+    let store = makeStore([project("/a", workrooms: ["main"])])
+    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    let t = target(store, "/a", "main")
+    store.startRunCommand(for: t)
+
+    store.stopRunCommand(for: t)  // 1st press → SIGINT, marks .running(interrupted: true)
+    runView(store, t)?.handleChildExited(exitCode: 0)  // process then exits
+
+    XCTAssertEqual(store.runOutcomes[t.id], .stoppedByUser, "a user Stop is not a failure")
+  }
+
+  func testRunToastShownWhenBackgroundedHiddenWhenViewing() {
+    let store = makeStore([project("/a", workrooms: ["main"])])
+    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    let t = target(store, "/a", "main")
+    store.selectedTargetID = .workroom(project: "/a", name: "main")
+    _ = store.terminals.addTab(for: t)  // a focused shell, so the run isn't the visible tab
+
+    store.startRunCommand(for: t)  // background
+    XCTAssertEqual(store.runToastItems.map(\.targetID), [t.id], "a backgrounded run shows a toast")
+    XCTAssertEqual(store.runToastItems.first?.status, .running)
+
+    // Open the run terminal → it becomes the visible tab → the toast hides (not dismissed).
+    let runID = try! XCTUnwrap(store.runTabID(for: t.id))
+    store.terminals.focus(runID, for: t)
+    XCTAssertTrue(store.runToastItems.isEmpty, "no toast for the run you're looking at")
+  }
+
+  func testDismissRunToastHidesItWithoutStoppingTheRun() {
+    let store = makeStore([project("/a", workrooms: ["main"])])
+    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    let t = target(store, "/a", "main")
+    store.selectedTargetID = .workroom(project: "/a", name: "main")
+    _ = store.terminals.addTab(for: t)
+    store.startRunCommand(for: t)
+    XCTAssertFalse(store.runToastItems.isEmpty)
+
+    store.dismissRunToast(for: t.id)
+
+    XCTAssertTrue(store.runToastItems.isEmpty, "✕ dismisses the toast")
+    XCTAssertTrue(store.isRunCommandRunning(for: t.id), "but the run keeps running")
+  }
+
+  func testRunOrFocusFocusesAnAlreadyRunningBackgroundRun() {
+    let store = makeStore([project("/a", workrooms: ["main"])])
+    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    let t = target(store, "/a", "main")
+    store.selectedTargetID = .workroom(project: "/a", name: "main")
+    let shell = store.terminals.addTab(for: t).id
+    store.startRunCommand(for: t)  // background; the shell stays focused
+    XCTAssertEqual(store.terminals.activeTab(for: t)?.id, shell)
+
+    store.runOrFocusRunCommand()  // ⌘R while running → "show me the run"
+
+    XCTAssertEqual(
+      store.terminals.activeTab(for: t)?.id, store.runTabID(for: t.id),
+      "⌘R on a running background run focuses it")
+  }
+
+  func testRestartPreservesFocusWhenRunTabWasFocused() {
+    let store = makeStore([project("/a", workrooms: ["main"])])
+    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    let t = target(store, "/a", "main")
+    store.selectedTargetID = .workroom(project: "/a", name: "main")
+    store.startRunCommand(for: t)
+    let runID = try! XCTUnwrap(store.runTabID(for: t.id))
+    store.terminals.focus(runID, for: t)  // user opened the run terminal
+
+    store.restartRunCommand(for: t)  // running → Ctrl-C → restarting
+    runView(store, t)?.handleChildExited(exitCode: 0)  // exit → deferred close + respawn
+    let pumped = expectation(description: "deferred respawn")
+    DispatchQueue.main.async { pumped.fulfill() }
+    wait(for: [pumped], timeout: 1)
+
+    let newRun = try! XCTUnwrap(store.runTabID(for: t.id))
+    XCTAssertEqual(
+      store.terminals.activeTab(for: t)?.id, newRun,
+      "restart keeps the run focused when it was focused (codex correction)")
+  }
+
+  func testBackgroundRestartStaysBackground() {
+    let store = makeStore([project("/a", workrooms: ["main"])])
+    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    let t = target(store, "/a", "main")
+    store.selectedTargetID = .workroom(project: "/a", name: "main")
+    let shell = store.terminals.addTab(for: t).id  // focused
+    store.startRunCommand(for: t)  // background
+    let runID = try! XCTUnwrap(store.runTabID(for: t.id))
+    XCTAssertEqual(store.terminals.activeTab(for: t)?.id, shell)
+
+    store.restartRunCommand(for: t)  // running → Ctrl-C → restarting
+    runView(store, t)?.handleChildExited(exitCode: 0)  // exit → deferred close + respawn
+    let pumped = expectation(description: "deferred respawn")
+    DispatchQueue.main.async { pumped.fulfill() }
+    wait(for: [pumped], timeout: 1)
+
+    let newRun = try! XCTUnwrap(store.runTabID(for: t.id))
+    XCTAssertNotEqual(newRun, runID, "restart spawns a fresh tab")
+    XCTAssertEqual(
+      store.terminals.activeTab(for: t)?.id, shell,
+      "a background restart stays backgrounded — focus stays on the shell")
+  }
+
+  func testRunVisibleInSplitHidesToastEvenWhenNotFocused() {
+    let store = makeStore([project("/a", workrooms: ["main"])])
+    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    let t = target(store, "/a", "main")
+    store.selectedTargetID = .workroom(project: "/a", name: "main")
+    store.startRunCommand(for: t)  // background
+    let runID = try! XCTUnwrap(store.runTabID(for: t.id))
+    let sibling = store.terminals.addTab(for: t).id
+    // Split [sibling, run] — both panes visible at once.
+    store.terminals.moveTabIntoSplit(runID, ontoEdge: .right, of: sibling, for: t)
+    store.terminals.focus(sibling, for: t)  // focus the sibling, not the run
+
+    XCTAssertTrue(
+      store.runToastItems.isEmpty,
+      "a run visible in a split hides its toast even when the sibling is focused (split-aware)")
+  }
+
+  func testFailedToStartWhenSurfaceSpawnFails() {
+    let store = makeStore([project("/a", workrooms: ["main"])])
+    // Simulate `ghostty_surface_new` returning nil for the backgrounded run surface.
+    store.terminals.makeView = { _, cwd, command in
+      let v = GhosttySurfaceView(workingDirectory: cwd, command: command, spawnsSurface: false)
+      v.spawnFailOverrideForTesting = true
+      return v
+    }
+    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    let t = target(store, "/a", "main")
+
+    store.startRunCommand(for: t)  // background; spawn "fails"
+
+    XCTAssertFalse(store.isRunCommandRunning(for: t.id), "a failed spawn is not 'running'")
+    XCTAssertEqual(store.runOutcomes[t.id], .failedToStart)
+    XCTAssertEqual(
+      store.runToastItems.first?.status, .failedToStart, "the toast surfaces the failure, not a lie"
+    )
+  }
+
+  func testRunToastAutoDismissesAfterTerminalState() {
+    let store = makeStore([project("/a", workrooms: ["main"])])
+    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    let t = target(store, "/a", "main")
+    var pending: [DispatchWorkItem] = []
+    store.scheduleRunToastDismiss = { _, body in
+      let work = DispatchWorkItem(block: body)
+      pending.append(work)
+      return work
+    }
+    store.startRunCommand(for: t)  // background (no selection → toast shown)
+
+    runView(store, t)?.handleChildExited(exitCode: 0)  // terminal → schedules the auto-dismiss
+    XCTAssertEqual(pending.count, 1)
+    XCTAssertFalse(store.runToastItems.isEmpty, "the toast lingers right after the run ends")
+
+    pending[0].perform()  // the linger elapses
+    XCTAssertTrue(store.runToastItems.isEmpty, "the toast auto-dismisses after the linger")
+  }
+
+  func testRestartCancelsStaleAutoDismissTimer() {
+    let store = makeStore([project("/a", workrooms: ["main"])])
+    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    let t = target(store, "/a", "main")
+    var pending: [DispatchWorkItem] = []
+    store.scheduleRunToastDismiss = { _, body in
+      let work = DispatchWorkItem(block: body)
+      pending.append(work)
+      return work
+    }
+    store.startRunCommand(for: t)
+    runView(store, t)?.handleChildExited(exitCode: 0)  // .stopped → schedules pending[0]
+    XCTAssertEqual(pending.count, 1)
+
+    store.restartRunCommand(for: t)  // .stopped → respawn → resetRunToast cancels the stale timer
+
+    XCTAssertTrue(pending[0].isCancelled, "restart cancels the stale auto-dismiss timer")
+    XCTAssertTrue(store.isRunCommandRunning(for: t.id), "and the fresh run is running")
+  }
+
+  func testRunOutcomeBannerWorthiness() {
+    // A genuine failure warrants a banner; a clean exit or a user Stop does not (Arch #7).
+    XCTAssertTrue(AppStore.runOutcomeIsBannerWorthy(.exited(code: 1)))
+    XCTAssertTrue(AppStore.runOutcomeIsBannerWorthy(.exited(code: 137)))
+    XCTAssertTrue(AppStore.runOutcomeIsBannerWorthy(.failedToStart))
+    XCTAssertFalse(AppStore.runOutcomeIsBannerWorthy(.exited(code: 0)))
+    XCTAssertFalse(AppStore.runOutcomeIsBannerWorthy(.stoppedByUser))
+    XCTAssertFalse(AppStore.runOutcomeIsBannerWorthy(nil))
+  }
+
+  func testTappingRunToastOpensTheRunAndDismissesIt() {
+    let store = makeStore([project("/a", workrooms: ["main"])])
+    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    let t = target(store, "/a", "main")
+    store.selectedTargetID = .workroom(project: "/a", name: "main")
+    _ = store.terminals.addTab(for: t)  // focused shell → the run is backgrounded + toasted
+    store.startRunCommand(for: t)
+    let runID = try! XCTUnwrap(store.runTabID(for: t.id))
+    XCTAssertFalse(store.runToastItems.isEmpty)
+
+    // What a card tap fires (see ToastStack): open the run terminal AND dismiss the toast.
+    store.openRunToast(for: t.id)
+    store.dismissRunToast(for: t.id)
+
+    XCTAssertEqual(store.terminals.activeTab(for: t)?.id, runID, "the tap opens the run terminal")
+    XCTAssertTrue(store.dismissedRunToasts.contains(t.id), "the tap dismisses the toast for good")
+    XCTAssertTrue(store.runToastItems.isEmpty)
   }
 }

@@ -373,11 +373,24 @@ final class TerminalSessions: ObservableObject {
   ///   stopped ──────── Run / ⌘R / Restart ─▶ close + respawn
   ///   any state ────── close tab (⌘W/✕) / reap ─▶ removed (state cleared via onTabsRemoved)
   /// ```
+  /// A backgrounded run tab is never the active tab, so it never mounts — and a libghostty surface
+  /// spawns its process only on window-mount. We give the off-window `ensureSurfaceCreated` a sane
+  /// initial size so the command starts with reasonable COLUMNS/LINES; it re-sizes on first real mount.
+  static let backgroundRunInitialSize = CGSize(width: 800, height: 480)
+
   @discardableResult
-  func addRunTab(for target: TerminalTarget, command: String, cwd: String) -> TerminalTab {
+  func addRunTab(for target: TerminalTarget, command: String, cwd: String, focus: Bool = true)
+    -> TerminalTab
+  {
     let tab = makeRunTab(for: target, command: command, cwd: cwd)
     insert(tab, for: target)
-    setFocused(tab.id, for: target.id)
+    if focus {
+      setFocused(tab.id, for: target.id)
+    } else {
+      // Issue #67 (run in the background): not focusing means the pane never mounts, so spawn the
+      // surface off-window now — otherwise the command would never start and the toast would lie.
+      tab.surface?.ensureSurfaceCreated(initialSize: Self.backgroundRunInitialSize)
+    }
     reconcileOcclusion(for: target)
     return tab
   }
@@ -391,7 +404,8 @@ final class TerminalSessions: ObservableObject {
   /// `addRunTab`. Returns the new tab so the caller wires run-state + `onChildExited`, as `addRunTab` does.
   @discardableResult
   func respawnRunTab(
-    replacing oldID: TerminalTab.ID, for target: TerminalTarget, command: String, cwd: String
+    replacing oldID: TerminalTab.ID, for target: TerminalTarget, command: String, cwd: String,
+    focus: Bool = true
   ) -> TerminalTab {
     // Capture the old tab's place BEFORE closing it collapses the split / drops it from the order.
     let priorSplit = splitByTarget[target.id]
@@ -414,7 +428,13 @@ final class TerminalSessions: ObservableObject {
     if wasInSplit, let priorSplit {
       splitByTarget[target.id] = priorSplit.replacingLeaf(oldID, with: tab.id)
     }
-    setFocused(tab.id, for: target.id)
+    if focus {
+      setFocused(tab.id, for: target.id)
+    } else {
+      // Background restart (issue #67): keep it unfocused, but spawn off-window so the respawned
+      // command actually runs (the new tab won't mount until the user opens it).
+      tab.surface?.ensureSurfaceCreated(initialSize: Self.backgroundRunInitialSize)
+    }
     reconcileOcclusion(for: target)
     return tab
   }

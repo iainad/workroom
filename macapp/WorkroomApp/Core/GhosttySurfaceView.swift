@@ -221,6 +221,27 @@ final class GhosttySurfaceView: NSView {
     layoutGoToBottomButton()
   }
 
+  /// Spawn the surface's PTY *without* waiting for window mount (issue #67, background run). Normally
+  /// `createSurface` fires from `viewDidMoveToWindow`, so a run tab that's started in the background and
+  /// never made active would never mount — and its command would never start (the toast would claim
+  /// "running" while nothing ran). `createSurface` only hard-requires positive bounds
+  /// (`backingPixelSize`); every window reference inside it is a soft fallback. So give the view a
+  /// non-zero frame and create the surface now; it re-sizes correctly when it later mounts into a real
+  /// pane. No-op if the surface already exists or this is a test view (`spawnsSurface == false`).
+  func ensureSurfaceCreated(initialSize: CGSize) {
+    guard spawnsSurface, surface == nil else { return }
+    if bounds.width <= 0 || bounds.height <= 0 {
+      // Positive bounds are the one thing `createSurface` can't proceed without (it defers via
+      // `pendingSurfaceCreation` otherwise). A sane initial size also gives the spawned command a
+      // reasonable COLUMNS/LINES until the first on-window resize.
+      let size =
+        (initialSize.width > 0 && initialSize.height > 0)
+        ? initialSize : CGSize(width: 800, height: 480)
+      setFrameSize(size)
+    }
+    createSurface()
+  }
+
   private func destroySurface() {
     if let surface { ghostty_surface_free(surface) }
     surface = nil
@@ -578,6 +599,20 @@ final class GhosttySurfaceView: NSView {
   var hasLiveProcess: Bool {
     if let liveProcessOverrideForTesting { return liveProcessOverrideForTesting }
     return surface != nil && !processHasExited
+  }
+
+  /// Test seam: forces `didSpawnFail` (tests run with `spawnsSurface: false`, where a nil surface is
+  /// intentional, so the real check can't exercise the failed-spawn path). Production leaves this nil.
+  var spawnFailOverrideForTesting: Bool?
+
+  /// Whether an attempted surface spawn (`ensureSurfaceCreated`) failed — the libghostty surface
+  /// couldn't be created (issue #67 background run). Distinct from "process exited": this is "the
+  /// surface object itself doesn't exist after we tried to make one", so it's race-free against a
+  /// command that exits instantly. Always false for test views (`spawnsSurface == false`), where a nil
+  /// surface is intentional, so the run state machine's tests are unaffected (unless overridden).
+  var didSpawnFail: Bool {
+    if let spawnFailOverrideForTesting { return spawnFailOverrideForTesting }
+    return spawnsSurface && surface == nil
   }
 
   private func armProgressTimeout() {

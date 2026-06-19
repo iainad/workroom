@@ -24,7 +24,26 @@ struct ToastStack: View {
   }
 
   var body: some View {
+    // ONE container (issue #67): live run toasts ride above the transient notification toasts, so the
+    // two never overlap in the bottom-right corner (they'd collide as separate overlays).
     VStack(alignment: .trailing, spacing: 8) {
+      ForEach(store.runToastItems) { item in
+        RunToastView(
+          item: item,
+          onTap: {
+            // Tap anywhere on the card → open the run terminal AND dismiss the toast (it won't
+            // reappear; you're now looking at the run). Mirrors the notification toast's tap.
+            store.openRunToast(for: item.targetID)
+            store.dismissRunToast(for: item.targetID)
+          },
+          onDismiss: {
+            withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) {
+              store.dismissRunToast(for: item.targetID)
+            }
+          }
+        )
+        .transition(.move(edge: .trailing).combined(with: .opacity))
+      }
       ForEach(visibleToasts) { toast in
         ToastView(
           item: toast,
@@ -47,13 +66,17 @@ struct ToastStack: View {
       reduceMotion ? nil : .spring(response: 0.36, dampingFraction: 0.82),
       value: store.toasts.map(\.id)
     )
+    .animation(
+      reduceMotion ? nil : .spring(response: 0.36, dampingFraction: 0.82),
+      value: store.runToastItems
+    )
     // Keep toasts honest with the spine: drop any whose notification was dismissed elsewhere.
     .onChange(of: notifications.items) { _, items in
       let live = Set(items.map(\.id))
       for toast in store.toasts where !live.contains(toast.id) { store.dismissToast(toast.id) }
     }
     // An empty stack must not eat clicks meant for the content beneath it.
-    .allowsHitTesting(!store.toasts.isEmpty)
+    .allowsHitTesting(!store.toasts.isEmpty || !store.runToastItems.isEmpty)
   }
 }
 
@@ -180,5 +203,107 @@ private struct ToastView: View {
       if Task.isCancelled || hovering { return }
       onDismiss()
     }
+  }
+}
+
+/// One live run-status toast (issue #67). Mirrors `ToastView`'s lifted-card styling, bound to a
+/// DERIVED `RunToastItem`: a spinner while the run is alive, a final status when it ends. Tapping
+/// anywhere on the card opens the run terminal AND dismisses the toast; the ✕ (top-left, on hover)
+/// dismisses without opening. Persistence, the foreground-hide rule, and auto-dismiss live on the
+/// store (the source of truth); this view only renders + forwards the two actions.
+private struct RunToastView: View {
+  let item: AppStore.RunToastItem
+  let onTap: () -> Void
+  let onDismiss: () -> Void
+
+  @State private var hovering = false
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  private let theme = ThemeService.shared
+
+  var body: some View {
+    HStack(spacing: 10) {
+      statusIcon
+      VStack(alignment: .leading, spacing: 2) {
+        Text(statusText).font(.callout).fontWeight(.semibold).lineLimit(1)
+        if !item.command.isEmpty {
+          Text(item.command).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+        }
+        if !item.source.isEmpty {
+          Text(item.source).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+        }
+      }
+      .frame(maxWidth: .infinity, alignment: .leading)
+    }
+    .padding(.horizontal, 12)
+    .padding(.vertical, 10)
+    .frame(width: 300, alignment: .leading)
+    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+    .overlay(RoundedRectangle(cornerRadius: 12).fill(theme.tokens.hover.opacity(hovering ? 1 : 0)))
+    .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(theme.tokens.border, lineWidth: 0.5))
+    .overlay(alignment: .topLeading) { closeButton }
+    .shadow(
+      color: .black.opacity(hovering ? 0.34 : 0.28), radius: hovering ? 22 : 18,
+      y: hovering ? 10 : 8
+    )
+    .contentShape(RoundedRectangle(cornerRadius: 12))
+    .onTapGesture { onTap() }
+    .onHover { hovering = $0 }
+    .animation(reduceMotion ? nil : .easeInOut(duration: 0.15), value: hovering)
+    .accessibilityElement(children: .ignore)
+    .accessibilityLabel(accessibilityText)
+    .accessibilityAddTraits(.isButton)
+    .accessibilityHint("Opens the run terminal")
+    .accessibilityAction { onTap() }
+    .accessibilityAction(named: "Dismiss") { onDismiss() }
+  }
+
+  // Spinner while alive; a neutral check for a clean/stopped end (not triumphant — a launcher exiting 0
+  // isn't necessarily a clean "success" given session reaping); the warning glyph for a real failure.
+  @ViewBuilder private var statusIcon: some View {
+    switch item.status {
+    case .running, .restarting:
+      ProgressView().controlSize(.small)
+    case .exited, .stopped:
+      Image(systemName: "checkmark.circle").foregroundStyle(.secondary)
+    case .failed, .failedToStart:
+      Image(systemName: "xmark.octagon.fill").foregroundStyle(theme.tokens.warning)
+    }
+  }
+
+  private var statusText: String {
+    switch item.status {
+    case .running: return "Running"
+    case .restarting: return "Restarting…"
+    case .exited: return "Exited"
+    case .failed(let code): return "Failed (exit \(code))"
+    case .stopped: return "Stopped"
+    case .failedToStart: return "Failed to start"
+    }
+  }
+
+  private var accessibilityText: String {
+    let parts = [item.source, statusText, item.command].filter { !$0.isEmpty }
+    return "Run: " + parts.joined(separator: ", ")
+  }
+
+  /// A small ✕ at the top-left, revealed on hover — dismisses this run's toast WITHOUT opening it
+  /// (a card tap opens + dismisses). Its own `Button` hit area sits above the card's tap gesture.
+  private var closeButton: some View {
+    Button(action: onDismiss) {
+      Image(systemName: "xmark")
+        .font(.system(size: 9, weight: .bold))
+        .foregroundStyle(.secondary)
+        .frame(width: 18, height: 18)
+        .background(.regularMaterial, in: Circle())
+        .overlay(Circle().strokeBorder(theme.tokens.border, lineWidth: 0.5))
+        .contentShape(Circle())
+    }
+    .buttonStyle(.plain)
+    .padding(6)
+    .opacity(hovering ? 1 : 0)
+    .allowsHitTesting(hovering)
+    .animation(reduceMotion ? nil : .easeInOut(duration: 0.15), value: hovering)
+    .help("Dismiss")
+    .accessibilityHidden(true)
   }
 }
