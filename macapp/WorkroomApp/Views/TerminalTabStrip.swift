@@ -98,7 +98,7 @@ struct TerminalTabStrip: View {
                 lastChipClick = ChipClick(id: tab.id, at: now)
               }
             }
-            .diffChipContextMenu(tab: tab, sessions: sessions, target: target, store: store)
+            .tabChipContextMenu(tab: tab, target: target, store: store)
             // Measure in .global space: a .local drag reads coordinates relative to the
             // chip, which itself moves via .offset(dragTranslation) — that feedback loop
             // dampens the translation so the chip lags the cursor. Global space is fixed.
@@ -475,26 +475,15 @@ extension View {
   /// tab to persisted; "Close" closes it. Terminal chips are returned unchanged (no menu), so this
   /// adds nothing to their right-click behaviour.
   @ViewBuilder
-  fileprivate func diffChipContextMenu(
-    tab: TerminalTab, sessions: TerminalSessions, target: TerminalTarget, store: AppStore
+  fileprivate func tabChipContextMenu(
+    tab: TerminalTab, target: TerminalTarget, store: AppStore
   ) -> some View {
-    if case .diff = tab.content {
-      self.contextMenu {
-        if tab.isPreview {
-          Button {
-            sessions.persist(tab.id, for: target)
-          } label: {
-            Label("Keep Open", systemImage: "pin")
-          }
-        }
-        Button(role: .destructive) {
-          store.requestCloseTerminalTab(tab.id, for: target)
-        } label: {
-          Label("Close \(tab.title)", systemImage: "xmark")
-        }
+    self.contextMenu {
+      Button(role: .destructive) {
+        store.requestCloseTerminalTab(tab.id, for: target)
+      } label: {
+        Label("Close", systemImage: "xmark")
       }
-    } else {
-      self
     }
   }
 }

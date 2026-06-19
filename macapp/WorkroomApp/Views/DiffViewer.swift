@@ -14,6 +14,17 @@ struct DiffViewer: View {
   let directory: String
 
   @State private var state: LoadState = .loading
+  /// Syntax-highlighted new-side lines, keyed by 1-based new-file line number. Empty ⇒ render plain
+  /// (the always-available fallback). Built asynchronously off the diff render — highlighting can
+  /// never block or break the diff.
+  @State private var highlightedLines: [Int: AttributedString] = [:]
+  /// Bumped when a diff finishes loading, so the highlight task (keyed on it) re-runs against the
+  /// freshly loaded diff without re-fetching the diff on every theme change.
+  @State private var loadToken = 0
+  /// Intra-line change emphasis (line-relative byte ranges) for replaced lines — deletions by
+  /// `oldLine`, additions by `newLine`. Computed synchronously from the diff in `load()`.
+  @State private var emphasis: (deletions: [Int: Range<Int>], additions: [Int: Range<Int>]) =
+    ([:], [:])
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   private let theme = ThemeService.shared
 
@@ -28,9 +39,19 @@ struct DiffViewer: View {
   var body: some View {
     content
       .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-      .background(theme.tokens.surface)
+      .background(theme.tokens.bg)
       // Re-fetch whenever the file or its source revision changes (preview retarget, tab switch).
       .task(id: "\(descriptor.source)\u{1F}\(descriptor.path)") { await load() }
+      // Build (or rebuild) highlighting once a diff is loaded, and re-colour on theme change. Keyed
+      // on source+path+theme-generation+load-token so a superseded run is cancelled and a stale
+      // result (wrong file or old theme) is never applied.
+      .task(id: highlightKey) { await applyHighlight() }
+  }
+
+  /// Identity of the current highlight: file + revision + theme generation + which diff load it's
+  /// for. Any change cancels the in-flight highlight and starts a fresh, correctly-keyed one.
+  private var highlightKey: String {
+    "\(descriptor.source)\u{1F}\(descriptor.path)\u{1F}\(theme.generation)\u{1F}\(loadToken)"
   }
 
   @ViewBuilder private var content: some View {
@@ -50,6 +71,7 @@ struct DiffViewer: View {
 
   private func load() async {
     state = .loading
+    highlightedLines = [:]  // drop any previous file's colours immediately (no stale flash)
     // In UI-test fixture mode the workroom path is a fake temp dir with no repo, so serve a canned
     // diff instead of shelling out to git/jj (issue #66 UI tests).
     let result =
@@ -62,17 +84,65 @@ struct DiffViewer: View {
     case .empty: state = .empty
     case .failed(let reason): state = .failed(reason)
     }
+    // Intra-line (character-level) change emphasis is computed straight from the diff (no fetch),
+    // so it's available for the immediate render — additions/context get it folded into their
+    // syntax-highlighted run later, deletions and pre-parse lines use it directly in `lineRow`.
+    if case .loaded(let diff) = state {
+      emphasis = IntraLineDiff.emphasis(for: diff)
+    } else {
+      emphasis = ([:], [:])
+    }
+    loadToken &+= 1  // signal the highlight task to (re)build against this diff
+  }
+
+  /// Build syntax highlighting for the loaded diff, off-main and cancellable. Any miss (no grammar,
+  /// no/blocked content, parse failure, stale/cancelled) leaves the diff rendering plain — this can
+  /// never block or break the diff. Only additions + context are coloured; deletions stay plain.
+  private func applyHighlight() async {
+    guard case .loaded(let diff) = state else {
+      highlightedLines = [:]
+      return
+    }
+    // Resolve a grammar from the new path, falling back to the old (rename/delete) path.
+    let grammar =
+      SyntaxLanguage.grammar(forPath: descriptor.path)
+      ?? diff.renamedFrom.flatMap { SyntaxLanguage.grammar(forPath: $0) }
+    guard let grammar else {
+      highlightedLines = [:]
+      return
+    }
+    // New-side content: canned in fixture mode, else the guarded VCS fetch folded into DiffResolver.
+    let content =
+      UITestFixture.isActive
+      ? UITestFixture.fileContent(for: descriptor)
+      : await DiffResolver().fileContent(for: descriptor, in: directory)
+    guard !Task.isCancelled else { return }
+    guard let content else {
+      highlightedLines = [:]
+      return
+    }
+    // Parse + resolve captures off the main actor — CPU-bound, bounded by the byte cap.
+    let spans = await Task.detached(priority: .utility) {
+      SyntaxHighlighter.shared.spans(for: content, grammar: grammar)
+    }.value
+    guard !Task.isCancelled else { return }
+    let lines = DiffHighlightMapper.attributedLines(
+      diff: diff, content: content, spans: spans, tokens: theme.tokens,
+      additionEmphasis: emphasis.additions)
+    guard !Task.isCancelled else { return }
+    highlightedLines = lines
   }
 
   // MARK: Diff body
 
   private func diffBody(_ diff: UnifiedDiff) -> some View {
-    // Vertical-only scroll: a `LazyVStack` needs a bounded cross-axis to lay out, and a
-    // bidirectional `ScrollView` proposes an unbounded height that scatters the rows with gaps.
-    // Long lines soft-wrap (`fixedSize(vertical:)` on the text) rather than scroll horizontally, so
-    // the whole line is always visible and the layout stays gap-free.
+    // Vertical-only scroll, eager `VStack` (not `LazyVStack`): the rows soft-wrap via
+    // `fixedSize(vertical:)`, and a lazy stack caches a bad height estimate for not-yet-materialised
+    // wrapping rows — leaving a blank band in the middle of a tall diff until you scroll it into
+    // view. `UnifiedDiff.parse`'s 2000-line cap bounds the row count, so laying them all out up
+    // front is affordable and gap-free.
     ScrollView(.vertical) {
-      LazyVStack(alignment: .leading, spacing: 0) {
+      VStack(alignment: .leading, spacing: 0) {
         if let from = diff.renamedFrom {
           headerNote("Renamed from \(from)")
         }
@@ -102,27 +172,83 @@ struct DiffViewer: View {
   }
 
   private func lineRow(_ line: UnifiedDiff.Line) -> some View {
+    // Deletions never carry syntax highlighting (no new side); additions/context use the highlighted
+    // run when one was built. Intra-line change emphasis (deletions + not-yet-highlighted additions)
+    // is folded in synchronously here; highlighted additions already carry it from the mapper.
+    let highlighted: AttributedString? =
+      line.kind == .deletion ? nil : line.newLine.flatMap { highlightedLines[$0] }
+    let emphasized: AttributedString? = highlighted == nil ? emphasizedLine(line) : nil
+
     // `.top` so the gutters + marker align to the first visual line when a long line wraps.
-    HStack(alignment: .top, spacing: 0) {
-      gutter(line.oldLine)
+    return HStack(alignment: .top, spacing: 0) {
+      gutter(line.oldLine).padding(.leading, 4)
       gutter(line.newLine)
       Text(marker(line.kind))
         .font(.system(.body, design: .monospaced))
         .foregroundStyle(foreground(line.kind))
         .frame(width: 14, alignment: .center)
-      Text(line.text.isEmpty ? " " : line.text)
-        .font(.system(.body, design: .monospaced))
-        .foregroundStyle(foreground(line.kind))
-        .textSelection(.enabled)
-        .fixedSize(horizontal: false, vertical: true)  // wrap long lines, never truncate
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.trailing, 8)
+      Group {
+        if let highlighted {
+          Text(highlighted)  // syntax foreground + intra-line emphasis background
+        } else if let emphasized {
+          Text(emphasized)  // plain foreground + intra-line emphasis background
+        } else {
+          Text(line.text.isEmpty ? " " : line.text).foregroundStyle(foreground(line.kind))
+        }
+      }
+      .font(.system(.body, design: .monospaced))
+      .textSelection(.enabled)
+      .fixedSize(horizontal: false, vertical: true)  // wrap long lines, never truncate
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .padding(.trailing, 8)
     }
     .frame(maxWidth: .infinity, alignment: .leading)
     .background(rowBackground(line.kind))
     .accessibilityElement(children: .ignore)
     .accessibilityIdentifier("diff.line")
     .accessibilityLabel(accessibilityLabel(line))
+    // A test-observable marker that highlighting was applied (XCUITest can't see colours).
+    .accessibilityValue(highlighted != nil ? "highlighted" : "plain")
+  }
+
+  /// The intra-line-emphasised text for a replaced line (deeper tint behind the changed bytes), or
+  /// `nil` for context lines / lines with no intra-line change. Used for deletions and additions not
+  /// yet syntax-highlighted; highlighted additions get the emphasis from the mapper instead.
+  private func emphasizedLine(_ line: UnifiedDiff.Line) -> AttributedString? {
+    let range: Range<Int>?
+    let bg: Color
+    switch line.kind {
+    case .deletion:
+      range = line.oldLine.flatMap { emphasis.deletions[$0] }
+      bg = theme.tokens.diffRemoveEmphasisBg
+    case .addition:
+      range = line.newLine.flatMap { emphasis.additions[$0] }
+      bg = theme.tokens.diffAddEmphasisBg
+    case .context:
+      return nil
+    }
+    guard let range, !line.text.isEmpty else { return nil }
+    return Self.emphasizedPlain(line.text, fg: foreground(line.kind), range: range, bg: bg)
+  }
+
+  /// Build a single-colour line with `bg` drawn behind the `range` (line-relative UTF-8 bytes).
+  static func emphasizedPlain(_ text: String, fg: Color, range: Range<Int>, bg: Color)
+    -> AttributedString
+  {
+    let bytes = Array(text.utf8)
+    let lo = max(0, min(range.lowerBound, bytes.count))
+    let hi = max(lo, min(range.upperBound, bytes.count))
+    func seg(_ r: Range<Int>, _ background: Color?) -> AttributedString {
+      var a = AttributedString(String(decoding: bytes[r], as: UTF8.self))
+      a.foregroundColor = fg
+      if let background { a.backgroundColor = background }
+      return a
+    }
+    var out = AttributedString()
+    if lo > 0 { out.append(seg(0..<lo, nil)) }
+    if hi > lo { out.append(seg(lo..<hi, bg)) }
+    if hi < bytes.count { out.append(seg(hi..<bytes.count, nil)) }
+    return out
   }
 
   /// A right-aligned, dim line-number cell (blank when the line doesn't exist on that side).
@@ -130,8 +256,8 @@ struct DiffViewer: View {
     Text(number.map(String.init) ?? "")
       .font(.system(.caption2, design: .monospaced))
       .foregroundStyle(theme.tokens.fgMuted)
-      .frame(width: 40, alignment: .trailing)
-      .padding(.trailing, 6)
+      .frame(width: 26, alignment: .trailing)
+      .padding(.trailing, 3)
   }
 
   private func headerNote(_ text: String) -> some View {

@@ -70,6 +70,11 @@ final class ThemeService {
   /// a theme file per frame. `@Observable` → SwiftUI views reading `tokens` repaint on change.
   private(set) var tokens: ThemeTokens
 
+  /// Monotonic counter bumped on every theme apply. Diff syntax highlighting keys its async
+  /// recolour task on this (plus source+path) so a theme switch rebuilds the coloured lines and a
+  /// result computed against the old theme is discarded as stale.
+  private(set) var generation: Int = 0
+
   /// Set once at startup (by the app) to the terminal re-theme step — keeps the surface iteration
   /// in `TerminalSessions` while `applyActiveTheme()` stays the single chokepoint every trigger
   /// routes through. `force` re-themes even when the appearance is unchanged (a same-mode theme
@@ -114,6 +119,7 @@ final class ThemeService {
     validateSelection()
     let isDark = Self.isCurrentAppearanceDark()
     tokens = ThemeTokens(preview: Self.themePreview(named: Self.activeThemeName(isDark: isDark)))
+    generation &+= 1
     onApplyTerminals?(force)
     NotificationCenter.default.post(name: .themeDidChange, object: nil)
   }

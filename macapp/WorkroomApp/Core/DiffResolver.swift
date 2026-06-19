@@ -103,3 +103,69 @@ struct DiffResolver: Sendable {
     }
   }
 }
+
+// MARK: - New-file content (for syntax highlighting)
+
+extension DiffResolver {
+  /// The **new-side** file content for syntax highlighting, or `nil` ⇒ the caller renders the diff
+  /// plain. Folded into `DiffResolver` (one hardened command-runner surface) rather than a second
+  /// VCS-fetch service.
+  ///
+  /// - For working-copy sources (`gitWorktree`, `jjWorkingCopy`) the new side *is* the working file
+  ///   on disk → a guarded disk read (the working copy is `@`, so we never shell out and never
+  ///   contend on the jj working-copy lock).
+  /// - For the jj **parent** (`@-`) the new side is the parent commit's version (not on disk) →
+  ///   `jj file show -r @- --ignore-working-copy` (never `-r @`).
+  ///
+  /// Only additions + context are highlighted from this content; deletions render plain, so a
+  /// deleted file (no new side) correctly yields `nil`.
+  func fileContent(for descriptor: DiffDescriptor, in dir: String) async -> String? {
+    switch descriptor.source {
+    case .gitWorktree, .jjWorkingCopy:
+      return Self.readWorkingFile(path: descriptor.path, in: dir)
+    case .jjParent:
+      let (exe, args) = Self.parentShowCommand(path: descriptor.path)
+      let r = await runner.run(exe, args, in: dir, timeout: timeout)
+      guard r.ok, !r.stdout.isEmpty else { return nil }
+      // The runner caps stdout (4MB). If the file is at/over our parse cap, don't highlight
+      // (truncated content would mis-map byte offsets) — render plain.
+      guard r.stdout.utf8.count <= SyntaxLanguage.byteCap else { return nil }
+      return r.stdout
+    }
+  }
+
+  /// The jj command for the parent commit's version of a file. Pure (unit-tested): MUST target
+  /// `@-` with `--ignore-working-copy` and MUST NOT pass `-r @` (which would take the working-copy
+  /// lock the status sweep contends on).
+  static func parentShowCommand(path: String) -> (exe: String, args: [String]) {
+    ("jj", ["file", "show", "-r", "@-", "--ignore-working-copy", "--", path])
+  }
+
+  /// Read a working-copy file for highlighting, guarded against the traps a syntax parse would
+  /// otherwise hit (a symlink whose *target text* git diffs, a path escaping the workroom, an
+  /// over-cap file). Returns `nil` (⇒ render plain) on any guard failure or non-UTF-8 content.
+  static func readWorkingFile(path: String, in dir: String) -> String? {
+    let root = URL(fileURLWithPath: dir, isDirectory: true)
+    let target = URL(fileURLWithPath: path, relativeTo: root).standardizedFileURL
+
+    // Canonical-path containment: resolve symlinks on BOTH sides (consistently — so /tmp→/private
+    // doesn't trip a legit file) and require the real target to live under the real workroom. This
+    // catches an intermediate symlinked directory that would otherwise escape via a string prefix.
+    let realRoot = root.resolvingSymlinksInPath().standardizedFileURL.path
+    let realTarget = target.resolvingSymlinksInPath().standardizedFileURL.path
+    guard realTarget == realRoot || realTarget.hasPrefix(realRoot + "/") else { return nil }
+
+    // lstat the leaf (don't follow symlinks): a symlink's diff is its *target path text*, not file
+    // content, so parsing it as source would be wrong → render plain. Require a regular file.
+    guard
+      let values = try? target.resourceValues(forKeys: [
+        .isSymbolicLinkKey, .isRegularFileKey, .fileSizeKey,
+      ]),
+      values.isSymbolicLink != true,
+      values.isRegularFile == true,
+      let size = values.fileSize, size <= SyntaxLanguage.byteCap
+    else { return nil }
+
+    return try? String(contentsOf: target, encoding: .utf8)
+  }
+}

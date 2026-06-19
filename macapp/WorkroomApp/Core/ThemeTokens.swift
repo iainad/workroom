@@ -44,6 +44,25 @@ struct ThemeTokens {
   let diffAddBg: Color
   let diffRemoveBg: Color
   let diffHunkBg: Color
+  // Intra-line (character-level) change emphasis: a deeper tint drawn behind just the characters
+  // that changed within a replaced line, over the flat `diffAddBg`/`diffRemoveBg` line tint.
+  let diffAddEmphasisBg: Color
+  let diffRemoveEmphasisBg: Color
+
+  // Syntax highlighting (tree-sitter diff highlighting, phase 1). A small sub-palette derived from
+  // the ANSI `palette` — the same source as `diffAddFg`/etc., so highlight colours match the
+  // terminal's. `syntaxColor(forCapture:onAddedBackground:)` resolves a tree-sitter capture name to
+  // a colour; `nsAddBackgroundOpaque` is the opaque colour an added line composites to (theme bg +
+  // the green add tint), used by the contrast guard so token colours stay legible on the tint.
+  let syntaxByCategory: [SyntaxCategory: NSColor]
+  let nsAddBackgroundOpaque: NSColor
+
+  /// The coarse grouping a tree-sitter highlight capture maps to. We colour by category (≈12) rather
+  /// than per-capture (hundreds, grammar-specific) — `category(for:)` collapses any capture name.
+  enum SyntaxCategory: String, CaseIterable, Sendable {
+    case keyword, function, type, namespace, constant, number, string, comment, variable, property,
+      tag, attribute, punctuation, escape
+  }
 
   // Focused-pane border + unfocused-pane scrim (issue #23 follow-up). Both Color (SwiftUI) and
   // NSColor (AppKit) forms.
@@ -96,6 +115,35 @@ struct ThemeTokens {
     diffAddBg = Color(nsColor: addColor.withAlphaComponent(0.16))
     diffRemoveBg = Color(nsColor: removeColor.withAlphaComponent(0.16))
     diffHunkBg = Color(nsColor: hunkColor.withAlphaComponent(0.10))
+    diffAddEmphasisBg = Color(nsColor: addColor.withAlphaComponent(0.40))
+    diffRemoveEmphasisBg = Color(nsColor: removeColor.withAlphaComponent(0.40))
+
+    // The opaque colour an added line's row composites to (theme bg + the 16% green tint) — the
+    // background the contrast guard checks token colours against.
+    nsAddBackgroundOpaque =
+      bgColor.usingColorSpace(.sRGB)?
+      .blended(withFraction: 0.16, of: addColor.usingColorSpace(.sRGB) ?? addColor) ?? bgColor
+
+    // Capture → colour, derived from the ANSI palette so highlight colours track the terminal's
+    // signature hues (and recompute on theme change with everything else). Falls back to system
+    // colours when a theme defines no palette.
+    let comment = fgColor.withAlphaComponent(0.45)
+    syntaxByCategory = [
+      .keyword: p(5) ?? .systemPurple,  // magenta
+      .function: p(4) ?? .systemBlue,
+      .type: p(3) ?? .systemYellow,
+      .namespace: p(3) ?? .systemYellow,
+      .constant: p(6) ?? .systemTeal,  // cyan
+      .number: p(6) ?? .systemTeal,
+      .string: p(2) ?? .systemGreen,
+      .comment: comment,
+      .variable: fgColor,
+      .property: p(4) ?? .systemBlue,
+      .tag: p(1) ?? .systemRed,
+      .attribute: p(3) ?? .systemYellow,
+      .punctuation: fgColor.withAlphaComponent(0.65),
+      .escape: p(6) ?? .systemTeal,
+    ]
 
     // The unfocused-pane scrim is the terminal's own background, so it's invisible *over* the
     // background and only washes the pane's text toward it (issue #23 follow-up). The focus border
@@ -117,5 +165,87 @@ struct ThemeTokens {
   /// Black on light accents, white on dark ones — for text/icons drawn *on* the accent fill.
   static func contrastingForeground(for color: NSColor) -> NSColor {
     luminance(of: color) > 0.6 ? .black : .white
+  }
+
+  // MARK: Syntax highlighting
+
+  /// The colour for a tree-sitter highlight capture, or `nil` (⇒ render in the default foreground).
+  /// `onAddedBackground` applies the contrast guard against the green add tint so token colours
+  /// don't wash out on added lines; context lines (≈ theme background) use the base colour.
+  func syntaxColor(forCapture capture: String, onAddedBackground: Bool = false) -> Color? {
+    guard let category = Self.category(for: capture), let base = syntaxByCategory[category] else {
+      return nil
+    }
+    guard onAddedBackground else { return Color(nsColor: base) }
+    return Color(nsColor: Self.legible(base, on: nsAddBackgroundOpaque, towards: nsFg))
+  }
+
+  /// Collapse any tree-sitter capture name (e.g. `function.method.builtin`, `string.special.path`)
+  /// to a colour category by its leading dotted component. Unknown captures return `nil` (default
+  /// foreground). This is the whole capture→colour vocabulary — grammar-specific leaf captures fold
+  /// into their family.
+  static func category(for capture: String) -> SyntaxCategory? {
+    let head = capture.split(separator: ".").first.map(String.init) ?? capture
+    switch head {
+    case "keyword", "conditional", "repeat", "include", "exception", "define", "storageclass",
+      "modifier", "operator":
+      // `operator` reads as a keyword-ish accent rather than dim punctuation.
+      return head == "operator" ? .punctuation : .keyword
+    case "function", "method", "constructor", "call":
+      return .function
+    case "type", "class", "interface", "enum", "struct":
+      return .type
+    case "namespace", "module", "package":
+      return .namespace
+    case "constant", "boolean", "const":
+      return .constant
+    case "number", "float", "integer":
+      return .number
+    case "string", "char", "character":
+      return .string
+    case "comment":
+      return .comment
+    case "variable", "parameter", "identifier":
+      return .variable
+    case "property", "field", "member":
+      return .property
+    case "tag":
+      return .tag
+    case "attribute", "annotation", "decorator":
+      return .attribute
+    case "punctuation", "delimiter", "bracket":
+      return .punctuation
+    case "escape", "regex", "embedded":
+      return .escape
+    default:
+      return nil
+    }
+  }
+
+  /// Nudge `color` toward `fg` until it has at least a 3:1 WCAG contrast ratio against `bg`, so a
+  /// token colour close to the add-tint hue (e.g. a green string on the green add background) stays
+  /// readable. Capped iterations; returns the best achieved if the target is unreachable.
+  static func legible(_ color: NSColor, on bg: NSColor, towards fg: NSColor, target: CGFloat = 3.0)
+    -> NSColor
+  {
+    guard let srgb = color.usingColorSpace(.sRGB), let fgSrgb = fg.usingColorSpace(.sRGB) else {
+      return color
+    }
+    var current = srgb
+    var fraction: CGFloat = 0
+    while contrastRatio(current, bg) < target, fraction < 1.0 {
+      fraction += 0.2
+      current = srgb.blended(withFraction: fraction, of: fgSrgb) ?? srgb
+    }
+    return current
+  }
+
+  /// WCAG relative-luminance contrast ratio between two colours (1…21).
+  static func contrastRatio(_ a: NSColor, _ b: NSColor) -> CGFloat {
+    let la = luminance(of: a)
+    let lb = luminance(of: b)
+    let hi = max(la, lb)
+    let lo = min(la, lb)
+    return (hi + 0.05) / (lo + 0.05)
   }
 }

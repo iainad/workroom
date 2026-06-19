@@ -173,15 +173,19 @@ enum UITestFixture {
   /// the file path and the `DiffSource` (git worktree / jj `@` / jj `@-`) so a test can assert it
   /// opened the *right* file's diff from the *right* revision. Two paths get special states for
   /// coverage: `binary.bin` → binary, `clean.txt` → empty.
+  ///
+  /// Ruby files get a diff whose new-side lines are exactly `rubyFileContent(for:)` (a small Ruby
+  /// snippet), so the real highlight pipeline (detect → parse → map) runs against canned content and
+  /// the syntax-highlight UI test can assert colour was applied. The tag line is a Ruby comment, so
+  /// the existing revision-tag assertions still hold. Non-Ruby paths keep a generic diff with no
+  /// matching content, so they exercise the plain (highlight-skipped) fallback.
   static func diff(for descriptor: DiffDescriptor) -> DiffResult {
     let name = (descriptor.path as NSString).lastPathComponent
     if name == "binary.bin" { return .binary }
     if name == "clean.txt" { return .empty }
-    let tag: String
-    switch descriptor.source {
-    case .gitWorktree: tag = "git-worktree"
-    case .jjWorkingCopy: tag = "jj-working-copy"
-    case .jjParent: tag = "jj-parent"
+    let tag = sourceTag(descriptor.source)
+    if SyntaxLanguage.grammar(forPath: descriptor.path) == .ruby {
+      return .diff(UnifiedDiff.parse(rubyDiffText(tag: tag, path: descriptor.path)))
     }
     let raw = """
       diff --git a/\(descriptor.path) b/\(descriptor.path)
@@ -194,5 +198,52 @@ enum UITestFixture {
        context line three
       """
     return .diff(UnifiedDiff.parse(raw))
+  }
+
+  /// Canned new-side file content for highlighting in fixture mode (mirrors `DiffResolver
+  /// .fileContent`). Ruby files return a snippet whose lines match the Ruby diff above; everything
+  /// else returns `nil` so it renders plain.
+  static func fileContent(for descriptor: DiffDescriptor) -> String? {
+    guard SyntaxLanguage.grammar(forPath: descriptor.path) == .ruby else { return nil }
+    return rubyFileContent(tag: sourceTag(descriptor.source), path: descriptor.path)
+  }
+
+  private static func sourceTag(_ source: DiffSource) -> String {
+    switch source {
+    case .gitWorktree: return "git-worktree"
+    case .jjWorkingCopy: return "jj-working-copy"
+    case .jjParent: return "jj-parent"
+    }
+  }
+
+  /// The Ruby snippet that is the new-side file (no trailing newline; matches the diff's new lines).
+  private static func rubyFileContent(tag: String, path: String) -> String {
+    """
+    class SessionsManager
+      # added line for \(tag)
+      # marker \(path)
+      def call
+        authenticate
+      end
+    end
+    """
+  }
+
+  /// A unified diff whose new side is exactly `rubyFileContent` — line 1 + 4–7 context, lines 2–3
+  /// additions (carrying the revision tag + path), plus one deletion (old side only → renders plain,
+  /// proving deletions are never highlighted).
+  private static func rubyDiffText(tag: String, path: String) -> String {
+    """
+    diff --git a/\(path) b/\(path)
+    @@ -1,6 +1,7 @@
+     class SessionsManager
+    -  # removed \(tag)
+    +  # added line for \(tag)
+    +  # marker \(path)
+       def call
+         authenticate
+       end
+     end
+    """
   }
 }

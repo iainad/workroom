@@ -133,6 +133,36 @@ final class DiffViewerUITests: XCTestCase {
       "the preview tab retargets in place — the first file's tab is replaced, not kept")
   }
 
+  /// The changed-file row whose diff is focused reads as selected, and selection follows focus:
+  /// opening a second file's diff deselects the first.
+  func testFocusedFileRowIsSelectedAndFollowsFocus() throws {
+    let app = launchedApp()
+    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
+    XCTAssertTrue(element(app, id: "changes.group.workingCopy").waitForExistence(timeout: 10))
+
+    let userRow = fileRow(app, "app/models/user.rb")
+    XCTAssertTrue(userRow.waitForExistence(timeout: 10))
+    userRow.click()
+    XCTAssertTrue(diffTab(app, "user.rb").waitForExistence(timeout: 6))
+    XCTAssertTrue(
+      waitSelected(userRow, true), "the row whose diff is focused should be selected")
+
+    let routesRow = fileRow(app, "config/routes.rb")
+    routesRow.click()
+    XCTAssertTrue(diffTab(app, "routes.rb").waitForExistence(timeout: 6))
+    XCTAssertTrue(waitSelected(routesRow, true), "the newly focused file's row becomes selected")
+    XCTAssertTrue(
+      waitSelected(userRow, false), "selection follows focus — the previous row deselects")
+  }
+
+  /// Wait for an element's `isSelected` to reach `want`.
+  @discardableResult
+  private func waitSelected(_ el: XCUIElement, _ want: Bool, _ timeout: TimeInterval = 6) -> Bool {
+    let p = NSPredicate(format: "isSelected == %@", NSNumber(value: want))
+    return XCTWaiter().wait(
+      for: [XCTNSPredicateExpectation(predicate: p, object: el)], timeout: timeout) == .completed
+  }
+
   /// A double click PERSISTS the tab: it survives the next single-click preview (the two coexist),
   /// proving double-click skipped preview mode.
   func testDoubleClickPersistsAndCoexistsWithNextPreview() throws {

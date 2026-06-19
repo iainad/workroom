@@ -225,6 +225,9 @@ private struct ChangedFileRow: View {
   /// Which revision this row's diff comes from — the Changes group it's rendered under.
   let source: DiffSource
   @EnvironmentObject var store: AppStore
+  /// Observed so the row's selected state tracks which diff tab is focused (the tab strip lives in
+  /// a separate observation tree from the inspector).
+  @ObservedObject var sessions: TerminalSessions
   @State private var hovering = false
   /// Time of the last click, so a quick second click promotes the preview tab to persisted (eager
   /// single/double discrimination — the single click never waits).
@@ -240,6 +243,7 @@ private struct ChangedFileRow: View {
         .frame(width: 14, alignment: .leading)
       Text(name)
         .font(.callout)
+        .foregroundStyle(isSelected ? theme.tokens.accent : .primary)
         .lineLimit(1).truncationMode(.middle)
         .layoutPriority(1)
       if !dir.isEmpty {
@@ -255,7 +259,9 @@ private struct ChangedFileRow: View {
     .frame(maxWidth: .infinity, alignment: .leading)
     .background(
       RoundedRectangle(cornerRadius: 5)
-        .fill(theme.tokens.hover.opacity(hovering ? 1 : 0))
+        .fill(
+          isSelected
+            ? theme.tokens.accent.opacity(0.22) : theme.tokens.hover.opacity(hovering ? 1 : 0))
     )
     .contentShape(Rectangle())
     .onHover { hovering = $0 }
@@ -271,11 +277,20 @@ private struct ChangedFileRow: View {
     }
     .help("Open diff for \(file.path)")
     .accessibilityElement(children: .ignore)
-    .accessibilityAddTraits(.isButton)
+    .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
     .accessibilityIdentifier("changes.file.\(file.path)")
     .accessibilityLabel(
       dir.isEmpty
         ? "\(name), \(changeWord), open diff" : "\(name), \(changeWord), in \(dir), open diff")
+  }
+
+  /// True when this row's file+revision is the currently focused diff tab in the selected target —
+  /// so the row that's showing in the diff viewer reads as selected.
+  private var isSelected: Bool {
+    guard let target = store.selectedTarget, let tab = sessions.focusedTab(for: target),
+      case .diff(let descriptor) = tab.content
+    else { return false }
+    return descriptor.path == file.path && descriptor.source == source
   }
 
   private var letter: String {
@@ -656,7 +671,7 @@ struct ChangesPanel: View {
     let shown = Array(files.prefix(renderCap))
     VStack(alignment: .leading, spacing: 1) {
       ForEach(shown) { file in
-        ChangedFileRow(file: file, source: source)
+        ChangedFileRow(file: file, source: source, sessions: store.terminals)
       }
       if files.count > shown.count {
         Text("Showing first \(shown.count) of \(files.count)")
