@@ -566,9 +566,23 @@ struct WorkroomCommands: Commands {
       )
       .keyboardShortcut("p", modifiers: [.command, .option])
 
-      // View menu: toggle the notifications inspector (checkmark reflects open/closed).
-      Toggle("Notifications", isOn: $showNotifications)
-        .keyboardShortcut("n", modifiers: [.command, .option])
+      // View menu: reveal the Notifications view — same open-inspector-and-expand-section semantics
+      // as Changes and Pull Request above (it used to toggle the whole inspector, which was
+      // inconsistent with the other two and took two clicks to land on "open").
+      Toggle(
+        "Notifications",
+        isOn: Binding(
+          get: { showNotifications && !store.notificationsSectionCollapsed },
+          set: { on in
+            if on {
+              showNotifications = true
+              store.notificationsSectionCollapsed = false
+            } else {
+              store.notificationsSectionCollapsed = true
+            }
+          })
+      )
+      .keyboardShortcut("n", modifiers: [.command, .option])
 
       // Theme chooser (issue #36). A menu command can't anchor a popover, so it posts a
       // notification RootView observes to present the picker as a sheet.
