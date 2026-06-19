@@ -293,6 +293,14 @@ private struct TerminalTabChip: View {
           .foregroundStyle(theme.tokens.fgMuted)
           .accessibilityHidden(true)
       }
+      // Unread activity is marked by a leading accent dot (+ accent title) — a different visual
+      // primitive from the selected tab's neutral fill, so the two never read alike.
+      if hasActivity {
+        Circle()
+          .fill(theme.tokens.accent)
+          .frame(width: 6, height: 6)
+          .accessibilityHidden(true)
+      }
       Text(tab.title)
         .font(.callout)
         // A preview tab's name is italic until it's persisted (VS-Code semantics, #66).
@@ -308,15 +316,11 @@ private struct TerminalTabChip: View {
     .padding(.leading, 10)
     .padding(.trailing, 4)  // tighter than the leading inset — the ✕ sits near the chip's edge
     .padding(.vertical, 4)
-    // Subtle highlight for active/hover; a solid lifted chip while dragging.
+    // The active tab gets a distinctly stronger fill (tabActive) than the faint hover wash, so the
+    // selected tab reads at a glance; a solid lifted chip while dragging.
     .background {
       RoundedRectangle(cornerRadius: 6)
-        .fill(isActive ? theme.tokens.surface : (isHovered ? theme.tokens.hover : Color.clear))
-    }
-    // Unread activity tints the whole tab with the accent color (pairs with the accent title).
-    .background {
-      RoundedRectangle(cornerRadius: 6)
-        .fill(theme.tokens.accent.opacity(hasActivity ? 0.15 : 0))
+        .fill(isActive ? theme.tokens.tabActive : (isHovered ? theme.tokens.hover : Color.clear))
     }
     .background {
       RoundedRectangle(cornerRadius: 6)

@@ -30,6 +30,7 @@ struct ThemeTokens {
   let surface: Color  // fg @ 0.08 — raised row / panel fill
   let border: Color  // fg @ 0.12 — hairline dividers
   let hover: Color  // fg @ 0.06 — hover wash
+  let tabActive: Color  // fg @ 0.16 — selected tab fill: distinctly stronger than hover/surface
 
   // Accent (palette[4]).
   let accent: Color
@@ -100,6 +101,7 @@ struct ThemeTokens {
     surface = Color(nsColor: fgColor.withAlphaComponent(0.08))
     border = Color(nsColor: fgColor.withAlphaComponent(0.12))
     hover = Color(nsColor: fgColor.withAlphaComponent(0.06))
+    tabActive = Color(nsColor: fgColor.withAlphaComponent(0.16))
 
     accent = Color(nsColor: accentColor)
     accentSoft = Color(nsColor: accentColor.withAlphaComponent(0.10))

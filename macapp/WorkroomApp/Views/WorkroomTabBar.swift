@@ -247,6 +247,8 @@ private struct WorkroomTabChip: View {
       }
       // The project name, and (for a workroom) its own name — baseline-aligned so the smaller
       // secondary name sits on the project name's text baseline, not its vertical center.
+      // Unread activity is marked by the accent title color alone (no dot here) — distinct from the
+      // selected tab's neutral fill.
       HStack(alignment: .firstTextBaseline, spacing: 6) {
         Text(primaryLabel)
           .font(.body)
@@ -272,15 +274,11 @@ private struct WorkroomTabChip: View {
     }
     .padding(.horizontal, 14)
     .padding(.vertical, 7)
-    // Subtle highlight for active/hover; a solid lifted chip while dragging.
+    // The active tab gets a distinctly stronger fill (tabActive) than the faint hover wash, so the
+    // selected tab reads at a glance; a solid lifted chip while dragging.
     .background {
       RoundedRectangle(cornerRadius: 6)
-        .fill(isActive ? theme.tokens.surface : (isHovered ? theme.tokens.hover : Color.clear))
-    }
-    // Unread activity tints the whole tab with the accent color (pairs with the accent title).
-    .background {
-      RoundedRectangle(cornerRadius: 6)
-        .fill(theme.tokens.accent.opacity(hasActivity ? 0.15 : 0))
+        .fill(isActive ? theme.tokens.tabActive : (isHovered ? theme.tokens.hover : Color.clear))
     }
     .background {
       RoundedRectangle(cornerRadius: 6)
