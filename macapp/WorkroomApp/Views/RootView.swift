@@ -209,8 +209,11 @@ struct RootView: View {
     .sheet(isPresented: $showKeyboardShortcuts) {
       KeyboardShortcutsView()
     }
-    // No window title text — all the chrome lives in the title-bar accessories + the workroom tabs.
-    .navigationTitle("")
+    // The title is hidden in the bar (`titleVisibility = .hidden`, set in WindowBackgroundThemer) —
+    // the chrome lives in the title-bar accessories + the workroom tabs. We still give the window a
+    // real title (the selected project/workroom) so the native Window menu's open-window list and
+    // Mission Control name each window, letting you tell them apart and switch (issue #70).
+    .navigationTitle(store.windowTitle)
     // Drop NavigationSplitView's auto sidebar toggle — `LeadingTitlebarBar` carries its own, leftmost
     // after the traffic lights. The now-itemless window toolbar is hidden in WindowBackgroundThemer
     // (its overflow chevron would otherwise linger); the traffic lights + accessories aren't part of

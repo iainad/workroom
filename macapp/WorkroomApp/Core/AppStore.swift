@@ -55,6 +55,11 @@ final class AppStore: ObservableObject {
   /// The `NSWindow` hosting this store, resolved once the view tree is in a window (issue #70). Weak:
   /// the window outlives the store's need for it, and the registry holds the authoritative mapping.
   weak var hostWindow: NSWindow?
+  /// This window's display number — the smallest unused positive integer, assigned by `WindowRegistry`
+  /// on registration and freed for reuse when the window closes (issue #70, macOS untitled-doc style).
+  /// Backs the `windowTitle` fallback for a window with nothing selected ("Window 1", "Window 2", …).
+  /// `@Published` so the title updates the moment the registry assigns it. 0 until registered.
+  @Published var windowNumber = 0
   /// Retains the close-guard delegate proxy (the window holds its delegate weakly) for this window's
   /// lifetime (issue #70, A3).
   private var closeGuard: WindowCloseGuard?
@@ -382,6 +387,12 @@ final class AppStore: ObservableObject {
   /// `WindowAccessor` may resolve the same window more than once.
   func attachWindow(_ window: NSWindow) {
     hostWindow = window
+    // Keep the title out of the title bar from the first frame (issue #70). The title we give the
+    // window (selected project/workroom, see `windowTitle`) exists only to name it in the Window menu
+    // + Mission Control — never to show in the bar. WindowBackgroundThemer also pins this, but a
+    // runloop later (its apply is async), so a new window opening with a non-empty navigationTitle
+    // could flash the title for one frame; setting it here, pre-display, closes that gap.
+    window.titleVisibility = .hidden
     // Launch with a single window (issue #70): SwiftUI would otherwise persist + restore every window
     // that was open at quit. We restore the one window's size ourselves (below), so opt out of
     // AppKit's per-window state restoration; extra windows are deliberately not reopened.
@@ -448,6 +459,29 @@ final class AppStore: ObservableObject {
   /// The selected terminal target resolved against the current project list (nil if it no
   /// longer exists).
   var selectedTarget: TerminalTarget? { selectedTargetID.flatMap(target(for:)) }
+
+  /// This window's title — the selected project and workroom (issue #70). Hidden from the title bar
+  /// (`titleVisibility = .hidden`), so it only feeds the native Window menu's open-window list and
+  /// Mission Control, letting you tell windows apart and switch between them. A workroom reads
+  /// "<project> — <workroom>"; a project root just the project name; nothing selected falls back to
+  /// "Window <n>" (the window's display number).
+  var windowTitle: String {
+    switch selectedTargetID {
+    case .root(let path):
+      return projects.first { $0.id == path }?.displayName ?? defaultWindowTitle
+    case .workroom(let path, let name):
+      guard let project = projects.first(where: { $0.id == path })?.displayName else { return name }
+      return "\(project) — \(name)"
+    case .project, nil:
+      return defaultWindowTitle
+    }
+  }
+
+  /// Fallback title for a window with nothing selected — "Window <n>", or just "Window" until the
+  /// registry has assigned this window its number.
+  private var defaultWindowTitle: String {
+    windowNumber > 0 ? "Window \(windowNumber)" : "Window"
+  }
 
   /// Resolve any `SidebarID` to its live `TerminalTarget` against the current project list (nil for
   /// `.project` or a since-removed target). Backs `selectedTarget` and the history `isLive` check.

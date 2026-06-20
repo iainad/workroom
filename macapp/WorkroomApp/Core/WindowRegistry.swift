@@ -70,8 +70,20 @@ final class WindowRegistry: ObservableObject {
     } else {
       entries.append(Entry(window: window, store: store))
     }
+    assignWindowNumberIfNeeded(store)
     if lastActiveStore == nil { lastActiveStore = store }
     recomputeBadge()
+  }
+
+  /// Give a newly registered window the smallest unused positive number, so the untitled-window
+  /// fallback reads "Window 1", "Window 2", … and a closed window's number is reclaimed by the next
+  /// new window (macOS untitled-document style). Assigned once per store (0 = not yet numbered).
+  private func assignWindowNumberIfNeeded(_ store: AppStore) {
+    guard store.windowNumber == 0 else { return }
+    let used = Set(entries.compactMap { $0.store?.windowNumber }.filter { $0 > 0 })
+    var n = 1
+    while used.contains(n) { n += 1 }
+    store.windowNumber = n
   }
 
   func unregister(window: NSWindow) {
