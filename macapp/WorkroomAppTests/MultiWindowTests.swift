@@ -113,4 +113,15 @@ final class MultiWindowTests: XCTestCase {
     XCTAssertEqual(
       registry.aggregateUnread, 3, "the badge/menu-bar count sums every window's unread")
   }
+
+  // MARK: Window-close guard (A3)
+
+  func testCloseGuardAllowsCloseWithoutRunCommand() {
+    let store = AppStore(projectStore: ProjectStore())
+    let guardDelegate = WindowCloseGuard(store: store, forwarding: nil)
+    XCTAssertFalse(store.hasLiveRunCommand, "no run command in a fresh store")
+    XCTAssertTrue(
+      guardDelegate.windowShouldClose(NSWindow()),
+      "with no live run command the window closes immediately — no confirm, no stop")
+  }
 }

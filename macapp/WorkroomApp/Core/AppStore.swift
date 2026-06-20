@@ -289,6 +289,10 @@ final class AppStore: ObservableObject {
   /// The selection persisted from a previous launch (issue #14), applied once on the first
   /// successful load (see `apply`). Consumed there so a later refresh can't resurrect it.
   private var pendingRestoreSelection: TerminalTarget.ID?
+  /// UI-test fixture mode only: whether this window auto-selects the fixture workroom. True for the
+  /// launch window, false for a ⌘N window so it stays blank — the fixture analogue of clearing
+  /// `pendingRestoreSelection` on the real path (issue #70).
+  private var fixtureAutoSelect = true
 
   /// Production builds one store per window (issue #70), each sharing `ProjectStore.shared`; tests
   /// build an isolated `AppStore()` (own fresh `ProjectStore`), inject `projects`, and drive the real
@@ -1315,13 +1319,17 @@ final class AppStore: ObservableObject {
   /// at launch; combined with the one-shot `consumeInitialRestore()` it means exactly one window
   /// reapplies the persisted selection and every other (incl. every ⌘N) window starts blank (#70).
   func bootstrap(restore: Bool = true) async {
+    // Exactly one window (the launch window) reapplies the saved selection; every other (incl. ⌘N)
+    // window starts blank (issue #70).
+    let shouldRestore = restore && projectStore.consumeInitialRestore()
     if UITestFixture.isActive {
+      fixtureAutoSelect = shouldRestore
       loadFixture()
       return
     }
     // Drop the saved selection unless this is the one launch window allowed to restore it, so a new
     // window opens with nothing selected (no workroom, no terminal).
-    if !(restore && projectStore.consumeInitialRestore()) {
+    if !shouldRestore {
       pendingRestoreSelection = nil
     }
     if projectStore.projects.isEmpty {
@@ -1399,21 +1407,26 @@ final class AppStore: ObservableObject {
       changesWorkingCopyCollapsed = false
       changesParentCommitCollapsed = true
     }
-    if selectedProjectID == nil { selectedProjectID = fixtures.first?.id }
-    if selectedTargetID == nil, let project = fixtures.first,
-      let workroom = project.workrooms.first
-    {
-      selectedTargetID = .workroom(project: project.path, name: workroom.name)
-      // Selecting a workroom no longer auto-opens a terminal (issue #23), so explicitly open one here
-      // for the UI tests — they assume the fixture workroom has a terminal (and thus a tab) on launch.
-      let target = workroom.target(inProject: project.path)
-      terminals.ensureTab(for: target)
-      // Seed a representative notification history (the inspector's Notifications panel is otherwise
-      // empty in fixture mode) so it gets visual + UI-test coverage. Keyed to the workroom target but
-      // synthetic tabs (see `UITestFixture.notifications`) so the window's focus auto-dismiss can't
-      // wipe them. First-load only (guarded by the nil selection), so a focus-driven reload never
-      // clobbers notifications a test has since dismissed.
-      notifications.seedForTesting(UITestFixture.notifications(targetID: target.id))
+    // Auto-select the fixture workroom only for the restoring (launch) window — a ⌘N window starts
+    // blank in fixture mode too, mirroring production (issue #70). `fixtureAutoSelect` is the
+    // per-window equivalent of clearing `pendingRestoreSelection` on the real path.
+    if fixtureAutoSelect {
+      if selectedProjectID == nil { selectedProjectID = fixtures.first?.id }
+      if selectedTargetID == nil, let project = fixtures.first,
+        let workroom = project.workrooms.first
+      {
+        selectedTargetID = .workroom(project: project.path, name: workroom.name)
+        // Selecting a workroom no longer auto-opens a terminal (issue #23), so explicitly open one
+        // here for the UI tests — they assume the fixture workroom has a terminal (and thus a tab).
+        let target = workroom.target(inProject: project.path)
+        terminals.ensureTab(for: target)
+        // Seed a representative notification history (the inspector's Notifications panel is otherwise
+        // empty in fixture mode) so it gets visual + UI-test coverage. Keyed to the workroom target
+        // but synthetic tabs (see `UITestFixture.notifications`) so the window's focus auto-dismiss
+        // can't wipe them. First-load only (guarded by the nil selection), so a focus-driven reload
+        // never clobbers notifications a test has since dismissed.
+        notifications.seedForTesting(UITestFixture.notifications(targetID: target.id))
+      }
     }
     // Seed deterministic Changes-inspector status (the fixture paths aren't real repos, so the live
     // probe would only report "unknown"); the resolver sweep is skipped in fixture mode.
