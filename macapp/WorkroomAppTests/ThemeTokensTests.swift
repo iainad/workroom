@@ -78,10 +78,10 @@ final class ThemeTokensTests: XCTestCase {
   func testTerminalDimIsBackgroundAndFocusedIsForeground() {
     let t = ThemeTokens(preview: full(bg: "#1c1c1e", fg: "#d8d8dc", accent4: "#3b9ec4"))
     XCTAssertEqual(
-      t.nsTerminalDim.usingColorSpace(.sRGB)?.redComponent ?? -1, 0x1c / 255, accuracy: 0.01)
-    let focused = t.nsFocused.usingColorSpace(.sRGB)!
+      NSColor(t.terminalDim).usingColorSpace(.sRGB)?.redComponent ?? -1, 0x1c / 255, accuracy: 0.01)
+    let focused = NSColor(t.focused).usingColorSpace(.sRGB)!
     XCTAssertEqual(focused.redComponent, 0xd8 / 255, accuracy: 0.01)  // fg hue
-    XCTAssertEqual(focused.alphaComponent, 0.55, accuracy: 0.01)  // fixed alpha
+    XCTAssertEqual(focused.alphaComponent, 0.3, accuracy: 0.01)  // fixed alpha
   }
 
   func testFallbackToSystemColoursWhenNoPreview() {

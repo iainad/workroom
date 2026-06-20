@@ -1465,10 +1465,13 @@ final class AppStore: ObservableObject {
   /// focus, so alt-tabbing back doesn't fork a git/jj process per project every time.
   func reloadIfStale(minInterval: TimeInterval = 4) async {
     guard Date().timeIntervalSince(lastLoadAt) >= minInterval else { return }
-    await reload()
+    // Background poll (fires on every app activation, incl. waking from sleep). A transient
+    // failure here — e.g. the `list` timing out because the just-woken machine is still cold —
+    // must NOT pop a modal "Something went wrong"; the next activation just retries.
+    await load(warnings: "fast", surfaceErrors: false)
   }
 
-  private func load(warnings: String) async {
+  private func load(warnings: String, surfaceErrors: Bool = true) async {
     // In UI-test fixture mode every load resolves to the same fake projects — never shell out to
     // the CLI (so an on-focus `reloadIfStale` can't replace the fixture with the real config).
     if UITestFixture.isActive {
@@ -1484,7 +1487,7 @@ final class AppStore: ObservableObject {
       resolveBranches()
       refreshWorkroomStatuses()
     } catch {
-      present(error)
+      if surfaceErrors { present(error) }
     }
   }
 

@@ -36,6 +36,12 @@ private struct CLIResult {
   let stdout: Data
   let stderr: String
   let exitCode: Int32
+  /// The timeout fired and we `terminate()`d the child.
+  let timedOut: Bool
+  /// The child was killed by a signal (`terminationReason == .uncaughtSignal`) rather than
+  /// exiting normally — e.g. our own timeout's SIGTERM, or a SIGTERM the system delivers around
+  /// sleep/wake. `exitCode` is then the *signal number* (SIGTERM = 15), NOT a CLI exit status.
+  let signaled: Bool
 }
 
 /// Lock-guarded state shared across the drain/timeout/termination callbacks. A
@@ -45,6 +51,7 @@ private final class RunState: @unchecked Sendable {
   private let lock = NSLock()
   private var _stdout = Data()
   private var _finished = false
+  private var _timedOut = false
 
   func setStdout(_ d: Data) {
     lock.lock()
@@ -56,10 +63,20 @@ private final class RunState: @unchecked Sendable {
     _finished = true
     lock.unlock()
   }
+  func markTimedOut() {
+    lock.lock()
+    _timedOut = true
+    lock.unlock()
+  }
   var isFinished: Bool {
     lock.lock()
     defer { lock.unlock() }
     return _finished
+  }
+  var timedOut: Bool {
+    lock.lock()
+    defer { lock.unlock() }
+    return _timedOut
   }
   var stdout: Data {
     lock.lock()
@@ -208,6 +225,11 @@ final class WorkroomCLI {
   /// Inspects the result and throws if it represents a failure. The CLI writes one
   /// JSON envelope to stdout for both success and error; a non-zero exit means error.
   private func throwIfError(_ result: CLIResult) throws {
+    // A child killed by a signal — our timeout's `terminate()` (SIGTERM), or a SIGTERM the
+    // system delivers around sleep/wake — reports the *signal number* as `terminationStatus`,
+    // not a CLI exit code. Surfacing that as "workroom exited with code 15" was wrong (15 ==
+    // SIGTERM); treat it as a timeout so it isn't mistaken for a real CLI failure.
+    if result.timedOut || result.signaled { throw WorkroomCLIError.timedOut }
     if result.exitCode == 0 { return }
     if let env = try? JSONDecoder().decode(Envelope.self, from: result.stdout),
       let body = env.error
@@ -266,6 +288,7 @@ final class WorkroomCLI {
 
       let timeoutItem = DispatchWorkItem {
         guard !state.isFinished, proc.isRunning else { return }
+        state.markTimedOut()
         proc.terminate()
         // NOTE: full process-group kill (also reaping git/jj grandchildren)
         // would require launching via posix_spawn with setpgid; terminate() +
@@ -284,7 +307,9 @@ final class WorkroomCLI {
           returning: CLIResult(
             stdout: state.stdout,
             stderr: collector.rawString,
-            exitCode: finishedProc.terminationStatus
+            exitCode: finishedProc.terminationStatus,
+            timedOut: state.timedOut,
+            signaled: finishedProc.terminationReason == .uncaughtSignal
           ))
       }
 
