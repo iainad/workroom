@@ -102,6 +102,15 @@ final class WindowRegistry: ObservableObject {
     store(for: NSApp.keyWindow) ?? lastActiveStore ?? allStores.first
   }
 
+  /// The frame size a *new* window should open at: the current (last-active, else any) window's full
+  /// frame size, so a new window opens at exactly the existing window's size (issue #70). Frame, not
+  /// content, size — this app's full-width titlebar toolbar makes the two differ. `nil` when there's
+  /// no existing window (the launch window), which then restores its own saved frame / a default.
+  var preferredNewWindowSize: CGSize? {
+    let window = lastActiveStore?.hostWindow ?? allStores.compactMap(\.hostWindow).first
+    return window?.frame.size
+  }
+
   /// The window store that owns the terminal tab `tabID` (each tab id is unique across windows), for
   /// routing an OS-notification click to the right window (issue #70, OV #4).
   func ownerOf(tabID: TerminalTab.ID) -> AppStore? {
@@ -192,23 +201,32 @@ final class WindowCloseGuard: NSObject, NSWindowDelegate {
   override func forwardingTarget(for aSelector: Selector!) -> Any? { forwarding }
 }
 
-/// Bridges a SwiftUI view to its hosting `NSWindow`. Drop it in a `.background(...)`; once the view
-/// is in the window tree it resolves `view.window` and hands it back so the owning `AppStore` can
-/// register with `WindowRegistry`.
+/// Bridges a SwiftUI view to its hosting `NSWindow`. Drop it in a `.background(...)`; it resolves
+/// `view.window` in `viewDidMoveToWindow` — which fires during window setup, *before* the window is
+/// shown — so the owning `AppStore` can register and size the window with no visible resize flash
+/// (issue #70).
 struct WindowAccessor: NSViewRepresentable {
   let onResolve: (NSWindow) -> Void
 
   func makeNSView(context: Context) -> NSView {
-    let view = NSView()
-    DispatchQueue.main.async { [weak view] in
-      if let window = view?.window { onResolve(window) }
-    }
-    return view
+    WindowResolvingView(onResolve: onResolve)
   }
 
-  func updateNSView(_ nsView: NSView, context: Context) {
-    DispatchQueue.main.async { [weak nsView] in
-      if let window = nsView?.window { onResolve(window) }
-    }
+  func updateNSView(_ nsView: NSView, context: Context) {}
+}
+
+private final class WindowResolvingView: NSView {
+  private let onResolve: (NSWindow) -> Void
+
+  init(onResolve: @escaping (NSWindow) -> Void) {
+    self.onResolve = onResolve
+    super.init(frame: .zero)
+  }
+
+  @available(*, unavailable) required init?(coder: NSCoder) { fatalError("init(coder:) unused") }
+
+  override func viewDidMoveToWindow() {
+    super.viewDidMoveToWindow()
+    if let window { onResolve(window) }
   }
 }

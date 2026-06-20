@@ -814,10 +814,10 @@ final class GhosttySurfaceView: NSView {
     if flags == [.command, .option] { return key == "n" || key == "r" }
     guard flags == .command else { return false }
     if ("1"..."9").contains(ch) { return true }  // focus tab N
-    // ⌘T/⌘W/⌘O/⌘D are real menu commands; ⌘Q/⌘H/⌘M/⌘, are system standards; ⌘[ / ⌘] are Back/Forward
-    // navigation (issue #26); ⌘R is Run (issue #7) — all reserved so the menu key-equivalent fires
-    // instead of the terminal. Plain ⌘N has no Workroom command, so it passes through to the terminal.
-    return ["t", "w", "o", "d", "q", "h", "m", ",", "[", "]", "r"].contains(key)
+    // ⌘N is New Window (issue #70); ⌘T/⌘W/⌘O/⌘D are real menu commands; ⌘Q/⌘H/⌘M/⌘, are system
+    // standards; ⌘[ / ⌘] are Back/Forward navigation (issue #26); ⌘R is Run (issue #7) — all reserved
+    // so the menu key-equivalent fires instead of being swallowed by the terminal.
+    return ["n", "t", "w", "o", "d", "q", "h", "m", ",", "[", "]", "r"].contains(key)
   }
 
   /// ⌘↑ / ⌘↓ jump the viewport to the top / bottom of the scrollback (issue #42). libghostty has no

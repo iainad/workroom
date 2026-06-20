@@ -18,6 +18,9 @@ final class NewWindowUITests: XCTestCase {
   private func launchedApp() -> XCUIApplication {
     let app = XCUIApplication()
     app.launchArguments += ["-WorkroomUITestFixture", "1"]
+    // Ignore any persisted window state so each test starts with exactly one window, regardless of
+    // what a prior run left behind.
+    app.launchArguments += ["-ApplePersistenceIgnoreState", "YES"]
     app.launch()
     return app
   }
@@ -75,6 +78,34 @@ final class NewWindowUITests: XCTestCase {
     XCTAssertEqual(
       terminalPanes(app).count, panesBefore,
       "the new window is blank — it adds no terminal, so the app-wide pane count is unchanged")
+  }
+
+  /// A new window opens at the same size as the existing window, not the minimum (issue #70). The
+  /// launch window opens larger than the 900 minimum (it restores its saved frame, else a default),
+  /// so a "new window opens at the minimum" bug would make the two windows differ and fail; the fix
+  /// makes every window match the existing one.
+  func testNewWindowMatchesExistingWindowSize() throws {
+    let app = launchedApp()
+    waitForLaunchWindow(app)
+    let windowsBefore = app.windows.count
+    let existing = app.windows.firstMatch.frame.size
+    XCTAssertGreaterThan(
+      existing.width, 900, "the launch window opens larger than the bare minimum")
+
+    newWindowMenuItem(app).click()
+    XCTAssertTrue(waitForWindowCount(app, windowsBefore + 1), "second window opened")
+    Thread.sleep(forTimeInterval: 1.0)  // let sizing settle
+
+    // Assert WIDTH only: it cleanly reflects "opens small" (a min-sized new window is 900 wide vs the
+    // existing window's larger width). Height is excluded because XCUITest reports a content window's
+    // frame ~one titlebar shorter than a blank window's, which is a measurement artifact, not a real
+    // difference (verified equal via NSWindow frames live).
+    for i in 0..<app.windows.count {
+      let width = app.windows.element(boundBy: i).frame.size.width
+      XCTAssertEqual(
+        width, existing.width, accuracy: 2,
+        "every window matches the existing window's width (window \(i) was \(width))")
+    }
   }
 
   // Closing a window cleanly (no live run command) and the confirm-then-stop path are covered by the

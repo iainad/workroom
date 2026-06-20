@@ -33,7 +33,6 @@ struct WorkroomApp: App {
     // window gets `.launch` (restores the saved selection).
     WindowGroup(for: WindowSeed.self) { $seed in
       RootWindow(seed: seed ?? .launch)
-        .frame(minWidth: 900, minHeight: 560)
     }
     .commands { WorkroomCommands(updater: updater) }
 
@@ -73,7 +72,16 @@ struct WindowSeed: Codable, Hashable {
 /// registers the window↔store pair with `WindowRegistry` (issue #70).
 struct RootWindow: View {
   let seed: WindowSeed
-  @StateObject private var store = AppStore(projectStore: .shared)
+  @StateObject private var store: AppStore
+
+  init(seed: WindowSeed) {
+    self.seed = seed
+    let store = AppStore(projectStore: .shared)
+    // Capture the current window's size ONCE, at this window's creation, so the new window can be
+    // sized to match it before it's shown (issue #70). nil for the launch window.
+    store.pendingInitialWindowSize = WindowRegistry.shared.preferredNewWindowSize
+    _store = StateObject(wrappedValue: store)
+  }
 
   var body: some View {
     RootView()
@@ -81,6 +89,7 @@ struct RootWindow: View {
       .environmentObject(store.notifications)
       .environmentObject(store.terminals)
       .focusedSceneObject(store)
+      .frame(minWidth: 900, maxWidth: .infinity, minHeight: 560, maxHeight: .infinity)
       .background(
         WindowAccessor { window in
           WindowRegistry.shared.register(window: window, store: store)

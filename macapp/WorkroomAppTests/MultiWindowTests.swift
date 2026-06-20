@@ -124,4 +124,9 @@ final class MultiWindowTests: XCTestCase {
       guardDelegate.windowShouldClose(NSWindow()),
       "with no live run command the window closes immediately — no confirm, no stop")
   }
+
+  // New-window sizing (issue #70) opens a window at the current window's size from the first frame
+  // (RootWindow's idealWidth/Height ← WindowRegistry.preferredNewWindowContentSize). It reads live
+  // NSWindows from the shared registry — which the unit-test host app itself populates with a window —
+  // so it isn't cleanly unit-testable; it's verified live (no open-small-then-resize flash).
 }

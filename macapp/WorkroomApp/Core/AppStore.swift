@@ -58,6 +58,17 @@ final class AppStore: ObservableObject {
   /// Retains the close-guard delegate proxy (the window holds its delegate weakly) for this window's
   /// lifetime (issue #70, A3).
   private var closeGuard: WindowCloseGuard?
+  /// Frame size a new window should adopt to match the window that was current when it was opened
+  /// (issue #70). Set by `RootWindow.init`; applied once in `attachWindow` before the window shows.
+  /// nil for the launch window.
+  var pendingInitialWindowSize: CGSize?
+  private var didApplyInitialSize = false
+  /// Retained `NSWindow` frame-change observers that persist this window's size for the next launch.
+  private var frameObservers: [NSObjectProtocol] = []
+
+  deinit {
+    for token in frameObservers { NotificationCenter.default.removeObserver(token) }
+  }
 
   /// Only the active (last-key) window writes the shared sidebar prefs to UserDefaults, so multiple
   /// windows don't clobber each other's selection / collapse / tab order; the single restored window
@@ -359,10 +370,51 @@ final class AppStore: ObservableObject {
     }
   }
 
+  /// The last persisted window frame (issue #70), or nil when unset/degenerate.
+  private static func savedMainWindowFrame() -> NSRect? {
+    let string = Defaults[.mainWindowFrame]
+    guard !string.isEmpty else { return nil }
+    let frame = NSRectFromString(string)
+    return (frame.width > 200 && frame.height > 200) ? frame : nil
+  }
+
   /// Bind this store to its host `NSWindow` once the view tree resolves it (issue #70). Idempotent —
   /// `WindowAccessor` may resolve the same window more than once.
   func attachWindow(_ window: NSWindow) {
     hostWindow = window
+    // Launch with a single window (issue #70): SwiftUI would otherwise persist + restore every window
+    // that was open at quit. We restore the one window's size ourselves (below), so opt out of
+    // AppKit's per-window state restoration; extra windows are deliberately not reopened.
+    window.isRestorable = false
+    // Set the window's size before it's shown (issue #70): `WindowAccessor` resolves it in
+    // `viewDidMoveToWindow`, which fires during window setup (pre-display), so SwiftUI's value-based
+    // `WindowGroup` (which otherwise opens windows at the minimum content size and doesn't restore the
+    // window frame itself) doesn't leave a window opening small. A new window matches the window that
+    // was current when it opened; the launch window restores its last frame, else a sensible default.
+    if !didApplyInitialSize {
+      didApplyInitialSize = true
+      if let size = pendingInitialWindowSize {
+        window.setFrame(NSRect(origin: window.frame.origin, size: size), display: false)
+      } else if let frame = Self.savedMainWindowFrame() {
+        window.setFrame(frame, display: false)
+      } else {
+        window.setContentSize(NSSize(width: 1200, height: 780))
+        window.center()
+      }
+    }
+    // Persist this window's frame (debounced by AppKit's notifications) so a future launch restores
+    // the size you left.
+    if frameObservers.isEmpty {
+      for name in [NSWindow.didResizeNotification, NSWindow.didMoveNotification] {
+        let token = NotificationCenter.default.addObserver(
+          forName: name, object: window, queue: .main
+        ) { [weak window] _ in
+          guard let window else { return }
+          MainActor.assumeIsolated { Defaults[.mainWindowFrame] = NSStringFromRect(window.frame) }
+        }
+        frameObservers.append(token)
+      }
+    }
     // Intercept the window close so a live run command is confirmed + gracefully stopped before the
     // window (and its surfaces) tear down — otherwise closing a window orphans its dev server, the
     // per-window form of issue #7 (issue #70, A3). A forwarding proxy keeps SwiftUI's own delegate.
