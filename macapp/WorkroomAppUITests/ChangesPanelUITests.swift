@@ -17,6 +17,8 @@ final class ChangesPanelUITests: XCTestCase {
   private func launchedApp() -> XCUIApplication {
     let app = XCUIApplication()
     app.launchArguments += ["-WorkroomUITestFixture", "1"]
+    // Start each test clean, ignoring persisted window state (cf. NewWindowUITests).
+    app.launchArguments += ["-ApplePersistenceIgnoreState", "YES"]
     app.launch()
     app.activate()
     return app

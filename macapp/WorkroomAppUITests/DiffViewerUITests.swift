@@ -15,6 +15,8 @@ final class DiffViewerUITests: XCTestCase {
   private func launchedApp(gitWorkroom: Bool = false) -> XCUIApplication {
     let app = XCUIApplication()
     app.launchArguments += ["-WorkroomUITestFixture", "1"]
+    // Start each test clean, ignoring persisted window state (cf. NewWindowUITests).
+    app.launchArguments += ["-ApplePersistenceIgnoreState", "YES"]
     if gitWorkroom { app.launchArguments += ["-WorkroomUITestGitWorkroom", "1"] }
     app.launch()
     app.activate()

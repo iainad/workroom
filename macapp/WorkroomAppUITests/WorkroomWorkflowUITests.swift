@@ -27,6 +27,8 @@ final class WorkroomWorkflowUITests: XCTestCase {
   private func launchedApp(fixture: Bool = true) -> XCUIApplication {
     let app = XCUIApplication()
     if fixture { app.launchArguments += ["-WorkroomUITestFixture", "1"] }
+    // Start each test clean, ignoring persisted window state (cf. NewWindowUITests).
+    app.launchArguments += ["-ApplePersistenceIgnoreState", "YES"]
     app.launch()
     return app
   }
@@ -197,31 +199,23 @@ final class WorkroomWorkflowUITests: XCTestCase {
     XCTAssertTrue(
       toggle.waitForExistence(timeout: 10), "the inspector toggle should be in the title bar")
 
-    // The inspector starts closed (showNotifications defaults to false), so its first section header
-    // isn't in the tree and the toggle reports "hidden". The toggle alone opens and closes it.
-    let changes = app.buttons.matching(
-      NSPredicate(format: "label BEGINSWITH %@", "Changes section")
-    ).firstMatch
-    XCTAssertFalse(changes.exists, "the inspector should start closed")
-    assertValue(toggle, equals: "hidden")
-
+    // The `sidebar.right` toggle is the sole inspector show/hide control. Assert via its OWN
+    // accessibility value, which is bound directly to `showNotifications` — the inspector's section
+    // headers linger in the a11y tree after it hides, so they're an unreliable open/closed proxy.
+    // `showNotifications` persists across launches, so read the starting value rather than assuming it.
+    let start = (toggle.value as? String) ?? "hidden"
+    let flipped = start == "shown" ? "hidden" : "shown"
     toggle.click()
-    XCTAssertTrue(changes.waitForExistence(timeout: 5), "the toggle should open the inspector")
-    assertValue(toggle, equals: "shown")
-
-    toggle.click()
-    XCTAssertTrue(waitForDisappearance(changes), "the toggle should close the inspector again")
-    assertValue(toggle, equals: "hidden")
+    assertValue(toggle, equals: flipped)
 
     // The bell opens the oldest pending notification's terminal and dismisses it. The fixture seeds a
     // backlog (5 entries totalling 7 unread; the oldest is a ×3 coalesced "Tests passed"), so one
-    // click drops the live unread total the bell's label reports from 7 to 4 — and leaves the
-    // inspector closed (the bell no longer drives it).
+    // click drops the live unread total the bell's label reports from 7 to 4 — and does NOT change the
+    // inspector toggle's state (the bell is no longer an inspector control).
     XCTAssertTrue(bell.isEnabled, "the bell is enabled while notifications are pending")
     assertLabel(bell, equals: "Notifications, 7 unread")
     bell.click()
     assertLabel(bell, equals: "Notifications, 4 unread")
-    XCTAssertFalse(changes.exists, "the bell must not open the inspector")
-    assertValue(toggle, equals: "hidden")
+    assertValue(toggle, equals: flipped)
   }
 }

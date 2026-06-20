@@ -86,6 +86,31 @@ final class DiffHighlightMapperTests: XCTestCase {
     assertColor(r.last?.color, t.nsFg, "uncaptured text uses theme fg")
   }
 
+  /// End-to-end over the *exact* UI-test fixture Ruby path (the canned diff + new-side content the
+  /// `testRubyDiffIsHighlighted` XCUITest drives): detect → real parse/query → map. Proves the whole
+  /// data pipeline produces highlighted lines headlessly, isolating the UI test from async/render
+  /// timing. Mirrors `DiffViewer.applyHighlight` in fixture mode.
+  func testFixtureRubyDiffPipelineProducesHighlightedLines() {
+    let desc = DiffDescriptor(
+      path: "app/models/user.rb", change: .modified, source: .jjWorkingCopy, isPreview: false)
+    guard case .diff(let diff) = UITestFixture.diff(for: desc) else {
+      return XCTFail("fixture should serve a Ruby diff")
+    }
+    let content = try! XCTUnwrap(
+      UITestFixture.fileContent(for: desc), "fixture serves Ruby content")
+    let grammar = try! XCTUnwrap(
+      SyntaxLanguage.grammar(forPath: desc.path), "user.rb resolves to a grammar")
+    XCTAssertEqual(grammar, .ruby)
+
+    let spans = SyntaxHighlighter.shared.spans(for: content, grammar: grammar)
+    XCTAssertFalse(spans.isEmpty, "the bundled Ruby grammar should produce highlight spans")
+
+    let lines = DiffHighlightMapper.attributedLines(
+      diff: diff, content: content, spans: spans, tokens: tokens())
+    XCTAssertFalse(
+      lines.isEmpty, "the fixture Ruby diff should map at least one highlighted new-side line")
+  }
+
   func testContextLineUsesBaseColourNotAddVariant() {
     let t = tokens()
     let content = "let x = 1\n"

@@ -21,6 +21,8 @@ final class SplitPaneUITests: XCTestCase {
     // close/quit confirmations suppressed in-app — so ⌘W closes synchronously and teardown never
     // blocks on an alert.
     app.launchArguments += ["-WorkroomUITestFixture", "1"]
+    // Start each test clean, ignoring persisted window state (cf. NewWindowUITests).
+    app.launchArguments += ["-ApplePersistenceIgnoreState", "YES"]
     app.launch()
     return app
   }

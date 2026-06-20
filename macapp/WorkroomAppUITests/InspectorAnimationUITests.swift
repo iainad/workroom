@@ -20,6 +20,8 @@ final class InspectorAnimationUITests: XCTestCase {
     app.launchArguments += [
       "-WorkroomUITestFixture", "1",
       "-WorkroomUITestManyChanges", "1",
+      // Start each test clean, ignoring persisted window state (cf. NewWindowUITests).
+      "-ApplePersistenceIgnoreState", "YES",
     ]
     app.launch()
     app.activate()
