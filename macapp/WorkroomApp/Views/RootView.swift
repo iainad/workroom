@@ -209,10 +209,10 @@ struct RootView: View {
     .sheet(isPresented: $showKeyboardShortcuts) {
       KeyboardShortcutsView()
     }
-    // The title is hidden in the bar (`titleVisibility = .hidden`, set in WindowBackgroundThemer) —
-    // the chrome lives in the title-bar accessories + the workroom tabs. We still give the window a
-    // real title (the selected project/workroom) so the native Window menu's open-window list and
-    // Mission Control name each window, letting you tell them apart and switch (issue #70).
+    // Title the window with the selected project/workroom for the Window menu + Mission Control. A
+    // non-empty `navigationTitle` re-asserts `titleVisibility = .visible` every render, so the bar is
+    // kept clear by a hard lock in `AppStore.attachWindow` (a `didUpdate` observer that re-hides it
+    // after each SwiftUI pass) — the title never shows in the bar (issue #70).
     .navigationTitle(store.windowTitle)
     // Drop NavigationSplitView's auto sidebar toggle — `LeadingTitlebarBar` carries its own, leftmost
     // after the traffic lights. The now-itemless window toolbar is hidden in WindowBackgroundThemer
@@ -251,6 +251,8 @@ struct RootView: View {
     // Drive the Go-menu Previous/Next Workroom Tab items (issue #29) — only meaningful with ≥2 tabs.
     // RootView observes `terminals`, so this stays live as workrooms gain/lose their tabs.
     .focusedSceneValue(\.multipleWorkroomTabs, store.orderedWorkroomTargets().count > 1)
+    // Drive the Go-menu "Open in…" item + ⌘O — enabled only with an editor and a valid selection.
+    .focusedSceneValue(\.canOpenInEditor, store.canOpenInEditor)
   }
 
   /// The project path of the selected root or workroom (nil for no selection) — the run command is
@@ -294,10 +296,12 @@ struct RootView: View {
           tabs: tabs, selectedID: store.selectedTargetID, onSelect: { selectWorkroomTab($0) },
           chipPaneDrag: $workroomChipDrag,
           localize: { workroomChipLocal($0) },
-          dropTarget: { workroomChipDropTarget(at: $0) })
-        // A themed hairline directly beneath the tabs, separating the bar from the terminal below
-        // (issue #36 — sources from the active theme rather than the system separator).
-        ThemeService.shared.tokens.border.frame(height: 1)
+          dropTarget: { workroomChipDropTarget(at: $0) }
+        )
+        // Match the 2pt inset the content below carries (the `WorkroomPaneLeaf` inter-pane gutter),
+        // so the workroom tab chips, the terminal tab strip, and the panel border all left-align —
+        // the bar lives outside that padding, so without this it sat 2pt left of everything below.
+        .padding(.horizontal, 2)
       }
       detailContent
         // Always fill the remaining height so the tab bar above stays pinned to the top. The

@@ -1,6 +1,32 @@
 import AppKit
 import SwiftUI
 
+/// A titlebar-accessory controller that pins its hosted view to FILL the accessory clip view's height
+/// (the full ~52pt title-bar height), so the embedded SwiftUI bar — which fills and vertically centres
+/// its buttons — sits on the traffic-light line.
+///
+/// Why a subclass + `viewDidLayout`: the hosted view's `superview` is **nil immediately after**
+/// `addTitlebarAccessoryViewController` on a normally-launched window (it's placed in the clip view a
+/// layout pass later), so pinning at install time silently no-ops — the bug that made this look fine in
+/// a fixture run (different timing) but render high on a real launch. `viewDidLayout` runs once the view
+/// is in the hierarchy. We add the constraints exactly once (the `didPin` guard) — declarative Auto
+/// Layout, never a `setFrameOrigin` in a layout pass, which re-enters the accessory's frame-change
+/// handler and crashes.
+final class FillingTitlebarAccessoryViewController: NSTitlebarAccessoryViewController {
+  private var didPin = false
+
+  override func viewDidLayout() {
+    super.viewDidLayout()
+    guard !didPin, let container = view.superview else { return }
+    didPin = true
+    view.translatesAutoresizingMaskIntoConstraints = false
+    NSLayoutConstraint.activate([
+      view.topAnchor.constraint(equalTo: container.topAnchor),
+      view.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+    ])
+  }
+}
+
 /// Hosts arbitrary SwiftUI content as an `NSTitlebarAccessoryViewController` pinned to one edge of
 /// the window's title bar — the AppKit escape hatch for the placement control SwiftUI's `.toolbar`
 /// withholds.
@@ -73,11 +99,11 @@ struct TitlebarAccessory<Content: View>: NSViewRepresentable {
 
       let host = NSHostingView(rootView: AnyView(content()))
       host.translatesAutoresizingMaskIntoConstraints = false
-      // Size to the SwiftUI content; AppKit centres it vertically in the title bar and pins it to
-      // `edge`. Without a concrete frame the accessory can collapse to zero width on first layout.
+      // Size to the SwiftUI content; AppKit pins it to `edge`. Without a concrete frame the accessory
+      // can collapse to zero width on first layout.
       host.frame = NSRect(origin: .zero, size: host.fittingSize)
 
-      let controller = NSTitlebarAccessoryViewController()
+      let controller = FillingTitlebarAccessoryViewController()
       controller.identifier = identifier
       controller.layoutAttribute = edge
       controller.view = host

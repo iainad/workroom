@@ -15,35 +15,51 @@ struct OpenInControl: View {
   var body: some View {
     let editors = ExternalEditor.installed
     if !editors.isEmpty {
-      // Primary action reopens in the remembered editor; the menu switches it.
       let remembered = editors.first { $0.id == lastEditorID } ?? editors[0]
-      Menu {
-        ForEach(editors) { editor in
-          Button {
-            lastEditorID = editor.id
-            editor.open(path)
-          } label: {
-            Label {
-              Text(editor.name)
-            } icon: {
-              Image(nsImage: editor.icon).renderingMode(.original)
+      // Two SEPARATE controls in one tight group: an icon Button that opens in the remembered editor
+      // on a single click (also ⌘O / the Go-menu item), and a chevron Menu to pick a different one.
+      // Both inherit the bar's `ToolbarIconButtonStyle`, so each gets its own hover well. Negative
+      // spacing pulls the two 22pt-min wells together so the small chevron sits snug against the icon
+      // (each well only paints on its own hover, so the slight overlap never shows two at once).
+      HStack(spacing: -8) {
+        Button {
+          remembered.open(path)
+        } label: {
+          Image(systemName: "arrow.up.forward.app")
+            .hidden()
+            .overlay {
+              Image(nsImage: remembered.icon).renderingMode(.original).resizable().scaledToFit()
+            }
+            .frame(width: 16, height: 16)
+        }
+        .help("Open in \(remembered.name) (⌘O)")
+        .accessibilityLabel("Open in \(remembered.name)")
+
+        Menu {
+          ForEach(editors) { editor in
+            Button {
+              lastEditorID = editor.id
+              editor.open(path)
+            } label: {
+              Label {
+                Text(editor.name)
+              } icon: {
+                Image(nsImage: editor.icon).renderingMode(.original)
+              }
             }
           }
+        } label: {
+          Image(systemName: "chevron.down")
+            .font(.system(size: 8, weight: .semibold))
+            .foregroundStyle(.secondary)
         }
-      } label: {
-        Image(systemName: "arrow.up.forward.app")
-          .hidden()
-          .overlay {
-            Image(nsImage: remembered.icon).renderingMode(.original).resizable().scaledToFit()
-          }
-          .frame(width: 16, height: 16)
-      } primaryAction: {
-        remembered.open(path)
+        .menuStyle(.button)
+        // We draw the chevron ourselves, so hide the system disclosure indicator.
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("Open in… (choose editor)")
+        .accessibilityLabel("Choose editor")
       }
-      .menuStyle(.button)
-      .menuIndicator(.hidden)
-      .fixedSize()
-      .help("Open in \(remembered.name)")
     }
   }
 }

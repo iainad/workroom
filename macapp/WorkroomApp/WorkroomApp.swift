@@ -474,6 +474,12 @@ struct MultipleWorkroomTabsKey: FocusedValueKey {
   typealias Value = Bool
 }
 
+/// Whether the selected target can be opened in an external editor — published by RootView, so the
+/// Go-menu "Open in…" item (⌘O) disables when there's no selection / a missing dir / no editor.
+struct CanOpenInEditorKey: FocusedValueKey {
+  typealias Value = Bool
+}
+
 extension FocusedValues {
   var workroomSelected: Bool? {
     get { self[WorkroomSelectedKey.self] }
@@ -515,6 +521,10 @@ extension FocusedValues {
     get { self[MultipleWorkroomTabsKey.self] }
     set { self[MultipleWorkroomTabsKey.self] = newValue }
   }
+  var canOpenInEditor: Bool? {
+    get { self[CanOpenInEditorKey.self] }
+    set { self[CanOpenInEditorKey.self] = newValue }
+  }
 }
 
 /// Menu-bar commands + keyboard shortcuts. They act on the shared store so they work
@@ -536,6 +546,7 @@ struct WorkroomCommands: Commands {
   @FocusedValue(\.hasRunTerminal) private var hasRunTerminal
   @FocusedValue(\.multipleTerminalTabs) private var multipleTerminalTabs
   @FocusedValue(\.multipleWorkroomTabs) private var multipleWorkroomTabs
+  @FocusedValue(\.canOpenInEditor) private var canOpenInEditor
   // Shared with RootView's inspector + toolbar toggle (same key) so all three stay in sync.
   @Default(.showNotifications) private var showNotifications
   // Same key as the Settings checkbox so the two stay in sync; GhosttySurfaceView reads it
@@ -729,7 +740,9 @@ struct WorkroomCommands: Commands {
       Button("New Project…") {
         store?.requestAddProject = true
       }
-      .keyboardShortcut("o", modifiers: .command)
+      // ⇧⌘O: plain ⌘O is now "Open in editor" (Go menu). Shift-⌘O keeps a near-conventional "open a
+      // folder" accelerator for adding a project.
+      .keyboardShortcut("o", modifiers: [.command, .shift])
 
       Divider()
 
@@ -788,6 +801,15 @@ struct WorkroomCommands: Commands {
       Button("Forward") { store?.navigateForward() }
         .keyboardShortcut("]", modifiers: .command)
         .disabled(canNavigateForward != true)
+
+      // Open the selected target in the remembered external editor (the toolbar's open button, ⌘O).
+      // Disabled when nothing's selected / its directory is missing / no editor is installed.
+      Divider()
+      Button("Open in \(ExternalEditor.remembered?.name ?? "Editor")") {
+        store?.openSelectedInEditor()
+      }
+      .keyboardShortcut("o", modifiers: .command)
+      .disabled(canOpenInEditor != true)
 
       // Scroll the focused terminal to the top/bottom of its scrollback (issue #42). ⌘↑/⌘↓ — the
       // menu key-equivalent fires before the terminal, so it works even in an enhanced-keyboard TUI.

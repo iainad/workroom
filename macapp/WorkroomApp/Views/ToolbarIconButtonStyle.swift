@@ -1,0 +1,43 @@
+import SwiftUI
+
+/// Hover/press chrome for the title-bar toolbar's icon buttons (sidebar toggle, back/forward, quick
+/// terminal, run/stop/restart, bell, inspector toggle). Replaces the bare `.borderless` style so they
+/// get the SAME affordance as every other icon button in the app — the sidebar's theme/add buttons and
+/// the tab strips' "+" all use a `tokens.hover` rounded square on hover — instead of no feedback at all.
+///
+/// A `ButtonStyle` (not a per-button `.onHover` + manual background) so one modifier on each title-bar
+/// bar covers all its buttons, including nested ones, and the hover rect sizes itself to each glyph.
+struct ToolbarIconButtonStyle: ButtonStyle {
+  func makeBody(configuration: Configuration) -> some View {
+    Chrome(configuration: configuration)
+  }
+
+  /// A view (not an inline modifier chain) so it can hold the `@State hovering` a `ButtonStyle`'s
+  /// `Configuration` doesn't carry, and read `isEnabled` to suppress hover on a disabled button.
+  private struct Chrome: View {
+    let configuration: Configuration
+    @Environment(\.isEnabled) private var isEnabled
+    @State private var hovering = false
+    private let theme = ThemeService.shared
+
+    var body: some View {
+      configuration.label
+        // A uniform tap target so every glyph gets the same square hover well, matching the sidebar's
+        // 28pt buttons in spirit while staying compact enough for the 28pt-tall title-bar row.
+        .frame(minWidth: 22, minHeight: 22)
+        .padding(.horizontal, 3)
+        .background(
+          RoundedRectangle(cornerRadius: 6, style: .continuous)
+            .fill(theme.tokens.hover.opacity(hovering && isEnabled ? 1 : 0))
+        )
+        .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+        // Dim on press; dim further when disabled — restoring what `.borderless` gave. Without the
+        // disabled case a disabled button (e.g. Back/Forward with no history) renders at full strength,
+        // so it looks active yet never shows a hover well — reading as a broken/"missing" hover. The
+        // dim makes "disabled, so no hover" legible; enabled buttons keep the hover fill.
+        .opacity(configuration.isPressed ? 0.6 : (isEnabled ? 1 : 0.4))
+        .onHover { hovering = $0 }
+        .animation(.easeOut(duration: 0.12), value: hovering)
+    }
+  }
+}

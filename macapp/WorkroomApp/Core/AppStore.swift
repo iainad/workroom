@@ -70,6 +70,8 @@ final class AppStore: ObservableObject {
   private var didApplyInitialSize = false
   /// Retained `NSWindow` frame-change observers that persist this window's size for the next launch.
   private var frameObservers: [NSObjectProtocol] = []
+  /// Retains the `NSWindow.didUpdate` observer that keeps the title out of the title bar (issue #70).
+  private var titleVisibilityObserver: NSObjectProtocol?
 
   deinit {
     for token in frameObservers { NotificationCenter.default.removeObserver(token) }
@@ -387,12 +389,23 @@ final class AppStore: ObservableObject {
   /// `WindowAccessor` may resolve the same window more than once.
   func attachWindow(_ window: NSWindow) {
     hostWindow = window
-    // Keep the title out of the title bar from the first frame (issue #70). The title we give the
-    // window (selected project/workroom, see `windowTitle`) exists only to name it in the Window menu
-    // + Mission Control — never to show in the bar. WindowBackgroundThemer also pins this, but a
-    // runloop later (its apply is async), so a new window opening with a non-empty navigationTitle
-    // could flash the title for one frame; setting it here, pre-display, closes that gap.
+    // Keep the title out of the title bar (issue #70). The title we give the window (selected
+    // project/workroom, via `navigationTitle` → `windowTitle`) exists only to name it in the Window
+    // menu + Mission Control — never to show in the bar. But a non-empty `navigationTitle` re-asserts
+    // `titleVisibility = .visible` on every SwiftUI update, and WindowBackgroundThemer's in-update
+    // re-hide can lose that race. So set it hidden here (pre-display, killing the open-time flash) and
+    // re-hide after every window update cycle: `didUpdate` fires *after* SwiftUI's changes, so this
+    // lock always wins. The guard makes the re-hide a no-op once hidden, so it can't loop.
     window.titleVisibility = .hidden
+    if titleVisibilityObserver == nil {
+      titleVisibilityObserver = NotificationCenter.default.addObserver(
+        forName: NSWindow.didUpdateNotification, object: window, queue: .main
+      ) { [weak window] _ in
+        MainActor.assumeIsolated {
+          if window?.titleVisibility != .hidden { window?.titleVisibility = .hidden }
+        }
+      }
+    }
     // Launch with a single window (issue #70): SwiftUI would otherwise persist + restore every window
     // that was open at quit. We restore the one window's size ourselves (below), so opt out of
     // AppKit's per-window state restoration; extra windows are deliberately not reopened.
@@ -459,6 +472,22 @@ final class AppStore: ObservableObject {
   /// The selected terminal target resolved against the current project list (nil if it no
   /// longer exists).
   var selectedTarget: TerminalTarget? { selectedTargetID.flatMap(target(for:)) }
+
+  /// Whether there's a usable editor and a valid selected target to open — drives the ⌘O command and
+  /// Go-menu item's enabled state (and matches when the toolbar's open button is meaningful).
+  var canOpenInEditor: Bool {
+    guard let target = selectedTarget, !target.isMissing else { return false }
+    return ExternalEditor.remembered != nil
+  }
+
+  /// Open the selected target's directory in the remembered editor (the toolbar's primary open action,
+  /// also bound to ⌘O and the Go-menu item). No-op when nothing's selected, the directory is missing,
+  /// or no editor is installed.
+  func openSelectedInEditor() {
+    guard let target = selectedTarget, !target.isMissing, let editor = ExternalEditor.remembered
+    else { return }
+    editor.open(target.path)
+  }
 
   /// This window's title — the selected project and workroom (issue #70). Hidden from the title bar
   /// (`titleVisibility = .hidden`), so it only feeds the native Window menu's open-window list and

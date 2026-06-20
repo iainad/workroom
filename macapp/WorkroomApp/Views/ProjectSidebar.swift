@@ -559,13 +559,15 @@ struct ProjectSidebar: View {
     .padding(.bottom, 6)
     // Solid at the buttons, fading to transparent at the top, so list rows scroll under the bar and
     // stay legible behind it (issue #56 feedback). Click-through so only the buttons capture clicks —
-    // a row scrolled under the bar is still clickable through the background.
+    // a row scrolled under the bar is still clickable through the background. The solid colour is the
+    // sidebar's own background (`tokens.bg`, not `tokens.panel`), so the bar is invisible against the
+    // sidebar and only reads where a scrolling row fades out beneath it.
     .background(
       LinearGradient(
         stops: [
-          .init(color: ThemeService.shared.tokens.panel.opacity(0), location: 0),
-          .init(color: ThemeService.shared.tokens.panel, location: 0.65),
-          .init(color: ThemeService.shared.tokens.panel, location: 1),
+          .init(color: ThemeService.shared.tokens.bg.opacity(0), location: 0),
+          .init(color: ThemeService.shared.tokens.bg, location: 0.65),
+          .init(color: ThemeService.shared.tokens.bg, location: 1),
         ],
         startPoint: .top, endPoint: .bottom
       )

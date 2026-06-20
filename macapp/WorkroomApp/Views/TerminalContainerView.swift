@@ -1,6 +1,13 @@
 import AppKit
 import SwiftUI
 
+/// Shared rounding for the terminal panel chip. The border, dim scrim, and diff clip (PaneTreeView)
+/// and the surface's own layer clip (below) must all use the same radius or the corners mismatch —
+/// one constant keeps them in lockstep.
+enum TerminalPanelMetrics {
+  static let cornerRadius: CGFloat = 8
+}
+
 /// Hosts a single terminal surface, clipped to rounded corners. Terminals live in
 /// `TerminalSessions` (retained across switches); this view mounts whichever one it's given and
 /// re-mounts when that changes.
@@ -30,7 +37,7 @@ struct TerminalContainerView: NSViewRepresentable {
     container.wantsLayer = true
     // Round the terminal's corners. masksToBounds clips the hosted surface (pinned to the
     // container edges) to the rounded shape.
-    container.layer?.cornerRadius = 12
+    container.layer?.cornerRadius = TerminalPanelMetrics.cornerRadius
     container.layer?.cornerCurve = .continuous
     container.layer?.masksToBounds = true
     mount(in: container)

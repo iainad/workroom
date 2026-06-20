@@ -58,8 +58,13 @@ struct TitlebarControlsBar: View {
       .accessibilityValue(showNotifications ? "shown" : "hidden")
       .accessibilityIdentifier("titlebar.toggleInspector")
     }
-    .buttonStyle(.borderless)
-    .padding(.horizontal, 10)
-    .frame(height: 28)
+    .buttonStyle(ToolbarIconButtonStyle())
+    // No leading padding: the bell's left divider lives in TrailingTitlebarBar (its 4pt pad + the bar's
+    // 6pt spacing already give a 10pt gap to the bell). A leading 10 here would stack on top, leaving
+    // the bell with a wider gap on its left than its right (the 10pt HStack spacing to its right
+    // divider). Trailing 10 keeps the inspector toggle off the window edge.
+    .padding(.trailing, 10)
+    // Fill the full-height (52pt) accessory host so the HStack centres its buttons — see LeadingTitlebarBar.
+    .frame(maxHeight: .infinity)
   }
 }

@@ -62,18 +62,27 @@ struct LeadingTitlebarBar: View {
       .accessibilityLabel("Forward")
       .disabled(!store.canGoForward)
 
+      // Separate the history nav from the quick-terminal action — it's a different kind of control.
+      TitlebarDivider()
+
       Button {
         NotificationCenter.default.post(name: .showQuickTerminal, object: nil)
       } label: {
+        // The `.badge.plus` extends this glyph's box upward, so a plain centre sits ~0.5pt high vs the
+        // other icons; nudge it down to sit on the same line.
         Image(systemName: "macwindow.badge.plus")
+          .offset(y: 0.5)
       }
       .help("Quick Terminal (⌥§)")
       .accessibilityLabel("Quick Terminal")
       .accessibilityIdentifier("toolbar.quickTerminal")
     }
-    .buttonStyle(.borderless)
+    .buttonStyle(ToolbarIconButtonStyle())
     .padding(.horizontal, 10)
-    .frame(height: 28)
+    // The titlebar accessory host is the full title-bar height (52pt — NOT 28), and NSHostingView
+    // top-aligns a fixed-height root inside it, so the icons sat high. Fill the host and let the HStack
+    // centre its buttons on the traffic-light line (the close button centres at y=26 of the 52pt host).
+    .frame(maxHeight: .infinity)
   }
 }
 
@@ -93,10 +102,11 @@ struct TrailingTitlebarBar: View {
         OpenInControl(path: target.path)
         TitlebarDivider()
       }
-      // Bell + inspector toggle (carries its own padding/divider/borderless style).
+      // Bell + inspector toggle (carries its own padding/divider/style).
       TitlebarControlsBar()
     }
-    .buttonStyle(.borderless)
-    .frame(height: 28)
+    .buttonStyle(ToolbarIconButtonStyle())
+    // Fill the full-height (52pt) accessory host so the HStack centres its buttons — see LeadingTitlebarBar.
+    .frame(maxHeight: .infinity)
   }
 }

@@ -8,7 +8,10 @@ extension View {
   // Radius + margins are tuned to match macOS's native docked sidebar card (the reveal is the only
   // caller; the docked columns use the system card). `topMargin` defaults to `margin` but can be
   // reduced so the reveal extends a little higher, to line up with the native card's top.
-  func sidebarCard(cornerRadius: CGFloat = 10, margin: CGFloat = 8, topMargin: CGFloat? = nil)
+  func sidebarCard(
+    cornerRadius: CGFloat = 10, margin: CGFloat = 8, topMargin: CGFloat? = nil,
+    leadingMargin: CGFloat? = nil
+  )
     -> some View
   {
     let tokens = ThemeService.shared.tokens
@@ -22,7 +25,10 @@ extension View {
       )
       .compositingGroup()
       .shadow(color: .black.opacity(0.10), radius: 5, y: 1)
-      .padding(.horizontal, margin)
+      // `leadingMargin` overrides only the leading inset (defaults to `margin`) — the docked inspector
+      // tightens the gap to the detail panel without pulling its outer (trailing) edge off the window.
+      .padding(.leading, leadingMargin ?? margin)
+      .padding(.trailing, margin)
       .padding(.bottom, margin)
       .padding(.top, topMargin ?? margin)
   }

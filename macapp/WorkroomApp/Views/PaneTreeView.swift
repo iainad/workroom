@@ -321,18 +321,18 @@ private struct PaneLeafView: View {
       // focused so it has nothing to dim.
       .overlay {
         if multiPane {
-          RoundedRectangle(cornerRadius: 12)
+          RoundedRectangle(cornerRadius: TerminalPanelMetrics.cornerRadius)
             .fill(theme.tokens.terminalDim.opacity(dimmed ? 0.3 : 0))
             .allowsHitTesting(false)
             .animation(reduceMotion ? nil : .easeInOut(duration: 0.1), value: flashing)
             .animation(reduceMotion ? nil : .easeInOut(duration: 0.07), value: focused)
         }
       }
-      // A rounded-12 border frames every terminal, the same in a split or solo: `borderColor` is the
+      // A rounded border frames every terminal, the same in a split or solo: `borderColor` is the
       // focus tint on the focused pane (a solo terminal is always focused, so it always gets it) and a
       // neutral hairline on unfocused split panes — all at 1.5pt.
       .overlay {
-        RoundedRectangle(cornerRadius: 12)
+        RoundedRectangle(cornerRadius: TerminalPanelMetrics.cornerRadius)
           .strokeBorder(borderColor, lineWidth: 1.5)
           .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: flashing)
           .animation(reduceMotion ? nil : .easeInOut(duration: 0.08), value: focused)
@@ -374,7 +374,8 @@ private struct PaneLeafView: View {
       TerminalContainerView(view: s.view, isFocusedPane: focused)
     case .diff(let descriptor):
       DiffViewer(descriptor: descriptor, directory: directory)
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .clipShape(
+          RoundedRectangle(cornerRadius: TerminalPanelMetrics.cornerRadius, style: .continuous))
     }
   }
 

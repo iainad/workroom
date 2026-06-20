@@ -1,4 +1,5 @@
 import AppKit
+import Defaults
 
 /// An installed app that can open a workroom directory, offered in the detail toolbar's
 /// "Open in…" menu. Only the supported editors that are actually installed appear.
@@ -22,6 +23,14 @@ struct ExternalEditor: Identifiable {
       }
       return ExternalEditor(id: editor.id, name: editor.name, appURL: url)
     }
+  }
+
+  /// The editor the primary "Open in" action uses: the one last picked (`Defaults[.lastEditor]`), else
+  /// the first installed. nil when none are installed. Single source for the toolbar's open button, the
+  /// ⌘O command, and the Go-menu item, so they always target the same editor.
+  static var remembered: ExternalEditor? {
+    let installed = installed
+    return installed.first { $0.id == Defaults[.lastEditor] } ?? installed.first
   }
 
   /// The app's Finder icon, sized for inline display beside its name in the
