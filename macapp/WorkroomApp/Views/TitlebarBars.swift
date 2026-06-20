@@ -100,7 +100,6 @@ struct TrailingTitlebarBar: View {
           RunControls(target: target, projectPath: projectPath)
         }
         OpenInControl(path: target.path)
-        TitlebarDivider()
       }
       // Bell + inspector toggle (carries its own padding/divider/style).
       TitlebarControlsBar()

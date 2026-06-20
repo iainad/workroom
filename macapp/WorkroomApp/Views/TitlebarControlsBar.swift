@@ -11,10 +11,12 @@ import SwiftUI
 /// title-bar accessory instead gives one `HStack` with exact spacing, a divider, and a fixed order,
 /// pinned to the window's true trailing edge regardless of the split's columns.
 ///
-/// Both controls toggle the same notifications inspector: the bell carries the unread count and
-/// reads as the notification-center entry; the `sidebar.right` toggle fills while the inspector is
-/// open, mirroring the leading sidebar toggle (the conventional show/hide affordance).
+/// The two controls do different things: the bell opens the *oldest* pending notification's terminal
+/// (and dismisses it — repeated clicks walk the backlog oldest→newest, mirroring the ⇧⌘N "Next
+/// Notification" command); the `sidebar.right` toggle shows/hides the notifications inspector, filling
+/// while open like the leading sidebar toggle. The bell is disabled when there are none to open.
 struct TitlebarControlsBar: View {
+  @EnvironmentObject var store: AppStore
   @EnvironmentObject var notifications: NotificationCenterStore
   @Default(.showNotifications) private var showNotifications
   private let theme = ThemeService.shared
@@ -27,16 +29,17 @@ struct TitlebarControlsBar: View {
 
   var body: some View {
     HStack(spacing: 10) {
-      // Notifications bell with live unread badge.
+      // Notifications bell with live unread badge — opens the oldest pending notification's terminal.
       Button {
-        showNotifications.toggle()
+        store.openOldestNotification()
       } label: {
         HStack(spacing: 3) {
           Image(systemName: "bell")
           UnreadBadge(count: notifications.total)
         }
       }
-      .help("Notifications")
+      .disabled(notifications.total == 0)
+      .help(notifications.total > 0 ? "Open oldest notification" : "No notifications")
       .accessibilityLabel(Self.bellLabel(unread: notifications.total))
       .accessibilityIdentifier("titlebar.notifications")
 

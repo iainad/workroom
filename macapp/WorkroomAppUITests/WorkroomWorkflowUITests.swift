@@ -168,13 +168,25 @@ final class WorkroomWorkflowUITests: XCTestCase {
     XCTAssertFalse(run.exists, "Run should be replaced while running")
   }
 
+  /// Wait for an element's accessibility label to settle on `label` (the bell's label carries the live
+  /// unread total, so opening a notification drops the count it reports).
+  private func assertLabel(
+    _ element: XCUIElement, equals label: String, timeout: TimeInterval = 4
+  ) {
+    let exp = XCTNSPredicateExpectation(
+      predicate: NSPredicate(format: "label == %@", label), object: element)
+    XCTAssertEqual(
+      XCTWaiter().wait(for: [exp], timeout: timeout), .completed,
+      "element label did not reach \"\(label)\" within \(timeout)s")
+  }
+
   /// The trailing title-bar controls (notifications bell + inspector toggle) live in an
   /// `NSTitlebarAccessoryViewController` bar, not `.toolbar` — `.primaryAction` is column-scoped in a
   /// NavigationSplitView, so they couldn't both sit at the window's trailing edge as toolbar items.
-  /// This asserts both controls exist, the toggle reflects open/closed via its accessibility value,
-  /// and that the bell drives the *same* inspector the toggle does (clicking the bell closes what the
-  /// toggle opened — proving they're one control surface, not two independent ones).
-  func testTitlebarControlsToggleInspector() throws {
+  /// This asserts both controls exist, the `sidebar.right` toggle is the sole show/hide control for
+  /// the inspector (open + close via its accessibility value), and the bell opens + dismisses the
+  /// oldest pending notification (dropping its unread total) WITHOUT touching the inspector.
+  func testTitlebarControlsBellAndInspectorToggle() throws {
     let app = launchedApp()
     XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
 
@@ -186,23 +198,30 @@ final class WorkroomWorkflowUITests: XCTestCase {
       toggle.waitForExistence(timeout: 10), "the inspector toggle should be in the title bar")
 
     // The inspector starts closed (showNotifications defaults to false), so its first section header
-    // isn't in the tree and the toggle reports "hidden".
+    // isn't in the tree and the toggle reports "hidden". The toggle alone opens and closes it.
     let changes = app.buttons.matching(
       NSPredicate(format: "label BEGINSWITH %@", "Changes section")
     ).firstMatch
     XCTAssertFalse(changes.exists, "the inspector should start closed")
     assertValue(toggle, equals: "hidden")
 
-    // The toggle opens the inspector and flips to "shown".
     toggle.click()
     XCTAssertTrue(changes.waitForExistence(timeout: 5), "the toggle should open the inspector")
     assertValue(toggle, equals: "shown")
 
-    // The bell drives the same inspector: clicking it closes what the toggle opened.
+    toggle.click()
+    XCTAssertTrue(waitForDisappearance(changes), "the toggle should close the inspector again")
+    assertValue(toggle, equals: "hidden")
+
+    // The bell opens the oldest pending notification's terminal and dismisses it. The fixture seeds a
+    // backlog (5 entries totalling 7 unread; the oldest is a ×3 coalesced "Tests passed"), so one
+    // click drops the live unread total the bell's label reports from 7 to 4 — and leaves the
+    // inspector closed (the bell no longer drives it).
+    XCTAssertTrue(bell.isEnabled, "the bell is enabled while notifications are pending")
+    assertLabel(bell, equals: "Notifications, 7 unread")
     bell.click()
-    XCTAssertTrue(
-      waitForDisappearance(changes),
-      "the bell should close the same inspector the toggle opened")
+    assertLabel(bell, equals: "Notifications, 4 unread")
+    XCTAssertFalse(changes.exists, "the bell must not open the inspector")
     assertValue(toggle, equals: "hidden")
   }
 }
