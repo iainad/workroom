@@ -278,18 +278,18 @@ final class WorkroomsViewTests: XCTestCase {
     XCTAssertFalse(store.cycleTerminalTab(forward: true), "no selected target → not handled")
   }
 
-  // MARK: Selecting a workroom does not auto-open a terminal
+  // MARK: Selecting a workroom with no terminals opens one
 
-  func testSelectingWorkroomDoesNotCreateTerminal() {
+  func testSelectingWorkroomWithNoTerminalsOpensOne() {
     let store = makeStore([project("/a", workrooms: ["main"])])
     let a = SidebarID.workroom(project: "/a", name: "main")
     let target = store.target(for: a)!
     store.selectedTargetID = a
     store.ensureInitialTerminal(for: target)  // the WorkroomTerminalsView .task path, on mount
     XCTAssertEqual(
-      store.terminals.tabCount(forTargetID: target.id), 0,
-      "selecting a workroom must not auto-create a terminal")
-    XCTAssertTrue(store.orderedWorkroomTargets().isEmpty, "no terminal → no tab")
+      store.terminals.tabCount(forTargetID: target.id), 1,
+      "opening a workroom with no terminals must open one")
+    XCTAssertFalse(store.orderedWorkroomTargets().isEmpty, "a terminal → an active tab")
   }
 
   // MARK: Run-command interaction (#7)

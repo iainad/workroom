@@ -612,7 +612,8 @@ final class AppStore: ObservableObject {
   /// OSC-9;4 — arbitrary run commands (npm run dev) emit no progress.
   enum RunState: Equatable {
     /// Auto-run queued for a just-created workroom; its pane hasn't mounted, so there's no tab yet.
-    /// While armed, `ensureInitialTerminal` suppresses the default shell so the run tab is tab #1.
+    /// While armed, `ensureInitialTerminal` starts the run as a backgrounded tab #1, with the always-on
+    /// shell opened as the focused tab #2.
     case armed
     /// Process alive in `tab`. `interrupted` = a Ctrl-C was already sent this stop cycle, so the next
     /// Stop escalates to a hard kill (OV-D).
@@ -1373,57 +1374,37 @@ final class AppStore: ObservableObject {
     runStates[targetID] = .armed
   }
 
-  /// Workrooms just created with the "open a terminal in new workrooms" setting on
-  /// (`Defaults[.openTerminalOnCreate]`), pending an initial shell on first pane mount. A one-shot
-  /// create-time marker, like an `.armed` run-state: consulted once at create and consumed by
-  /// `ensureInitialTerminal`, so selecting an *existing* workroom never spawns a terminal (issue #23).
-  private var pendingOpenTerminal: Set<TerminalTarget.ID> = []
-
-  /// Arm a just-created workroom to open a shell terminal once its pane mounts (post-setup), per the
-  /// `openTerminalOnCreate` setting. Called from `createWorkroom`, mirroring `armAutoRun`.
-  func armOpenTerminal(forWorkroom targetID: TerminalTarget.ID) {
-    pendingOpenTerminal.insert(targetID)
-  }
-
-  /// Run an armed auto-run command as a target's first terminal when its pane first appears (called by
-  /// the terminals view). Only acts when an auto-run was armed for this just-created workroom (issue
-  /// #7) — the run command becomes the first tab instead of a default shell. Because the pane only
-  /// mounts once any blocking setup dialog is dismissed, this is exactly when the command should run
-  /// (post-setup). For any other target this is a no-op: selecting a workroom does NOT auto-create a
-  /// terminal (issue #23) — the user opens one with ⌘T. Falls back to a normal tab if the armed
-  /// command can't start (e.g. config cleared between arming and mount).
+  /// Ensure a target's terminal pane lands the user in a live terminal when it first appears (called by
+  /// the terminals view's `.task`). Two cases, both covered here:
+  ///
+  ///   1. Auto-run (issue #7): a just-created workroom that armed its project's run command starts it
+  ///      as a backgrounded tab #1 (a toast surfaces it), with the always-on shell (below) as the
+  ///      focused tab #2. The pane only mounts once any blocking setup dialog is dismissed, so the
+  ///      command runs post-setup, as intended.
+  ///   2. Always open a terminal: a newly created workroom always opens a shell, and selecting an
+  ///      *existing* workroom/root with no open terminals opens one too. `.task(id:)` fires per target
+  ///      appearance and `tabCount` is 0 only when the target has no live tabs, so this is idempotent
+  ///      across re-mounts (navigating away and back) once a terminal exists.
+  ///
+  /// Falls back to a plain shell if the armed command can't start (e.g. config cleared between arming
+  /// and mount) — the shell below opens regardless.
   func ensureInitialTerminal(for target: TerminalTarget) {
-    // Both intents are one-shot create-time markers (issue #7 / `openTerminalOnCreate`). Selecting a
-    // workroom otherwise does NOT auto-create a terminal — the user opens one with ⌘T (or the empty
-    // state's "New Terminal" button) — so an existing, un-marked workroom shows the empty state and
-    // gets no tab here. Consume both up front so a later re-mount (navigating away and back) can't
-    // re-fire either.
+    // Consume the armed intent up front so a later re-mount can't re-fire it, then let startRunCommand
+    // (re-)derive the state: it becomes `.running` as a backgrounded tab #1, or a no-op if the config
+    // was cleared between arming and mount.
     let isArmed: Bool
     if case .armed = runStates[target.id] { isArmed = true } else { isArmed = false }
-    let opensShell = pendingOpenTerminal.remove(target.id) != nil
-    guard isArmed || opensShell else { return }
-
-    // Auto-run: start the project's command as the workroom's first tab (post-setup). Consume the
-    // armed intent first, then let startRunCommand (re-)derive the state: it becomes `.running` as
-    // tab #1, or a no-op if the config was cleared between arming and mount.
     if isArmed {
       runStates[target.id] = nil
-      // Arch #5 (issue #67): when "open terminal in new workrooms" is ON there's a shell tab to show,
-      // so background the auto-run (toast surfaces it). When it's OFF the run would be the workroom's
-      // only tab — focus it, or the new workroom would look empty while the server runs hidden.
-      startRunCommand(for: target, focus: !opensShell)
+      // Background the auto-run (issue #67): the shell below is the focused tab the user lands on.
+      startRunCommand(for: target, focus: false)
     }
 
-    // "Open a terminal in new workrooms": open a plain shell as the visible tab. When auto-run also
-    // fired, the run stays backgrounded (above) and this shell is the focused tab the user lands on
-    // (`addTab` focuses it). Issue #67: no longer re-focus the run tab — backgrounding it is the point.
-    if opensShell {
+    // Always land in a shell. When armed, this is the focused tab #2 beside the backgrounded run; for a
+    // created or freshly-selected workroom/root with no tabs, it's the only one. `addTab` focuses it.
+    if isArmed || terminals.tabCount(forTargetID: target.id) == 0 {
       terminals.addTab(for: target)
     }
-
-    // An armed run that couldn't start (config cleared after arming) still needs a usable terminal;
-    // open one unless the shell above already covered it.
-    if isArmed, terminals.tabCount(forTargetID: target.id) == 0 { terminals.ensureTab(for: target) }
   }
 
   // MARK: Loading
@@ -1534,8 +1515,9 @@ final class AppStore: ObservableObject {
         let workroom = project.workrooms.first
       {
         selectedTargetID = .workroom(project: project.path, name: workroom.name)
-        // Selecting a workroom no longer auto-opens a terminal (issue #23), so explicitly open one
-        // here for the UI tests — they assume the fixture workroom has a terminal (and thus a tab).
+        // Open a terminal for the auto-selected fixture workroom up front (the view's
+        // `ensureInitialTerminal` would too on mount) so the UI tests, which assume the fixture
+        // workroom has a terminal (and thus a tab), don't race the pane's first appearance.
         let target = workroom.target(inProject: project.path)
         terminals.ensureTab(for: target)
         // Seed a representative notification history (the inspector's Notifications panel is otherwise
@@ -1694,12 +1676,9 @@ final class AppStore: ObservableObject {
               if cfg.autoRun, cfg.hasCommand {
                 self.armAutoRun(forWorkroom: workroomID)
               }
-              // Open-a-terminal-on-create setting: arm a plain shell for first mount, independent of
-              // auto-run (fires alongside it — run command tab #1, shell tab #2). Like auto-run, this
-              // fires post-setup because the pane is withheld behind the blocking setup dialog.
-              if Defaults[.openTerminalOnCreate] {
-                self.armOpenTerminal(forWorkroom: workroomID)
-              }
+              // A newly created workroom always opens a shell on first mount (`ensureInitialTerminal`);
+              // no arming needed — its pane has no tabs yet, so the tabCount==0 path covers it. When
+              // auto-run also fires, the run is backgrounded tab #1 and the shell is the focused tab #2.
               await self.mountSetupLog(session, workroom: name, project: project, blocking: setup)
             }
           }
@@ -1818,8 +1797,6 @@ final class AppStore: ObservableObject {
     // `reap` only fires `onTabsRemoved` (which clears run state) when tabs existed; a target armed
     // for auto-run but deleted before its pane mounted has none, so clear directly too (issue #7).
     runStates[targetID] = nil
-    // Same for a created-then-deleted-before-mount target marked to open a shell on create.
-    pendingOpenTerminal.remove(targetID)
     clearRunPidFile(for: targetID)
     runOutcomes[targetID] = nil
     resetRunToast(for: targetID)  // deleted target → drop any run toast state (issue #67)

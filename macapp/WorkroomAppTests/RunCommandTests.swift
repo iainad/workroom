@@ -242,60 +242,18 @@ final class RunCommandTests: XCTestCase {
     XCTAssertTrue(store.isRunCommandRunning(for: t.id))
   }
 
-  func testArmedAutoRunStartsOnInitialTerminalMount() {
+  func testArmedAutoRunBackgroundsRunAndOpensShell() {
     let store = makeStore([project("/a", workrooms: ["main"])])
     store.setRunConfig(RunConfig(command: "echo hi", autoRun: true), forProject: "/a")
     let t = target(store, "/a", "main")
 
+    // Armed auto-run + the always-on "open a terminal in new workrooms": the run starts as a
+    // BACKGROUNDED tab #1 (running, not focused) and a plain shell opens as the focused tab #2 the user
+    // lands on (issue #67 / Arch #5).
     store.armAutoRun(forWorkroom: t.id)
-    store.ensureInitialTerminal(for: t)  // the terminal pane mounting → run command becomes tab #1
+    store.ensureInitialTerminal(for: t)  // the terminal pane mounting
 
     XCTAssertNotNil(store.runTabID(for: t.id), "armed auto-run should start the command on mount")
-    XCTAssertTrue(store.isRunCommandRunning(for: t.id))
-    XCTAssertEqual(store.terminals.tabCount(forTargetID: t.id), 1, "no orphan default tab")
-  }
-
-  func testInitialTerminalNoOpWhenNotArmed() {
-    let store = makeStore([project("/a", workrooms: ["main"])])
-    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
-    let t = target(store, "/a", "main")
-
-    // Not armed (auto-run off) → mounting the pane opens nothing: no run tab and no default shell
-    // either. Selecting a workroom no longer auto-creates a terminal (issue #23); the user opens one
-    // explicitly with ⌘T. A configured-but-not-auto run command must not change that.
-    store.ensureInitialTerminal(for: t)
-
-    XCTAssertNil(store.runTabID(for: t.id))
-    XCTAssertFalse(store.isRunCommandRunning(for: t.id))
-    XCTAssertEqual(store.terminals.tabCount(forTargetID: t.id), 0, "no auto-spawned terminal")
-  }
-
-  func testOpenTerminalOnCreateOpensShellWithoutAutoRun() {
-    let store = makeStore([project("/a", workrooms: ["main"])])
-    let t = target(store, "/a", "main")
-
-    // Setting on (armed at create), no run command auto-run → first mount opens a single plain shell,
-    // no run tab. This is the "open a terminal in new workrooms" setting standing alone.
-    store.armOpenTerminal(forWorkroom: t.id)
-    store.ensureInitialTerminal(for: t)
-
-    XCTAssertNil(store.runTabID(for: t.id), "no run command → no run tab")
-    XCTAssertFalse(store.isRunCommandRunning(for: t.id))
-    XCTAssertEqual(store.terminals.tabCount(forTargetID: t.id), 1, "one shell terminal opened")
-  }
-
-  func testOpenTerminalOnCreateAlongsideAutoRunBackgroundsTheRun() {
-    let store = makeStore([project("/a", workrooms: ["main"])])
-    store.setRunConfig(RunConfig(command: "echo hi", autoRun: true), forProject: "/a")
-    let t = target(store, "/a", "main")
-
-    // Issue #67 / Arch #5: both armed at create → because "open terminal in new workrooms" is on there
-    // IS a shell tab to show, so the auto-run is BACKGROUNDED (running, but not focused) and the plain
-    // shell is the focused tab the user lands on. (Was: the run stayed focused — reversed by #67.)
-    store.armAutoRun(forWorkroom: t.id)
-    store.armOpenTerminal(forWorkroom: t.id)
-    store.ensureInitialTerminal(for: t)
-
     XCTAssertTrue(store.isRunCommandRunning(for: t.id), "run still starts, just in the background")
     XCTAssertEqual(store.terminals.tabCount(forTargetID: t.id), 2, "run tab + shell tab")
     let active = store.terminals.activeTab(for: t)?.id
@@ -304,15 +262,41 @@ final class RunCommandTests: XCTestCase {
       active, store.runTabID(for: t.id), "the shell is focused, the run is backgrounded")
   }
 
-  func testOpenTerminalMarkerIsOneShot() {
+  func testInitialTerminalOpensShellWhenNotArmed() {
+    let store = makeStore([project("/a", workrooms: ["main"])])
+    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    let t = target(store, "/a", "main")
+
+    // Not armed (auto-run off) → mounting a pane with no terminals always opens a single plain shell,
+    // no run tab: a newly created workroom and an existing workroom/root selected with none open both
+    // land the user in a terminal. A configured-but-not-auto run command must not start here.
+    store.ensureInitialTerminal(for: t)
+
+    XCTAssertNil(store.runTabID(for: t.id), "no auto-run → no run tab")
+    XCTAssertFalse(store.isRunCommandRunning(for: t.id))
+    XCTAssertEqual(store.terminals.tabCount(forTargetID: t.id), 1, "one shell terminal opened")
+  }
+
+  func testInitialTerminalIdempotentAcrossRemounts() {
     let store = makeStore([project("/a", workrooms: ["main"])])
     let t = target(store, "/a", "main")
 
-    store.armOpenTerminal(forWorkroom: t.id)
     store.ensureInitialTerminal(for: t)
     store.ensureInitialTerminal(for: t)  // a re-mount (navigate away and back) must not re-open
 
     XCTAssertEqual(store.terminals.tabCount(forTargetID: t.id), 1, "no duplicate shell on re-mount")
+  }
+
+  func testInitialTerminalLeavesExistingTerminalsAlone() {
+    let store = makeStore([project("/a", workrooms: ["main"])])
+    let t = target(store, "/a", "main")
+
+    // A target that already has a terminal open gets no extra one — "open one if there are none open".
+    store.terminals.addTab(for: t)
+    store.ensureInitialTerminal(for: t)
+
+    XCTAssertEqual(
+      store.terminals.tabCount(forTargetID: t.id), 1, "existing terminal → no extra tab")
   }
 
   func testToggleStartsWhenNotRunning() {
