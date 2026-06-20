@@ -379,13 +379,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     return .terminateLater
   }
 
-  /// Re-show the main window when the app is reactivated with no visible window (e.g. the user
-  /// closed it, then clicked the Dock icon or opened a notification from the menu bar). Returning
-  /// true asks AppKit to perform its default reopen, which restores the WindowGroup's window.
+  /// Reactivation (Dock click, or clicking a notification while the app is inactive): bring an
+  /// EXISTING window forward rather than letting AppKit open a brand-new one (issue #70). A
+  /// value-based `WindowGroup` otherwise spawns a fresh window on reopen — so a notification click
+  /// would pop a new window instead of returning to the window where the event happened (the
+  /// notification handler then brings that specific owner window forward). Only ask AppKit to create
+  /// a window when none exists.
   func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool)
     -> Bool
   {
-    true
+    let registry = WindowRegistry.shared
+    if let window = registry.lastActiveStore?.hostWindow ?? registry.allStores.first?.hostWindow {
+      window.makeKeyAndOrderFront(nil)
+      return false
+    }
+    return true
   }
 
   /// Deliberately does NOT tear down libghostty on quit. Freeing surfaces (or the app) while their
