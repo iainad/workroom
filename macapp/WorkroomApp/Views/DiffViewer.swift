@@ -1,17 +1,26 @@
+import Defaults
 import SwiftUI
 
 /// Renders a single file's diff inside a content tab (issue #66): a unified, inline view (old/new
-/// gutter + colored +/- lines), themed with the shared `diffAdd*/diffRemove*/diffHunk*` tokens.
+/// gutter + colored +/- lines), or a side-by-side view (old left, new right). The layout follows the
+/// tab toolbar's per-file toggle (`viewModeOverride`) when set, else the global `Defaults[.diffViewMode]`
+/// (which additionally falls back to unified in a pane too narrow for two columns). Both are themed
+/// with the shared `diffAdd*/diffRemove*/diffHunk*` tokens.
 ///
 /// Fetch is on-appear via `.task(id:)` keyed on the descriptor's file + revision, so switching to a
 /// diff tab (or retargeting the preview to a new file) re-runs `DiffResolver` for the current state —
 /// the diff is always fresh, and SwiftUI cancels an in-flight fetch when the view goes away (the
-/// command runner SIGKILLs the abandoned git/jj child). Lines render in a `LazyVStack`, so a large
-/// diff only builds its visible rows; `UnifiedDiff.parse`'s line cap bounds a pathological file.
+/// command runner SIGKILLs the abandoned git/jj child). Lines render in an eager `VStack` (see
+/// `unifiedBody`), so a large diff lays out gap-free; `UnifiedDiff.parse`'s line cap bounds it.
 struct DiffViewer: View {
   let descriptor: DiffDescriptor
   /// The workroom directory the VCS runs in (resolves the repo-relative path / picks the worktree).
   let directory: String
+  /// This file's per-tab layout override from the tab toolbar's toggle (issue #66); `nil` ⇒ follow
+  /// the global `Defaults[.diffViewMode]` (which additionally falls back to unified in a narrow pane).
+  /// Owned by the tab (`TerminalTab.diffViewModeOverride`) and passed in, so the toolbar sets it and
+  /// this view reacts — an explicit per-file choice that the pane re-renders to without refetching.
+  var viewModeOverride: DiffViewMode? = nil
 
   @State private var state: LoadState = .loading
   /// Syntax-highlighted new-side lines, keyed by 1-based new-file line number. Empty ⇒ render plain
@@ -25,8 +34,19 @@ struct DiffViewer: View {
   /// `oldLine`, additions by `newLine`. Computed synchronously from the diff in `load()`.
   @State private var emphasis: (deletions: [Int: Range<Int>], additions: [Int: Range<Int>]) =
     ([:], [:])
+  /// Per-hunk side-by-side rows, paired once in `load()` (mirroring `emphasis`) so the layout isn't
+  /// re-derived on every render (highlight arrival, theme change). Empty unless a diff is loaded;
+  /// index-aligned with the loaded diff's `hunks`. Only consumed by `sideBySideBody`.
+  @State private var sbsRows: [[UnifiedDiff.SideBySideRow]] = []
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  /// The global default diff layout (issue #66), used when this tab has no `viewModeOverride`. A
+  /// narrow pane additionally falls back to unified (see `sideBySideMinWidth`).
+  @Default(.diffViewMode) private var diffViewMode
   private let theme = ThemeService.shared
+
+  /// Below this content width a side-by-side diff's two half-width columns wrap code into tall
+  /// blocks that ruin line comparison, so we render unified even when side-by-side is selected.
+  private static let sideBySideMinWidth: CGFloat = 700
 
   enum LoadState: Equatable {
     case loading
@@ -89,8 +109,12 @@ struct DiffViewer: View {
     // syntax-highlighted run later, deletions and pre-parse lines use it directly in `lineRow`.
     if case .loaded(let diff) = state {
       emphasis = IntraLineDiff.emphasis(for: diff)
+      // Pair the side-by-side rows once here (same place/pattern as `emphasis`) — bounded by the
+      // line cap, so the layout never re-pairs on a render-only update (highlight, theme).
+      sbsRows = diff.hunks.map(UnifiedDiff.sideBySideRows(for:))
     } else {
       emphasis = ([:], [:])
+      sbsRows = []
     }
     loadToken &+= 1  // signal the highlight task to (re)build against this diff
   }
@@ -135,7 +159,27 @@ struct DiffViewer: View {
 
   // MARK: Diff body
 
-  private func diffBody(_ diff: UnifiedDiff) -> some View {
+  /// Pick the layout for the given content width. An explicit per-tab toggle (`viewModeOverride`)
+  /// wins outright; the global default additionally falls back to unified in a pane too narrow for
+  /// two columns.
+  private func showSideBySide(width: CGFloat) -> Bool {
+    if let viewModeOverride { return viewModeOverride == .sideBySide }
+    return diffViewMode == .sideBySide && width >= Self.sideBySideMinWidth
+  }
+
+  /// Pick the layout: side-by-side per `showSideBySide`, else unified. `GeometryReader` measures the
+  /// available content width for the global default's narrow-pane fallback.
+  @ViewBuilder private func diffBody(_ diff: UnifiedDiff) -> some View {
+    GeometryReader { proxy in
+      if showSideBySide(width: proxy.size.width) {
+        sideBySideBody(diff)
+      } else {
+        unifiedBody(diff)
+      }
+    }
+  }
+
+  private func unifiedBody(_ diff: UnifiedDiff) -> some View {
     // Vertical-only scroll, eager `VStack` (not `LazyVStack`): the rows soft-wrap via
     // `fixedSize(vertical:)`, and a lazy stack caches a bad height estimate for not-yet-materialised
     // wrapping rows — leaving a blank band in the middle of a tall diff until you scroll it into
@@ -161,6 +205,88 @@ struct DiffViewer: View {
     }
   }
 
+  /// Side-by-side body (issue #66): same scroll/eager-`VStack` shell as `unifiedBody` (the soft-wrap
+  /// reasoning there still holds), but each hunk's rows come from the memoized `sbsRows` and render
+  /// as a left(old) | divider | right(new) `HStack`.
+  private func sideBySideBody(_ diff: UnifiedDiff) -> some View {
+    ScrollView(.vertical) {
+      VStack(alignment: .leading, spacing: 0) {
+        if let from = diff.renamedFrom {
+          headerNote("Renamed from \(from)")
+        }
+        ForEach(Array(diff.hunks.enumerated()), id: \.offset) { index, hunk in
+          hunkHeader(hunk.header)
+          ForEach(Array(rows(forHunk: index).enumerated()), id: \.offset) { _, row in
+            sideBySideRow(row)
+          }
+        }
+        if diff.truncated {
+          headerNote("Diff truncated — file too large to show in full.")
+        }
+      }
+      .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+      .padding(.vertical, 4)
+    }
+  }
+
+  /// The memoized side-by-side rows for a hunk index (empty if out of range — should not happen, as
+  /// `sbsRows` is built from the same diff in `load()`).
+  private func rows(forHunk index: Int) -> [UnifiedDiff.SideBySideRow] {
+    index < sbsRows.count ? sbsRows[index] : []
+  }
+
+  private func sideBySideRow(_ row: UnifiedDiff.SideBySideRow) -> some View {
+    // `.top` so each side's gutter aligns to the first visual line when the taller side wraps. The
+    // add/remove/absent fills are painted as a full-height background *layer* (two equal halves), not
+    // per-cell: a bare cell background collapses to the gutter line under `.top` alignment, so a
+    // short side opposite a multi-line wrapped side would only tint its first line. The background
+    // matches the row's height (the taller side), so both halves always span the full row.
+    HStack(alignment: .top, spacing: 0) {
+      sideCell(row.left, side: .left)
+      Divider()
+      sideCell(row.right, side: .right)
+    }
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .background(
+      HStack(spacing: 0) {
+        cellFill(row.left).frame(maxWidth: .infinity)
+        cellFill(row.right).frame(maxWidth: .infinity)
+      }
+    )
+  }
+
+  private enum DiffSide { case left, right }
+
+  /// One column of a side-by-side row: the old side (`.left`, deletions + context) or the new side
+  /// (`.right`, additions + context). A `nil` line is an absent cell — no number, just the
+  /// row-background layer's faint fill, so a length mismatch between the two sides reads as a gap. No
+  /// `+`/`-` marker: the side and colour already convey add/remove.
+  @ViewBuilder private func sideCell(_ line: UnifiedDiff.Line?, side: DiffSide) -> some View {
+    HStack(alignment: .top, spacing: 0) {
+      gutter(side == .left ? line?.oldLine : line?.newLine).padding(.leading, 4)
+      if let line {
+        styledText(line)
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .padding(.trailing, 8)
+      } else {
+        Color.clear.frame(maxWidth: .infinity, alignment: .leading)
+      }
+    }
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .accessibilityElement(children: .ignore)
+    .accessibilityIdentifier(side == .left ? "diff.side.left" : "diff.side.right")
+    .accessibilityLabel(line.map(accessibilityLabel) ?? "absent")
+    // Test-observable highlight marker (XCUITest can't see colours); "absent" for a blank side.
+    .accessibilityValue(line.map { isHighlighted($0) ? "highlighted" : "plain" } ?? "absent")
+  }
+
+  /// The fill for one side, painted in the row's full-height background layer (so it spans the row
+  /// even when this side is shorter than a wrapping neighbour). `nil` (absent side) → a faint fill
+  /// derived from the muted token (no new theme/palette entry); context → clear.
+  private func cellFill(_ line: UnifiedDiff.Line?) -> Color {
+    line.map { rowBackground($0.kind) } ?? theme.tokens.fgMuted.opacity(0.05)
+  }
+
   private func hunkHeader(_ header: String) -> some View {
     Text(header)
       .font(.system(.caption, design: .monospaced))
@@ -172,35 +298,17 @@ struct DiffViewer: View {
   }
 
   private func lineRow(_ line: UnifiedDiff.Line) -> some View {
-    // Deletions never carry syntax highlighting (no new side); additions/context use the highlighted
-    // run when one was built. Intra-line change emphasis (deletions + not-yet-highlighted additions)
-    // is folded in synchronously here; highlighted additions already carry it from the mapper.
-    let highlighted: AttributedString? =
-      line.kind == .deletion ? nil : line.newLine.flatMap { highlightedLines[$0] }
-    let emphasized: AttributedString? = highlighted == nil ? emphasizedLine(line) : nil
-
     // `.top` so the gutters + marker align to the first visual line when a long line wraps.
-    return HStack(alignment: .top, spacing: 0) {
+    HStack(alignment: .top, spacing: 0) {
       gutter(line.oldLine).padding(.leading, 4)
       gutter(line.newLine)
       Text(marker(line.kind))
         .font(.system(.body, design: .monospaced))
         .foregroundStyle(foreground(line.kind))
         .frame(width: 14, alignment: .center)
-      Group {
-        if let highlighted {
-          Text(highlighted)  // syntax foreground + intra-line emphasis background
-        } else if let emphasized {
-          Text(emphasized)  // plain foreground + intra-line emphasis background
-        } else {
-          Text(line.text.isEmpty ? " " : line.text).foregroundStyle(foreground(line.kind))
-        }
-      }
-      .font(.system(.body, design: .monospaced))
-      .textSelection(.enabled)
-      .fixedSize(horizontal: false, vertical: true)  // wrap long lines, never truncate
-      .frame(maxWidth: .infinity, alignment: .leading)
-      .padding(.trailing, 8)
+      styledText(line)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.trailing, 8)
     }
     .frame(maxWidth: .infinity, alignment: .leading)
     .background(rowBackground(line.kind))
@@ -208,7 +316,35 @@ struct DiffViewer: View {
     .accessibilityIdentifier("diff.line")
     .accessibilityLabel(accessibilityLabel(line))
     // A test-observable marker that highlighting was applied (XCUITest can't see colours).
-    .accessibilityValue(highlighted != nil ? "highlighted" : "plain")
+    .accessibilityValue(isHighlighted(line) ? "highlighted" : "plain")
+  }
+
+  /// The styled, soft-wrapping text for one diff line, shared by the unified row and each
+  /// side-by-side cell. Deletions never carry syntax highlighting (no new side); additions/context
+  /// use the highlighted run when one was built. Intra-line change emphasis (deletions +
+  /// not-yet-highlighted additions) is folded in here; highlighted additions carry it from the mapper.
+  @ViewBuilder private func styledText(_ line: UnifiedDiff.Line) -> some View {
+    let highlighted: AttributedString? =
+      line.kind == .deletion ? nil : line.newLine.flatMap { highlightedLines[$0] }
+    let emphasized: AttributedString? = highlighted == nil ? emphasizedLine(line) : nil
+    Group {
+      if let highlighted {
+        Text(highlighted)  // syntax foreground + intra-line emphasis background
+      } else if let emphasized {
+        Text(emphasized)  // plain foreground + intra-line emphasis background
+      } else {
+        Text(line.text.isEmpty ? " " : line.text).foregroundStyle(foreground(line.kind))
+      }
+    }
+    .font(.system(.body, design: .monospaced))
+    .textSelection(.enabled)
+    .fixedSize(horizontal: false, vertical: true)  // wrap long lines, never truncate
+  }
+
+  /// Whether `line` renders with a syntax-highlighted run (its new-side line was coloured). Drives
+  /// the test-observable `accessibilityValue`. Deletions are never highlighted.
+  private func isHighlighted(_ line: UnifiedDiff.Line) -> Bool {
+    line.kind != .deletion && line.newLine.flatMap { highlightedLines[$0] } != nil
   }
 
   /// The intra-line-emphasised text for a replaced line (deeper tint behind the changed bytes), or

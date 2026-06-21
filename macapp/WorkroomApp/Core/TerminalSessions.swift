@@ -15,6 +15,12 @@ struct TerminalTab: Identifiable {
   let id = UUID()
   var content: TabContent
 
+  /// Per-tab diff layout override (issue #66), set by the tab toolbar's unified/side-by-side toggle;
+  /// `nil` ⇒ follow the global `Defaults[.diffViewMode]`. Lives on the tab (not the diff view) so the
+  /// toolbar can set it and the pane's `DiffViewer` can read it, and so it's discarded with the tab.
+  /// Only meaningful for a `.diff` tab.
+  var diffViewModeOverride: DiffViewMode?
+
   /// The terminal surface this tab owns, or nil for a content (e.g. diff) tab. The single accessor
   /// every surface-specific path (occlusion, theme reload, teardown, run-state) funnels through, so
   /// a content tab transparently does *fewer* surface operations — never more.
@@ -339,6 +345,17 @@ final class TerminalSessions: ObservableObject {
     else { return }
     d.isPreview = false
     tab.content = .diff(d)
+    tabsByTarget[target.id]?[tabID] = tab
+  }
+
+  /// Set a diff tab's per-tab layout override (issue #66), from the tab toolbar's unified/side-by-side
+  /// toggle. Reassigns the tab value so `@Published tabsByTarget` fires and the pane's `DiffViewer`
+  /// re-renders. No-op for a missing or non-diff tab.
+  func setDiffViewMode(
+    _ mode: DiffViewMode, forTab tabID: TerminalTab.ID, in target: TerminalTarget
+  ) {
+    guard var tab = tabsByTarget[target.id]?[tabID], case .diff = tab.content else { return }
+    tab.diffViewModeOverride = mode
     tabsByTarget[target.id]?[tabID] = tab
   }
 

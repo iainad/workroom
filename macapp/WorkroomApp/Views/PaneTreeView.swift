@@ -379,9 +379,12 @@ private struct PaneLeafView: View {
       // The diff pane body carries the SAME context menu as its tab chip (issue #72) — fetch the live
       // tab so "Keep Open" / split-guard reflect its current preview / split state. A diff leaf is
       // always a live tab while it renders, so the `else` is just a safety fallback.
-      let diff = DiffViewer(descriptor: descriptor, directory: target.path)
-        .clipShape(
-          RoundedRectangle(cornerRadius: TerminalPanelMetrics.cornerRadius, style: .continuous))
+      let diff = DiffViewer(
+        descriptor: descriptor, directory: target.path,
+        viewModeOverride: sessions.tab(tabID, for: target)?.diffViewModeOverride
+      )
+      .clipShape(
+        RoundedRectangle(cornerRadius: TerminalPanelMetrics.cornerRadius, style: .continuous))
       if let tab = sessions.tab(tabID, for: target) {
         diff.tabChipContextMenu(tab: tab, target: target, store: store, sessions: sessions)
       } else {

@@ -530,3 +530,23 @@ app's core mechanism).
 **Depends on:** the in-app diff viewer plan (in progress).
 
 **Priority:** P3 (conditional — only if the viewer's needs outgrow patch-parsing).
+
+## Persist the per-file diff view-mode choice (macapp)
+
+**What:** Remember a file's unified/side-by-side toggle so reopening that file restores the last
+mode you picked for it — or a global "last used" mode — instead of resetting to the
+`Defaults[.diffViewMode]` default.
+
+**Why:** The tab toolbar now has a per-tab diff-mode toggle (`tab.toolbar.diffUnified` /
+`tab.toolbar.diffSideBySide`, state on `TerminalTab.diffViewModeOverride`), but the override lives on
+the in-memory tab — it's discarded when the tab closes and doesn't persist across relaunch. Some
+users may want a file's chosen mode to stick.
+
+**How to start:** Back the override with a persisted store — a global "last used mode" in `Defaults`,
+or a per-path map keyed like `runCommands` — hydrated into `TerminalTab.diffViewModeOverride` when a
+diff tab opens and written back from `TerminalSessions.setDiffViewMode`.
+
+**Depends on:** the shipped per-tab toggle (`Views/TerminalTabStrip.swift`,
+`Core/TerminalSessions.swift`).
+
+**Priority:** P3 (the per-file toggle works; persistence is an optional nicety).

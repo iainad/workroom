@@ -171,3 +171,48 @@ struct UnifiedDiff: Equatable, Sendable {
     return false
   }
 }
+
+extension UnifiedDiff {
+  /// One aligned row of the side-by-side view (issue #66). `left` is the old side (deletions +
+  /// context), `right` the new side (additions + context); a `nil` side is an absent/blank cell.
+  struct SideBySideRow: Equatable, Sendable {
+    var left: Line?
+    var right: Line?
+  }
+
+  /// Convert a hunk's interleaved lines into aligned old(left)/new(right) rows.
+  ///
+  /// Consecutive deletions and additions buffer into a replacement run that is paired via the shared
+  /// `DiffRunPairing.align`, so it uses the same deletion-*k* ↔ addition-*k* rule as the intra-line
+  /// emphasis. A context line flushes the pending run, then emits a row present on both sides. Pure.
+  ///
+  ///     -old1   +new1          left=old1 | right=new1   (paired replacement)
+  ///     -old2          →       left=old2 | right=nil     (uneven: padded)
+  ///      ctx                   left=ctx  | right=ctx      (context: both sides)
+  ///            +new2           left=nil  | right=new2     (pure addition)
+  static func sideBySideRows(for hunk: Hunk) -> [SideBySideRow] {
+    var rows: [SideBySideRow] = []
+    var dels: [Line] = []
+    var adds: [Line] = []
+
+    func flushReplacement() {
+      for pair in DiffRunPairing.align(deletions: dels, additions: adds) {
+        rows.append(SideBySideRow(left: pair.deletion, right: pair.addition))
+      }
+      dels.removeAll(keepingCapacity: true)
+      adds.removeAll(keepingCapacity: true)
+    }
+
+    for line in hunk.lines {
+      switch line.kind {
+      case .deletion: dels.append(line)
+      case .addition: adds.append(line)
+      case .context:
+        flushReplacement()
+        rows.append(SideBySideRow(left: line, right: line))
+      }
+    }
+    flushReplacement()
+    return rows
+  }
+}

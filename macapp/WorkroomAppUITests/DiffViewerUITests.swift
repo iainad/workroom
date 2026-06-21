@@ -181,4 +181,69 @@ final class DiffViewerUITests: XCTestCase {
       diffTab(app, "user.rb").exists,
       "the persisted (double-clicked) tab survives the next preview — both coexist")
   }
+
+  // MARK: side-by-side (issue #66)
+
+  /// In side-by-side mode a modified file renders two columns: deletions in the left (old) column,
+  /// additions in the right (new) column, each with its own accessibility id. We assert the
+  /// two-column STRUCTURE — not the async-applied highlight a11y value, which XCUITest can't observe
+  /// reliably (a documented false-negative; see `DiffHighlightUITests`).
+  func testSideBySideRendersTwoColumns() throws {
+    let app = XCUIApplication()
+    app.launchArguments += ["-WorkroomUITestFixture", "1"]
+    app.launchArguments += ["-ApplePersistenceIgnoreState", "YES"]
+    // NSArgumentDomain override drives `Defaults[.diffViewMode]` (bare raw string via
+    // `DiffViewMode: PreferRawRepresentable`), so the viewer opens in side-by-side.
+    app.launchArguments += ["-diffViewMode", "sideBySide"]
+    app.launch()
+    app.activate()
+
+    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
+    XCTAssertTrue(element(app, id: "changes.group.workingCopy").waitForExistence(timeout: 10))
+
+    let row = fileRow(app, "app/models/user.rb")
+    XCTAssertTrue(row.waitForExistence(timeout: 10), "working-copy file row should render")
+    row.click()
+    XCTAssertTrue(diffTab(app, "user.rb").waitForExistence(timeout: 6))
+
+    XCTAssertTrue(
+      sideCellExists(app, id: "diff.side.left", contains: "removed"),
+      "the old (left) column renders a deletion cell")
+    XCTAssertTrue(
+      sideCellExists(app, id: "diff.side.right", contains: "added"),
+      "the new (right) column renders an addition cell")
+  }
+
+  /// True once a side-by-side cell with the given id carries `marker` in its accessibility label.
+  private func sideCellExists(
+    _ app: XCUIApplication, id: String, contains marker: String, _ timeout: Double = 6
+  ) -> Bool {
+    let cell = app.descendants(matching: .any)
+      .matching(NSPredicate(format: "identifier == %@ AND label CONTAINS %@", id, marker))
+      .firstMatch
+    return cell.waitForExistence(timeout: timeout)
+  }
+
+  /// The tab toolbar's diff view-mode toggle starts on the global default (unified) and flips THIS
+  /// tab to side-by-side when its side-by-side button is clicked — without changing the global setting.
+  func testTabToolbarToggleSwitchesThisFileToSideBySide() throws {
+    let app = launchedApp()  // global default mode (unified)
+    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
+    XCTAssertTrue(element(app, id: "changes.group.workingCopy").waitForExistence(timeout: 10))
+
+    let row = fileRow(app, "app/models/user.rb")
+    XCTAssertTrue(row.waitForExistence(timeout: 10))
+    row.click()
+    XCTAssertTrue(diffTab(app, "user.rb").waitForExistence(timeout: 6))
+    XCTAssertTrue(diffLineExists(app, contains: "removed"), "opens unified (the global default)")
+
+    let sideBySideButton = element(app, id: "tab.toolbar.diffSideBySide")
+    XCTAssertTrue(
+      sideBySideButton.waitForExistence(timeout: 6), "the tab toolbar shows the diff-mode toggle")
+    sideBySideButton.click()
+
+    XCTAssertTrue(
+      sideCellExists(app, id: "diff.side.right", contains: "added"),
+      "toggling renders side-by-side for this tab")
+  }
 }

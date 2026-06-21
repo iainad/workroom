@@ -111,6 +111,11 @@ extension Defaults.Keys {
     "changes.workingCopyCollapsed", default: false)
   static let changesParentCommitCollapsed = Key<Bool>(
     "changes.parentCommitCollapsed", default: true)
+
+  /// Diff viewer layout (issue #66): `.unified` (default) or `.sideBySide`. Read by `DiffViewer` at
+  /// view-construct time, so the choice applies to newly opened diff tabs (a narrow pane falls back
+  /// to unified regardless). Stored as the bare raw string via `DiffViewMode: PreferRawRepresentable`.
+  static let diffViewMode = Key<DiffViewMode>("diffViewMode", default: .unified)
 }
 
 /// One workroom's persisted inspector layout: the collapse state and relative pane heights of the

@@ -15,6 +15,7 @@ struct SettingsView: View {
   // Bundle id of the editor for ⌘-clicked file paths; "" = the file's default app.
   @Default(.filePathEditor) private var pathEditor
   @Default(.themeFamily) private var themeFamily
+  @Default(.diffViewMode) private var diffViewMode
   @EnvironmentObject private var updater: Updater
   @State private var showThemePopover = false
 
@@ -42,6 +43,14 @@ struct SettingsView: View {
         }
         .popover(isPresented: $showThemePopover, arrowEdge: .bottom) {
           ThemePicker()
+        }
+      }
+
+      // Diff viewer layout (issue #66): unified (default) or side-by-side. Applies to newly opened
+      // diff tabs; a narrow diff pane falls back to unified regardless.
+      Picker("Diff view", selection: $diffViewMode) {
+        ForEach(DiffViewMode.allCases, id: \.self) { mode in
+          Text(mode.label).tag(mode)
         }
       }
 

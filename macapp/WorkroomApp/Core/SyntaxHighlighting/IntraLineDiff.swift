@@ -6,10 +6,11 @@ import Foundation
 /// fetch, no parse.
 ///
 /// Pairing: inside a hunk, a run of deletions immediately followed by a run of additions is a
-/// replacement; deletion *k* pairs with addition *k* (the common case — an edited line). Unpaired
-/// extras and pure add-only / delete-only blocks get no intra-line emphasis (the whole line is the
-/// change, already shown by its line tint). The changed range is the middle left after trimming the
-/// common prefix + suffix (grapheme-aware, so multibyte/combining characters are never split).
+/// replacement; deletion *k* pairs with addition *k* (the common case — an edited line) via the
+/// shared `DiffRunPairing.align`. Unpaired extras and pure add-only / delete-only blocks get no
+/// intra-line emphasis (the whole line is the change, already shown by its line tint). The changed
+/// range is the middle left after trimming the common prefix + suffix (grapheme-aware, so
+/// multibyte/combining characters are never split).
 enum IntraLineDiff {
   /// Line-relative UTF-8 byte ranges that changed, keyed by line number: deletions by `oldLine`,
   /// additions by `newLine` (a number can repeat across the two sides).
@@ -35,10 +36,12 @@ enum IntraLineDiff {
         while i < lines.count, lines[i].kind == .addition { i += 1 }
         let addEnd = i
 
-        // Pair deletion k with addition k.
-        for k in 0..<min(delEnd - delStart, addEnd - addStart) {
-          let del = lines[delStart + k]
-          let add = lines[addStart + k]
+        // Pair deletion k with addition k via the shared rule; only fully-paired slots (both sides
+        // present) are a replacement edit — padded `nil` slots are pure insert/remove, no emphasis.
+        for pair in DiffRunPairing.align(
+          deletions: Array(lines[delStart..<delEnd]), additions: Array(lines[addStart..<addEnd]))
+        {
+          guard let del = pair.deletion, let add = pair.addition else { continue }
           let (delRange, addRange) = changedRanges(old: del.text, new: add.text)
           if let delRange, let line = del.oldLine { deletions[line] = delRange }
           if let addRange, let line = add.newLine { additions[line] = addRange }

@@ -1,3 +1,4 @@
+import Defaults
 import SwiftUI
 
 /// The horizontal tab strip above a target's terminal: a chip per terminal tab, a "+" to open a
@@ -14,6 +15,9 @@ struct TerminalTabStrip: View {
   @EnvironmentObject var store: AppStore
   @EnvironmentObject var notifications: NotificationCenterStore
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  /// Global default diff layout — the toolbar's mode toggle shows it as active until this tab gets a
+  /// per-tab override (`TerminalTab.diffViewModeOverride`).
+  @Default(.diffViewMode) private var defaultDiffViewMode
 
   /// The live drop-into-pane preview, shared with `PaneTreeView` via the coordinator.
   @Binding var chipPaneDrag: PaneDragState?
@@ -183,16 +187,24 @@ struct TerminalTabStrip: View {
     .accessibilityIdentifier("NewTerminal")
   }
 
-  /// Icon-only actions for the *current* (active) tab (issue #72): "Open file in…" (diff tabs only),
-  /// "Split right", and "Close all". Renders nothing when there's no active tab. `fixedSize` so it
-  /// keeps its intrinsic width and the scrolling chip area yields first in a narrow split pane.
+  /// Icon-only actions for the *current* (active) tab (issue #72): the diff view-mode toggle + "Open
+  /// file in…" (diff tabs only), "Split right", and "Close all". Renders nothing when there's no
+  /// active tab. `fixedSize` so it keeps its intrinsic width and the scrolling chip area yields first
+  /// in a narrow split pane.
   @ViewBuilder
   private var tabToolbar: some View {
     if let active = tabs.first(where: { $0.id == activeID }) {
       HStack(spacing: 2) {
-        // Diff (content) tab: open the working file in the configured editor. Disabled when the
-        // source was deleted (review D4) — there's no file to open.
+        // Diff (content) tab: the unified/side-by-side switch (issue #66) + open the working file in
+        // the configured editor. The switch is one grouped segmented control — the active mode's
+        // segment stays lit; clicking sets this tab's override (`TerminalTab.diffViewModeOverride`),
+        // which the pane's `DiffViewer` re-renders to. Shows the global default until a choice is made.
         if case .diff(let descriptor) = active.content {
+          DiffModeSwitch(mode: active.diffViewModeOverride ?? defaultDiffViewMode) {
+            sessions.setDiffViewMode($0, forTab: active.id, in: target)
+          }
+          // Open the working file in the configured editor. Disabled when the source was deleted
+          // (review D4) — there's no file to open.
           TabToolbarButton(
             systemImage: "doc.text", help: "Open file in editor",
             accessibilityLabel: "Open file in editor", identifier: "tab.toolbar.openFile"
@@ -545,6 +557,48 @@ private struct TabToolbarButton: View {
     .help(help)
     .accessibilityLabel(accessibilityLabel)
     .accessibilityIdentifier(identifier)
+  }
+}
+
+/// A grouped two-segment switch for the diff view mode (issue #66): unified | side-by-side, rendered
+/// as one control — a faint rounded track with a raised "thumb" behind the active segment — so it
+/// reads as a single switch rather than two loose buttons. Clicking a segment reports that mode.
+private struct DiffModeSwitch: View {
+  /// The currently effective mode (this tab's override, or the global default) — the lit segment.
+  let mode: DiffViewMode
+  let select: (DiffViewMode) -> Void
+  private let theme = ThemeService.shared
+
+  var body: some View {
+    HStack(spacing: 0) {
+      segment(.unified, help: "Unified diff", identifier: "tab.toolbar.diffUnified")
+      segment(.sideBySide, help: "Side-by-side diff", identifier: "tab.toolbar.diffSideBySide")
+    }
+    .padding(1.5)
+    .background(RoundedRectangle(cornerRadius: 6).fill(theme.tokens.surface))
+  }
+
+  @ViewBuilder
+  private func segment(_ segMode: DiffViewMode, help: String, identifier: String) -> some View {
+    let active = mode == segMode
+    Button {
+      select(segMode)
+    } label: {
+      Image(systemName: segMode.symbol)
+        // A touch smaller than the plain action buttons (size 11): the `doc.*` glyphs render heavier,
+        // so matching their size made the switch read as oversized next to them.
+        .font(.system(size: 9.5))
+        .foregroundStyle(active ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
+        .padding(.horizontal, 6)
+        .padding(.vertical, 3)
+        .background(RoundedRectangle(cornerRadius: 5).fill(active ? theme.tokens.bg : .clear))
+        .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .help(help)
+    .accessibilityLabel(help)
+    .accessibilityIdentifier(identifier)
+    .accessibilityAddTraits(active ? .isSelected : [])
   }
 }
 

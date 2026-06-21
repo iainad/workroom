@@ -272,4 +272,125 @@ final class UnifiedDiffTests: XCTestCase {
     let d = UnifiedDiff.parse(raw)
     XCTAssertEqual(d.hunks[0].header, "@@ -5,3 +5,3 @@ func doSomething() {")
   }
+
+  // MARK: - sideBySideRows (unified hunk → aligned old/new rows)
+
+  private func line(_ k: UnifiedDiff.Line.Kind, _ t: String, old: Int? = nil, new: Int? = nil)
+    -> UnifiedDiff.Line
+  {
+    UnifiedDiff.Line(kind: k, text: t, oldLine: old, newLine: new)
+  }
+
+  private func hunk(_ lines: [UnifiedDiff.Line]) -> UnifiedDiff.Hunk {
+    UnifiedDiff.Hunk(header: "@@", lines: lines)
+  }
+
+  func testSideBySideModifyPairsLeftAndRight() {
+    let rows = UnifiedDiff.sideBySideRows(
+      for: hunk([
+        line(.context, "ctx", old: 1, new: 1),
+        line(.deletion, "old", old: 2),
+        line(.addition, "new", new: 2),
+      ]))
+    XCTAssertEqual(rows.count, 2)
+    XCTAssertEqual(rows[0].left?.text, "ctx")
+    XCTAssertEqual(rows[0].right?.text, "ctx")
+    XCTAssertEqual(rows[1].left?.text, "old")
+    XCTAssertEqual(rows[1].right?.text, "new")
+  }
+
+  func testSideBySidePureAdditionLeftBlank() {
+    let rows = UnifiedDiff.sideBySideRows(
+      for: hunk([
+        line(.context, "ctx", old: 1, new: 1),
+        line(.addition, "a", new: 2),
+        line(.addition, "b", new: 3),
+      ]))
+    XCTAssertEqual(rows.count, 3)
+    XCTAssertNil(rows[1].left)
+    XCTAssertEqual(rows[1].right?.text, "a")
+    XCTAssertNil(rows[2].left)
+    XCTAssertEqual(rows[2].right?.text, "b")
+  }
+
+  func testSideBySidePureDeletionRightBlank() {
+    let rows = UnifiedDiff.sideBySideRows(
+      for: hunk([
+        line(.deletion, "a", old: 1),
+        line(.context, "ctx", old: 2, new: 1),
+      ]))
+    XCTAssertEqual(rows.count, 2)
+    XCTAssertEqual(rows[0].left?.text, "a")
+    XCTAssertNil(rows[0].right)
+    XCTAssertEqual(rows[1].left?.text, "ctx")
+    XCTAssertEqual(rows[1].right?.text, "ctx")
+  }
+
+  func testSideBySideUnevenRunPadsTrailingRows() {
+    // 3 deletions, 1 addition → first row paired, next two have a blank right side.
+    let rows = UnifiedDiff.sideBySideRows(
+      for: hunk([
+        line(.deletion, "a", old: 1),
+        line(.deletion, "b", old: 2),
+        line(.deletion, "c", old: 3),
+        line(.addition, "x", new: 1),
+      ]))
+    XCTAssertEqual(rows.count, 3)
+    XCTAssertEqual(rows[0].left?.text, "a")
+    XCTAssertEqual(rows[0].right?.text, "x")
+    XCTAssertEqual(rows[1].left?.text, "b")
+    XCTAssertNil(rows[1].right)
+    XCTAssertEqual(rows[2].left?.text, "c")
+    XCTAssertNil(rows[2].right)
+  }
+
+  func testSideBySideContextFlushesPendingRun() {
+    // A context line between two replacement runs must flush the first run before emitting context.
+    let rows = UnifiedDiff.sideBySideRows(
+      for: hunk([
+        line(.deletion, "a", old: 1),
+        line(.addition, "x", new: 1),
+        line(.context, "ctx", old: 2, new: 2),
+        line(.deletion, "b", old: 3),
+        line(.addition, "y", new: 3),
+      ]))
+    XCTAssertEqual(rows.count, 3)
+    XCTAssertEqual(rows[0].left?.text, "a")
+    XCTAssertEqual(rows[0].right?.text, "x")
+    XCTAssertEqual(rows[1].left?.text, "ctx")
+    XCTAssertEqual(rows[1].right?.text, "ctx")
+    XCTAssertEqual(rows[2].left?.text, "b")
+    XCTAssertEqual(rows[2].right?.text, "y")
+  }
+
+  func testSideBySideInterleavedWithoutContextBuffersIntoOneRun() {
+    // -a +x -b +y with no context between buffers dels=[a,b], adds=[x,y] → (a,x),(b,y).
+    let rows = UnifiedDiff.sideBySideRows(
+      for: hunk([
+        line(.deletion, "a", old: 1),
+        line(.addition, "x", new: 1),
+        line(.deletion, "b", old: 2),
+        line(.addition, "y", new: 2),
+      ]))
+    XCTAssertEqual(rows.count, 2)
+    XCTAssertEqual(rows[0].left?.text, "a")
+    XCTAssertEqual(rows[0].right?.text, "x")
+    XCTAssertEqual(rows[1].left?.text, "b")
+    XCTAssertEqual(rows[1].right?.text, "y")
+  }
+
+  func testSideBySideEmptyHunk() {
+    XCTAssertTrue(UnifiedDiff.sideBySideRows(for: hunk([])).isEmpty)
+  }
+
+  func testSideBySideAllContext() {
+    let rows = UnifiedDiff.sideBySideRows(
+      for: hunk([
+        line(.context, "one", old: 1, new: 1),
+        line(.context, "two", old: 2, new: 2),
+      ]))
+    XCTAssertEqual(rows.count, 2)
+    XCTAssertEqual(rows.map { $0.left?.text }, ["one", "two"])
+    XCTAssertEqual(rows.map { $0.right?.text }, ["one", "two"])
+  }
 }
