@@ -399,11 +399,17 @@ struct ProjectSidebar: View {
   private func terminalRow(_ tab: TerminalTab, target: TerminalTarget, parent: SidebarID)
     -> some View
   {
+    // A diff (content) tab gets the same `plusminus` glyph the tab strip uses (#66), so a glance at
+    // the row says "this isn't a terminal"; a terminal tab keeps the terminal glyph.
+    let glyph: String = {
+      if case .diff = tab.content { return "plusminus" }
+      return "terminal"
+    }()
     HStack(spacing: 6) {
-      // Terminal glyph centered in the shared caret slot, same size/weight as the root house and the
+      // Leading glyph centered in the shared caret slot, same size/weight as the root house and the
       // workroom chevron so the leading-icon column reads as one set. The fixed-width frame keeps the
       // title in the same column as the root/workroom labels regardless of the symbol's intrinsic width.
-      Image(systemName: "terminal")
+      Image(systemName: glyph)
         .font(.system(size: 10))
         .foregroundStyle(.secondary)
         .frame(width: caretWidth, alignment: .center)
