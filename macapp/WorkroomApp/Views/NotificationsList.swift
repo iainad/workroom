@@ -35,12 +35,17 @@ struct NotificationsList: View {
       // its own (light) background. A transparent `VStack` gives exact control over the row
       // margins/spacing and lets the themed inspector background show through — matching the
       // Changes/PR panels, which are built the same way.
+      // Newest first; the store appends chronologically.
+      let rows = Array(notifications.items.reversed())
       VStack(spacing: 0) {
-        // Newest first; the store appends chronologically.
-        ForEach(notifications.items.reversed()) { item in
+        ForEach(Array(rows.enumerated()), id: \.element.id) { index, item in
           NotificationRow(item: item, flash: store.flashNotifID == item.id) {
             store.openTerminal(targetID: item.targetID, tabID: item.tabID, notifID: item.id)
             onActivate?()
+          }
+          // A hairline between rows (not after the last), inset to start under the row text.
+          if index < rows.count - 1 {
+            Divider().padding(.horizontal, 10)
           }
         }
       }

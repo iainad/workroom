@@ -10,12 +10,6 @@ struct WorkroomApp: App {
   /// Fetches release notes for the "What's New" dialog (auto after an update + Help ▸ What's New).
   /// One instance shared across windows; presentation is owned window-side, gated to the key window.
   @StateObject private var whatsNew = WhatsNewService(fetcher: GitHubReleasesClient())
-  /// App-level coordinator for the multi-window world (issue #70): key-window routing, per-window
-  /// store registration, run-command ownership, and the aggregated menu-bar/Dock notification count.
-  @StateObject private var registry = WindowRegistry.shared
-  /// Whether to show the menu bar item (issue #33). Same key as the Settings checkbox, so toggling
-  /// it there inserts/removes the item live.
-  @Default(.showMenuBarItem) private var showMenuBarItem
 
   init() {
     // Start Sentry first, before anything else can crash — the crash handler must be
@@ -46,18 +40,10 @@ struct WorkroomApp: App {
         .environmentObject(updater)
     }
 
-    // System menu bar item (issue #33): the Workroom glyph + pending count, with a popover listing
-    // the notifications. Shown by default; the `showMenuBarItem` setting drives `isInserted` so it
-    // can be hidden. `.window` style hosts the list (a `.menu` can't). Reuses the same store +
-    // `openTerminal` routing as the in-app bell, so it's a second surface, not a second source of
-    // truth. Not gated to Release: two items when Debug + Release run side by side is harmless, and
-    // the Debug build needs it to be QA-able (unlike the singleton ⌘§ hotkey).
-    MenuBarExtra(isInserted: $showMenuBarItem) {
-      MenuBarNotificationsView(registry: registry)
-    } label: {
-      MenuBarLabel(registry: registry)
-    }
-    .menuBarExtraStyle(.window)
+    // The system menu-bar item (issue #33) is hand-managed by `AppDelegate`'s `MenuBarController`
+    // (an `NSStatusItem`), not a SwiftUI `MenuBarExtra`, so a click with no pending notifications can
+    // simply focus the app instead of opening an empty popover — `MenuBarExtra` gives no hook to
+    // intercept its click. See `MenuBarController`.
   }
 }
 
@@ -126,6 +112,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
   private var quickTerminalObserver: NSObjectProtocol?
   /// Observes the `globalHotkey` setting so toggling it takes effect immediately.
   private var hotkeyObservation: Task<Void, Never>?
+  /// The system menu-bar item (issue #33) — an `NSStatusItem` owned here so a click can branch on the
+  /// notification count (open the list, or just focus the app when there's nothing pending). Retained
+  /// for the app's lifetime; created in `applicationDidFinishLaunching`.
+  private var menuBarController: MenuBarController?
   /// Catches SIGTERM so a signalled quit stops run commands gracefully (issue #7). Retained so the
   /// `DispatchSource` stays alive for the process's lifetime.
   private var sigtermSource: DispatchSourceSignal?
@@ -142,6 +132,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     // Receive notification clicks (authorization is requested lazily on first post).
     UNUserNotificationCenter.current().delegate = self
+
+    // Install the menu-bar item (issue #33). Creating it here also forces `WindowRegistry.shared`
+    // into existence early, so its key-window observer is live before the first window appears.
+    menuBarController = MenuBarController(registry: .shared)
 
     monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
       let flags = event.modifierFlags.intersection([.command, .shift, .option, .control])
