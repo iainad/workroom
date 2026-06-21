@@ -102,7 +102,7 @@ struct TerminalTabStrip: View {
                 lastChipClick = ChipClick(id: tab.id, at: now)
               }
             }
-            .tabChipContextMenu(tab: tab, target: target, store: store)
+            .tabChipContextMenu(tab: tab, target: target, store: store, sessions: sessions)
             // Measure in .global space: a .local drag reads coordinates relative to the
             // chip, which itself moves via .offset(dragTranslation) — that feedback loop
             // dampens the translation so the chip lags the cursor. Global space is fixed.
@@ -142,6 +142,10 @@ struct TerminalTabStrip: View {
       // Hug the chips' height; otherwise the horizontal ScrollView grabs all the vertical slack
       // when there's no terminal below it (the empty state), ballooning the tab bar.
       .fixedSize(horizontal: false, vertical: true)
+      // Per-current-tab actions (issue #72), pinned to the strip's right edge as a fixed-size layout
+      // sibling of the scrolling tabs — so the chip area yields first in a cramped split pane and the
+      // toolbar never overlaps the chips. Sits left of the remove-from-split control below.
+      tabToolbar
       // Remove-from-split control (issue #23 follow-up), pinned to the strip's right edge as a layout
       // sibling of the scrolling tabs — so it never overlaps them however many tabs there are. Only a
       // workroom split member gets one (the callback is nil otherwise).
@@ -177,6 +181,42 @@ struct TerminalTabStrip: View {
     .help("New terminal")
     .accessibilityLabel("New terminal")
     .accessibilityIdentifier("NewTerminal")
+  }
+
+  /// Icon-only actions for the *current* (active) tab (issue #72): "Open file in…" (diff tabs only),
+  /// "Split right", and "Close all". Renders nothing when there's no active tab. `fixedSize` so it
+  /// keeps its intrinsic width and the scrolling chip area yields first in a narrow split pane.
+  @ViewBuilder
+  private var tabToolbar: some View {
+    if let active = tabs.first(where: { $0.id == activeID }) {
+      HStack(spacing: 2) {
+        // Diff (content) tab: open the working file in the configured editor. Disabled when the
+        // source was deleted (review D4) — there's no file to open.
+        if case .diff(let descriptor) = active.content {
+          TabToolbarButton(
+            systemImage: "doc.text", help: "Open file in editor",
+            accessibilityLabel: "Open file in editor", identifier: "tab.toolbar.openFile"
+          ) {
+            store.openDiffTabFile(descriptor, for: target)
+          }
+          .disabled(descriptor.change == .deleted)
+        }
+        TabToolbarButton(
+          systemImage: "square.split.2x1", help: "Split right",
+          accessibilityLabel: "Split right", identifier: "tab.toolbar.splitRight"
+        ) {
+          sessions.splitTab(active.id, on: .right, for: target)
+        }
+        TabToolbarButton(
+          systemImage: "xmark.square", help: "Close all tabs in this workroom",
+          accessibilityLabel: "Close all tabs in this workroom", identifier: "tab.toolbar.closeAll"
+        ) {
+          store.requestCloseAllTerminalTabs(for: target)
+        }
+      }
+      .padding(.trailing, 4)
+      .fixedSize()
+    }
   }
 
   /// A rounded *outline* bracketing the split's contiguous chip run, so it's easy to see which tabs
@@ -477,6 +517,37 @@ private struct TabCloseButton: View {
   }
 }
 
+/// One icon-only action in the tab strip's trailing toolbar (issue #72), styled to match the strip's
+/// other controls (the "+" new-terminal button, the remove-from-split ✕): a small glyph with a hover
+/// well, a tooltip, and an accessibility label + identifier (per the "tooltips on all controls"
+/// convention). Carries its own `onHover` so the `.help` tooltip's tracking area is reliably installed.
+private struct TabToolbarButton: View {
+  let systemImage: String
+  let help: String
+  let accessibilityLabel: String
+  let identifier: String
+  let action: () -> Void
+  @State private var hovering = false
+
+  var body: some View {
+    Button(action: action) {
+      Image(systemName: systemImage)
+        .font(.system(size: 11))
+        .foregroundStyle(.secondary)
+        .padding(4)
+        .background(
+          RoundedRectangle(cornerRadius: 5)
+            .fill(ThemeService.shared.tokens.hover.opacity(hovering ? 1 : 0))
+        )
+    }
+    .buttonStyle(.plain)
+    .onHover { hovering = $0 }
+    .help(help)
+    .accessibilityLabel(accessibilityLabel)
+    .accessibilityIdentifier(identifier)
+  }
+}
+
 /// The remove-from-split (✕) control for a workroom split member (issue #23 follow-up). Pinned at the
 /// tab strip's right edge in the normal case, and also surfaced as a corner overlay by
 /// `TargetTerminalDetail` while a setup script blocks the strip (so a mid-setup member can still leave
@@ -510,18 +581,77 @@ private struct ChipClick {
 }
 
 extension View {
-  /// Attach a context menu to a **diff (content)** chip only (#66): "Keep Open" promotes a preview
-  /// tab to persisted; "Close" closes it. Terminal chips are returned unchanged (no menu), so this
-  /// adds nothing to their right-click behaviour.
+  /// The right-click menu for a tab chip — **also reused on the diff pane body** (issue #72), so a
+  /// diff panel and its tab offer the same actions. Diff (content) tabs lead with "Open File in…"
+  /// (disabled when the source was deleted — review D4) and, while still a preview, "Keep Open"
+  /// (promotes it to persisted, #66). Both tab types then get the split items — disabled for a tab
+  /// outside the currently visible split so it can't silently dissolve it (review D5) — and the close
+  /// group (Close / Close Others / Close All).
   @ViewBuilder
-  fileprivate func tabChipContextMenu(
-    tab: TerminalTab, target: TerminalTarget, store: AppStore
+  func tabChipContextMenu(
+    tab: TerminalTab, target: TerminalTarget, store: AppStore, sessions: TerminalSessions
   ) -> some View {
     self.contextMenu {
+      if case .diff(let descriptor) = tab.content {
+        Button {
+          store.openDiffTabFile(descriptor, for: target)
+        } label: {
+          Label("Open File in…", systemImage: "doc.text")
+        }
+        .disabled(descriptor.change == .deleted)
+        if tab.isPreview {
+          Button {
+            sessions.persist(tab.id, for: target)
+          } label: {
+            Label("Keep Open", systemImage: "pin")
+          }
+        }
+        Divider()
+      }
+      // Split this tab. Disabled for a tab outside the visible split (review D5) so right-clicking a
+      // chip that isn't part of the shown split can't silently replace it.
+      let splitDisabled =
+        sessions.isSplitVisible(for: target)
+        && !(sessions.split(for: target)?.tabIDs.contains(tab.id) ?? false)
+      Group {
+        Button {
+          sessions.splitTab(tab.id, on: .right, for: target)
+        } label: {
+          Label("Split Right", systemImage: "square.split.2x1")
+        }
+        Button {
+          sessions.splitTab(tab.id, on: .left, for: target)
+        } label: {
+          Label("Split Left", systemImage: "square.split.2x1")
+        }
+        Button {
+          sessions.splitTab(tab.id, on: .bottom, for: target)
+        } label: {
+          Label("Split Down", systemImage: "square.split.1x2")
+        }
+        Button {
+          sessions.splitTab(tab.id, on: .top, for: target)
+        } label: {
+          Label("Split Up", systemImage: "square.split.1x2")
+        }
+      }
+      .disabled(splitDisabled)
+      Divider()
       Button(role: .destructive) {
         store.requestCloseTerminalTab(tab.id, for: target)
       } label: {
         Label("Close", systemImage: "xmark")
+      }
+      Button(role: .destructive) {
+        store.requestCloseOtherTerminalTabs(tab.id, for: target)
+      } label: {
+        Label("Close Others", systemImage: "xmark")
+      }
+      .disabled(sessions.tabs(for: target).count <= 1)
+      Button(role: .destructive) {
+        store.requestCloseAllTerminalTabs(for: target)
+      } label: {
+        Label("Close All", systemImage: "xmark")
       }
     }
   }

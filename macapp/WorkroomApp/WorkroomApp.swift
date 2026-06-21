@@ -782,6 +782,17 @@ struct WorkroomCommands: Commands {
       .keyboardShortcut("w", modifiers: .command)
       .disabled(hasTerminal != true)
 
+      // Bulk close (issue #72), no shortcuts. Labelled "Tabs" (not "Terminals") since they act on
+      // diff/content tabs too. "Close Other Tabs" needs ≥2 tabs; "Close All Tabs" needs ≥1.
+      Button("Close Other Tabs") {
+        store?.closeOtherTerminalTabsInSelectedTarget()
+      }
+      .disabled(multipleTerminalTabs != true)
+      Button("Close All Tabs") {
+        store?.closeAllTerminalTabsInSelectedTarget()
+      }
+      .disabled(hasTerminal != true)
+
       Divider()
 
       // Reveal the selected target's directory in Finder (moved off the detail toolbar). Acts on the

@@ -39,7 +39,7 @@ struct PaneTreeView: View {
         ForEach(Array(layout.tabIDs.enumerated()), id: \.element) { index, tabID in
           if let tab = sessions.tab(tabID, for: target), let rect = plan.panes[tabID] {
             PaneLeafView(
-              tabID: tabID, content: tab.content, directory: target.path, sessions: sessions,
+              tabID: tabID, content: tab.content, target: target, sessions: sessions,
               title: tab.title,
               focused: surfaceActive && tabID == focusedID, multiPane: multiPane,
               paneIndex: index + 1, paneCount: layout.tabIDs.count, coordinateSpace: Self.space,
@@ -285,9 +285,12 @@ private struct PaneLeafView: View {
   /// The pane's content — a terminal surface or non-terminal content (issue #66). All the pane chrome
   /// (focus ring, dim scrim, drag handle, a11y) wraps *both* kinds; only the centre swaps.
   let content: TabContent
-  /// The workroom directory, handed to a diff pane so its `DiffResolver` runs against the right repo.
-  let directory: String
+  /// The target this pane belongs to — its `path` is the workroom directory handed to a diff pane (so
+  /// its `DiffResolver` runs against the right repo), and it routes the diff pane's context-menu actions.
+  let target: TerminalTarget
   @ObservedObject var sessions: TerminalSessions
+  /// Routes the diff pane's reused tab context menu (issue #72: "Open File in…", split, close group).
+  @EnvironmentObject var store: AppStore
   let title: String
   let focused: Bool
   let multiPane: Bool
@@ -373,9 +376,17 @@ private struct PaneLeafView: View {
     case .terminal(let s):
       TerminalContainerView(view: s.view, isFocusedPane: focused)
     case .diff(let descriptor):
-      DiffViewer(descriptor: descriptor, directory: directory)
+      // The diff pane body carries the SAME context menu as its tab chip (issue #72) — fetch the live
+      // tab so "Keep Open" / split-guard reflect its current preview / split state. A diff leaf is
+      // always a live tab while it renders, so the `else` is just a safety fallback.
+      let diff = DiffViewer(descriptor: descriptor, directory: target.path)
         .clipShape(
           RoundedRectangle(cornerRadius: TerminalPanelMetrics.cornerRadius, style: .continuous))
+      if let tab = sessions.tab(tabID, for: target) {
+        diff.tabChipContextMenu(tab: tab, target: target, store: store, sessions: sessions)
+      } else {
+        diff
+      }
     }
   }
 

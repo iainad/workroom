@@ -1949,63 +1949,131 @@ final class AppStore: ObservableObject {
     requestCloseTerminalTab(active.id, for: target)
   }
 
+  /// Set while a close-confirm alert is queued/showing, so a double fire (a fast second ⌘W, or
+  /// toolbar/menu/context "Close all" pressed twice before the deferred alert appears) can't stack
+  /// modals over a now-stale victim list.
+  private var isPresentingCloseConfirm = false
+
   /// Close a terminal tab, confirming first when `confirmOnCloseTerminal` is on (the default). The
   /// tab-strip ✕ and the ⌘W command both route through here, so the confirmation — and its "Don't
-  /// ask me again" suppression — lives in one place. Closing a terminal kills its shell and anything
-  /// running in it with no undo, so the alert mirrors the quit confirmation (same destruction class).
+  /// ask me again" suppression — lives in one place (`confirmCloseThen`). Closing a terminal kills
+  /// its shell and anything running in it with no undo, so the alert mirrors the quit confirmation.
   func requestCloseTerminalTab(_ tabID: TerminalTab.ID, for target: TerminalTarget) {
     guard let tab = terminals.tabs(for: target).first(where: { $0.id == tabID }) else { return }
-    // UI-test fixture mode closes without the modal so ⌘W / right-click Close are synchronous and
-    // teardown never blocks on an alert (the launch-arg override can't reliably reach a Defaults Bool).
-    // Also skip the confirm when the tab's process has already exited (e.g. a stopped/finished run
-    // command sitting at "Process exited" via wait_after_command) — there's nothing running to lose
-    // (issue #7).
-    // A content tab (diff) has no surface/process — `?? true` makes "has exited" so it closes without
-    // the confirm (there's nothing running to lose).
-    guard Defaults[.confirmOnCloseTerminal], !UITestFixture.isActive,
-      !(tab.surface?.processHasExited ?? true)
-    else {
-      // No confirmation needed: UI tests close synchronously (teardown must not block); everyone
-      // else still stops a live run command gracefully first so its dev server isn't orphaned.
-      if UITestFixture.isActive {
-        terminals.closeTab(tabID, for: target)
-      } else {
-        closingRunTab(tabID, for: target.id) { [weak self] in
-          self?.terminals.closeTab(tabID, for: target)
-        }
-      }
+    guard closeNeedsConfirm([tab]) else {
+      performClose([tabID], for: target)
       return
     }
-    // Defer the modal to the next runloop tick so the event that triggered the close — the ⌘W
-    // key-equivalent dispatch or the ✕ button's mouse tracking — finishes draining first. Running
-    // `NSAlert.runModal()` synchronously inside that dispatch spins up the modal loop while the
-    // input event is still in flight, so the alert window doesn't reliably become key and the
-    // confirming Return is intermittently dropped (issue #54). By the next tick it owns the
-    // keyboard cleanly. (The context-menu Close already defers for the same unwind reason.)
+    confirmCloseThen(count: 1, title: tab.title) { [weak self] in
+      self?.performClose([tabID], for: target)
+    }
+  }
+
+  /// Close every tab in `target` (the tab strip's "Close all" / File ▸ "Close All Tabs"), confirming
+  /// once if any has a live process. No-op when the target has no tabs.
+  func requestCloseAllTerminalTabs(for target: TerminalTarget) {
+    let victims = terminals.tabs(for: target).map(\.id)
+    guard !victims.isEmpty else { return }
+    requestClose(victims, for: target, keep: nil)
+  }
+
+  /// Close every tab in `target` except `keepID` ("Close others"), confirming once if any victim has
+  /// a live process. No-op when there's nothing else to close.
+  func requestCloseOtherTerminalTabs(_ keepID: TerminalTab.ID, for target: TerminalTarget) {
+    let victims = terminals.tabs(for: target).map(\.id).filter { $0 != keepID }
+    guard !victims.isEmpty else { return }
+    requestClose(victims, for: target, keep: keepID)
+  }
+
+  /// Shared bulk-close core: confirm once (if needed), then `select` the kept tab so focus lands
+  /// there, then tear the victims down. Selecting `keep` *before* closing means none of the victims
+  /// is focused when it closes, so a victim's `closeTab` never fights the kept-tab selection — and a
+  /// later async run-tab close (Ctrl-C + wait) can't steal focus back either (the run tab isn't
+  /// focused). `keep == nil` for "Close all" (target ends empty).
+  private func requestClose(
+    _ victims: [TerminalTab.ID], for target: TerminalTarget, keep: TerminalTab.ID?
+  ) {
+    let tabs = terminals.tabs(for: target).filter { victims.contains($0.id) }
+    let proceed: () -> Void = { [weak self] in
+      guard let self else { return }
+      if let keep { self.terminals.select(keep, for: target) }
+      self.performClose(victims, for: target)
+    }
+    if closeNeedsConfirm(tabs) {
+      confirmCloseThen(count: victims.count, title: nil, then: proceed)
+    } else {
+      proceed()
+    }
+  }
+
+  /// Close-all for the selected target (File ▸ "Close All Tabs").
+  func closeAllTerminalTabsInSelectedTarget() {
+    guard let target = selectedTarget else { return }
+    requestCloseAllTerminalTabs(for: target)
+  }
+
+  /// Close-others for the selected target's active tab (File ▸ "Close Other Tabs").
+  func closeOtherTerminalTabsInSelectedTarget() {
+    guard let target = selectedTarget, let active = terminals.activeTab(for: target) else { return }
+    requestCloseOtherTerminalTabs(active.id, for: target)
+  }
+
+  /// Whether closing `tabs` needs the confirm modal: the setting is on, we're not in a UI-test
+  /// fixture (those close synchronously so teardown never blocks on an alert — the launch-arg
+  /// override can't reliably reach a Defaults Bool), and at least one tab still has a live process
+  /// to lose. A content/diff tab has no surface and an exited run tab has nothing running, so a
+  /// `?? true` ("has exited") batch of only those never prompts (issue #7).
+  private func closeNeedsConfirm(_ tabs: [TerminalTab]) -> Bool {
+    Defaults[.confirmOnCloseTerminal] && !UITestFixture.isActive
+      && tabs.contains { !($0.surface?.processHasExited ?? true) }
+  }
+
+  /// Tear down a set of tabs for a target. Each live run command is stopped gracefully (Ctrl-C +
+  /// wait) before its surface is freed, so the dev server exits cleanly rather than being orphaned
+  /// by the bare hangup (issue #7); non-run / exited / content tabs close immediately. UI-test
+  /// fixture mode closes synchronously (teardown must not block). `closeTab` itself tears down each
+  /// surface and closes any detached window, so this never orphans a window or leaks a PTY.
+  private func performClose(_ tabIDs: [TerminalTab.ID], for target: TerminalTarget) {
+    for id in tabIDs {
+      if UITestFixture.isActive {
+        terminals.closeTab(id, for: target)
+      } else {
+        closingRunTab(id, for: target.id) { [weak self] in
+          self?.terminals.closeTab(id, for: target)
+        }
+      }
+    }
+  }
+
+  /// Confirm closing `count` tab(s), then run `proceed` on confirm. Owns the modal: the next-runloop
+  /// defer (so the ⌘W key-equivalent / ✕ mouse-tracking event finishes draining first, else the
+  /// modal doesn't reliably become key and the confirming Return is dropped — issue #54), the "Don't
+  /// ask me again" suppression (writes the same `confirmOnCloseTerminal` key the Settings checkbox
+  /// and File-menu toggle bind to), and singular/plural copy. Says "tab(s)", not "terminal", because
+  /// diff/content tabs close through here too. Callers decide *whether* a confirm is needed
+  /// (`closeNeedsConfirm`) — it can't be inferred from `count`. Guarded against reentrant double fire.
+  private func confirmCloseThen(count: Int, title: String?, then proceed: @escaping () -> Void) {
+    guard !isPresentingCloseConfirm else { return }
+    isPresentingCloseConfirm = true
     DispatchQueue.main.async { [weak self] in
       guard let self else { return }
+      defer { self.isPresentingCloseConfirm = false }
       let alert = NSAlert()
-      alert.messageText = "Close ‘\(tab.title)’?"
-      alert.informativeText = "Closing this terminal stops any process running in it."
+      alert.messageText =
+        count == 1 ? "Close ‘\(title ?? "this tab")’?" : "Close \(count) tabs?"
+      alert.informativeText =
+        count == 1
+        ? "Closing this tab stops any process running in it."
+        : "Closing these tabs stops any processes running in them."
       alert.addButton(withTitle: "Close")
       alert.addButton(withTitle: "Cancel")
       alert.showsSuppressionButton = true
       alert.suppressionButton?.title = "Don't ask me again"
       let confirmed = alert.runModal() == .alertFirstButtonReturn
-      // Ticking the box stops future confirmations whether they Close or Cancel — it means "stop
-      // asking". Writes the same key the Settings checkbox and the File ▸ "Confirm Before Closing a
-      // Terminal" menu toggle bind to, so both unset the moment the box is ticked.
       if alert.suppressionButton?.state == .on {
         Defaults[.confirmOnCloseTerminal] = false
       }
-      if confirmed {
-        // Stop a live run command (Ctrl-C + wait) before freeing the surface, so the dev server
-        // exits cleanly rather than being orphaned by the bare hangup (issue #7). Non-run / exited
-        // tabs close immediately.
-        self.closingRunTab(tabID, for: target.id) { [weak self] in
-          self?.terminals.closeTab(tabID, for: target)
-        }
-      }
+      if confirmed { proceed() }
     }
   }
 
@@ -2055,6 +2123,18 @@ final class AppStore: ObservableObject {
     terminals.openDiffPersistent(
       DiffDescriptor(path: file.path, change: file.change, source: source, isPreview: false),
       for: target)
+  }
+
+  /// Open a diff tab's underlying file in the configured "Open file paths in" editor (the tab
+  /// toolbar / context-menu "Open file in…", issue #72). Resolves the diff's repo-relative path
+  /// against the workroom directory and reuses `TerminalLinkOpener` — so it honours
+  /// `Defaults[.filePathEditor]` and opens the file *inside* the workroom folder window, exactly
+  /// like the Changes-panel click. Caller disables this for a deleted-source diff (the working file
+  /// is gone — `DiffDescriptor.change == .deleted`); for a jj `@-` diff it opens the working copy,
+  /// which may differ from the displayed parent revision (editing the live file is the useful action).
+  func openDiffTabFile(_ descriptor: DiffDescriptor, for target: TerminalTarget) {
+    let absPath = (target.path as NSString).appendingPathComponent(descriptor.path)
+    TerminalLinkOpener.openFilePath(absPath, cwd: nil, project: target.path)
   }
 
   /// The focused pane's surface for the selected target (the focused tab is the focused pane), or nil

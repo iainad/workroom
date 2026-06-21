@@ -466,16 +466,16 @@ final class TerminalSessions: ObservableObject {
     splitFocusedPane(for: target, edge: orientation == .horizontal ? .right : .bottom)
   }
 
-  /// Split the focused pane by spawning a new terminal on `edge` (right/left/down/up), inheriting the
-  /// focused pane's working directory. No-op (refused) if the focused pane is already too small to
-  /// halve (D4). If the focused tab is solo, any existing split is dissolved first — at most one split
-  /// exists at a time.
+  /// Split the focused pane on `edge` (right/left/down/up). A focused **terminal** spawns a new shell
+  /// inheriting its working directory; a focused **diff** opens a second view of the SAME diff as a
+  /// fresh *preview* pane (#72) — the original stays pinned, the new pane is the browsable preview
+  /// slot. No-op (refused) if the focused pane is already too small to halve (D4). If the focused tab
+  /// is solo, any existing split is dissolved first — at most one split exists at a time.
   func splitFocusedPane(for target: TerminalTarget, edge: PaneEdge) {
     guard let focused = focusedTab(for: target) else { return }
     guard fits(splitting: focused.surface, orientation: edge.orientation) else { return }
 
-    let cwd = focused.surface?.lastKnownCwd ?? target.path
-    let newTab = makeTerminalTab(for: target, cwd: cwd)
+    let newTab = newPaneTab(splitting: focused, for: target)
     tabsByTarget[target.id, default: [:]][newTab.id] = newTab
 
     if let existing = splitByTarget[target.id], existing.contains(focused.id) {
@@ -496,6 +496,35 @@ final class TerminalSessions: ObservableObject {
     insertID(newTab.id, after: focused.id, for: target)
     setFocused(newTab.id, for: target.id)
     reconcileOcclusion(for: target)
+  }
+
+  /// The tab to spawn when splitting `anchor`. A **terminal** anchor → a new shell in its cwd. A
+  /// **diff** anchor → a second view of the same file as a fresh PREVIEW pane (#72): the anchor is
+  /// persisted so the original stays pinned (review D6), and any other preview is persisted too, so the
+  /// new pane becomes the target's sole preview slot (the ≤1-preview invariant) — a later Changes-panel
+  /// single-click then retargets THIS new split pane rather than the pinned original. Built directly
+  /// (not via `openDiffPreview`) so the same-file dedup doesn't collapse it back onto the anchor.
+  private func newPaneTab(splitting anchor: TerminalTab, for target: TerminalTarget) -> TerminalTab
+  {
+    if case .diff(var desc) = anchor.content {
+      persist(anchor.id, for: target)  // pin the original
+      if let other = previewTabID(in: target.id) { persist(other, for: target) }  // keep ≤1 preview
+      desc.isPreview = true
+      return TerminalTab.diff(desc)
+    }
+    let cwd = anchor.surface?.lastKnownCwd ?? target.path
+    return makeTerminalTab(for: target, cwd: cwd)
+  }
+
+  /// Split a *specific* tab — the tab toolbar's "Split right" and the chip context menu's split items
+  /// (issue #72) — as opposed to `splitFocusedPane`, which always acts on the focused pane. Uses
+  /// `select`, not `focus` (review D2), so a deliberate right-click/toolbar action also promotes this
+  /// workroom to the focused member of a workroom split (#23); then splits the now-focused anchor (a
+  /// diff anchor splits into a second diff pane, a terminal into a new shell — see `newPaneTab`).
+  func splitTab(_ tabID: TerminalTab.ID, on edge: PaneEdge, for target: TerminalTarget) {
+    guard tabsByTarget[target.id]?[tabID] != nil else { return }
+    select(tabID, for: target)
+    splitFocusedPane(for: target, edge: edge)
   }
 
   /// Drag-and-drop (issue #3): place `movedID` on `edge` of `destID`'s pane. One op covers both

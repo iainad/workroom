@@ -608,21 +608,73 @@ final class TerminalSessionsTests: XCTestCase {
     XCTAssertTrue(s.tabs(for: target).isEmpty)
   }
 
-  /// Splitting with a diff pane focused spawns a TERMINAL beside it — a mixed split, no surface
-  /// required on the focused (diff) pane (the fit guard permits a content pane).
-  func testSplitWithDiffFocusedSpawnsTerminalBeside() {
+  /// Splitting a diff pane opens a second view of the SAME diff as a fresh PREVIEW pane (#72) — not a
+  /// terminal. The original is pinned (persisted); the new pane is the focused, un-persisted preview.
+  func testSplitDiffOpensSameDiffAsPreviewPane() {
     let s = makeSessions()
     let diff = s.openDiffPreview(diffDesc("a.swift"), for: target)
     s.splitFocusedPane(for: target, orientation: .horizontal)
-    XCTAssertEqual(s.tabs(for: target).count, 2)
+    let tabs = s.tabs(for: target)
+    XCTAssertEqual(tabs.count, 2)
     XCTAssertEqual(s.split(for: target)?.tabIDs.count, 2)
     XCTAssertTrue(s.split(for: target)!.contains(diff))
-    XCTAssertNotNil(s.activeTab(for: target)?.surface)  // the new pane is a terminal
+    // The new pane is a diff (no surface) of the SAME file, focused and un-persisted…
+    let new = s.activeTab(for: target)!
+    XCTAssertNotEqual(new.id, diff)
+    XCTAssertNil(new.surface)
+    XCTAssertEqual(new.title, "a.swift")
+    XCTAssertTrue(new.isPreview)
+    // …and the original anchor is now pinned (persisted) so it can't be retargeted out from under us.
+    XCTAssertFalse(tabs.first { $0.id == diff }!.isPreview)
   }
 
   func testContentTabIsNeverRunning() {
     let s = makeSessions()
     s.openDiffPreview(diffDesc("a.swift"), for: target)
     XCTAssertFalse(s.isRunning(forTargetID: target.id))
+  }
+
+  // MARK: splitTab — split a *specific* tab (issue #72)
+
+  /// `splitTab` acts on the given tab even when another is focused: it selects the anchor first, then
+  /// splits it (the toolbar/context-menu entry point, vs `splitFocusedPane` which uses the focus).
+  func testSplitTabSplitsTheGivenTabNotTheFocusedOne() {
+    let s = makeSessions()
+    s.addTab(for: target)
+    let a = s.activeTab(for: target)!.id
+    _ = s.addTab(for: target)  // B, now focused
+    s.splitTab(a, on: .right, for: target)
+    XCTAssertTrue(s.split(for: target)?.contains(a) ?? false)
+    XCTAssertEqual(s.split(for: target)?.tabIDs.count, 2)
+    // The new pane (last in the split) is focused.
+    XCTAssertEqual(s.activeTab(for: target)?.id, s.split(for: target)?.tabIDs.last)
+  }
+
+  /// Splitting a *preview* diff pins the original (review D6) and makes the NEW split pane the preview
+  /// slot: a later Changes-panel single-click retargets that new pane, leaving the pinned original and
+  /// adding no extra tab.
+  func testSplitTabPinsOriginalAndNewPaneBecomesPreviewSlot() {
+    let s = makeSessions()
+    let diff = s.openDiffPreview(diffDesc("a.swift"), for: target)
+    XCTAssertTrue(s.tabs(for: target).first!.isPreview)
+    s.splitTab(diff, on: .right, for: target)
+    // The original is pinned (persisted)…
+    XCTAssertFalse(s.tabs(for: target).first { $0.id == diff }!.isPreview)
+    // …and the new split pane is the preview slot: a later preview retargets IT (not the original).
+    let new = s.activeTab(for: target)!.id
+    XCTAssertNotEqual(new, diff)
+    let retargeted = s.openDiffPreview(diffDesc("b.swift"), for: target)
+    XCTAssertEqual(retargeted, new)
+    XCTAssertEqual(s.tabs(for: target).count, 2)  // retargeted in place, no new tab
+    XCTAssertEqual(s.tabs(for: target).first { $0.id == new }?.title, "b.swift")
+  }
+
+  /// `splitTab` no-ops for an unknown tab id.
+  func testSplitTabUnknownTabIsNoOp() {
+    let s = makeSessions()
+    s.addTab(for: target)
+    s.splitTab(UUID(), on: .right, for: target)
+    XCTAssertEqual(s.tabs(for: target).count, 1)
+    XCTAssertNil(s.split(for: target))
   }
 }

@@ -68,8 +68,10 @@ final class DiffPaneFocusUITests: XCTestCase {
       for: [XCTNSPredicateExpectation(predicate: p, object: el)], timeout: timeout) == .completed
   }
 
-  /// Open a diff (working-copy file), split it right so a terminal spawns beside it, focus the diff
-  /// pane by clicking it, then click the terminal pane — it must become the focused (selected) pane.
+  /// Open a diff (working-copy file), form a mixed split by dragging the launch terminal's tab chip
+  /// into the diff pane, focus the diff pane by clicking it, then click the terminal pane — it must
+  /// become the focused (selected) pane. (Splitting a diff now opens another diff pane, #72, so a
+  /// mixed diff+terminal split is built by drag-into-pane rather than ⌘D.)
   func testClickingTerminalPaneFocusesItWhenDiffPaneIsFocused() throws {
     let app = launchedApp()
     XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
@@ -77,19 +79,24 @@ final class DiffPaneFocusUITests: XCTestCase {
       element(app, id: "changes.group.workingCopy").waitForExistence(timeout: 10),
       "the Changes panel should render so a diff can be opened")
 
-    // Open a persisted diff tab (double-click skips preview so the split keeps it).
+    // Open a persisted diff tab (double-click skips preview so it survives).
     let row = element(app, id: "changes.file.app/models/user.rb")
     XCTAssertTrue(row.waitForExistence(timeout: 10), "a working-copy file row should render")
     row.doubleClick()
     XCTAssertTrue(
       element(app, id: "terminal.tab.user.rb").waitForExistence(timeout: 6),
       "a diff tab should open for the clicked file")
+    assertCount(panes(app), reaches: 1)  // the diff is shown solo
 
-    // Split right: the focused diff stays on the left, a new terminal spawns (and focuses) on the right.
-    app.typeKey("d", modifierFlags: .command)
+    // Build a mixed split: drag the launch terminal's chip down into the diff pane (drop-into-pane,
+    // issue #3) so the terminal and the diff become side-by-side panes.
+    let termChip = element(app, id: "terminal.tab.Terminal 1")
+    XCTAssertTrue(termChip.waitForExistence(timeout: 6), "the launch terminal's tab chip")
+    let diff = diffPane(app, "user.rb")
+    XCTAssertTrue(diff.waitForExistence(timeout: 6), "the diff pane should render solo first")
+    termChip.press(forDuration: 0.4, thenDragTo: diff)
     assertCount(panes(app), reaches: 2)
 
-    let diff = diffPane(app, "user.rb")
     let terminal = terminalPane(app)
     XCTAssertTrue(diff.waitForExistence(timeout: 6), "the diff pane should render in the split")
     XCTAssertTrue(
