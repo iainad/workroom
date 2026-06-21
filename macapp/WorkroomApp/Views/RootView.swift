@@ -8,6 +8,10 @@ struct RootView: View {
   // Observed so the detail's workroom tab bar re-renders as terminals open/close (a tab appears when a
   // workroom gains its first terminal and disappears when it loses its last) — issue #23.
   @EnvironmentObject var terminals: TerminalSessions
+  // Drives the leading title-bar "Update" pill (injected into the accessory closure below) and the
+  // "What's New" dialog. Both injected by `WorkroomApp` on the `RootWindow`.
+  @EnvironmentObject var updater: Updater
+  @EnvironmentObject var whatsNew: WhatsNewService
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @Default(.theme) private var theme
   /// Whether the right-hand notifications inspector is open. `@Default` (not `@State`) so the
@@ -25,6 +29,11 @@ struct RootView: View {
   /// Presents the keyboard-shortcuts reference, raised by the `Keyboard Shortcuts…` command via
   /// notification (same menu-can't-anchor-a-sheet pattern as the theme picker).
   @State private var showKeyboardShortcuts = false
+
+  /// The "What's New" dialog's content, or nil when closed. Set by the launch-window auto-check and
+  /// by the Help ▸ What's New… command (key window only). Window-local so multiple windows never
+  /// stack duplicate dialogs.
+  @State private var whatsNewContent: WhatsNewSheetContent?
 
   /// Live preview of a workroom tab being dragged into the detail content to form a split (issue #23
   /// follow-up). Set by `WorkroomTabBar`'s drag, read by `WorkroomSplitView` to highlight the drop edge.
@@ -47,6 +56,7 @@ struct RootView: View {
     TitlebarAccessory(edge: .leading, identifier: .init("workroom.titlebarLeading")) {
       LeadingTitlebarBar()
         .environmentObject(store)
+        .environmentObject(updater)
     }
   }
 
@@ -208,6 +218,30 @@ struct RootView: View {
     }
     .sheet(isPresented: $showKeyboardShortcuts) {
       KeyboardShortcutsView()
+    }
+    // "What's New" auto-check: only the launch/restore window runs it, so restored ⌘N windows don't
+    // each pop the dialog. Silent — opens straight to the notes when there are any to show.
+    .task {
+      guard store.isRestoreWindow else { return }
+      if let notes = await whatsNew.checkOnLaunch() {
+        whatsNewContent = .notes(notes)
+      }
+    }
+    // Help ▸ What's New… (user-invoked): key window only (the notification reaches every window's
+    // RootView). Opens to a loading state, then fills in / shows an empty/error message.
+    .onReceive(NotificationCenter.default.publisher(for: .showWhatsNew)) { _ in
+      guard store.hostWindow?.isKeyWindow ?? false else { return }
+      whatsNewContent = .loading
+      Task {
+        switch await whatsNew.showCurrent() {
+        case .notes(let n): whatsNewContent = .notes(n)
+        case .empty: whatsNewContent = .empty
+        case .error: whatsNewContent = .error
+        }
+      }
+    }
+    .sheet(item: $whatsNewContent) { content in
+      WhatsNewSheet(content: content) { whatsNewContent = nil }
     }
     // Title the window with the selected project/workroom for the Window menu + Mission Control. A
     // non-empty `navigationTitle` re-asserts `titleVisibility = .visible` every render, so the bar is

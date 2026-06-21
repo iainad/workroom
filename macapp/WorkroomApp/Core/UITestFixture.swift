@@ -36,6 +36,41 @@ enum UITestFixture {
     UserDefaults.standard.bool(forKey: "WorkroomUITestGitWorkroom")
   }
 
+  /// When set (`-WorkroomUITestUpdateAvailable 1`), `Updater` seeds a fake available-update version so
+  /// the toolbar "Update" pill renders for visual QA without a live Sparkle update.
+  static var updateAvailableVersion: String? {
+    UserDefaults.standard.bool(forKey: "WorkroomUITestUpdateAvailable") ? "9.9.9" : nil
+  }
+
+  /// When set (`-WorkroomUITestWhatsNew 1`), `WhatsNewService` returns `whatsNewNotes` for both the
+  /// auto and menu paths so the What's-New dialog renders for visual QA without hitting GitHub.
+  static var forceWhatsNew: Bool {
+    UserDefaults.standard.bool(forKey: "WorkroomUITestWhatsNew")
+  }
+
+  /// Canned release notes for the What's-New dialog under `forceWhatsNew` — a couple of versions with
+  /// headings + bullets so the markdown renderer and the multi-release layout both get coverage.
+  static var whatsNewNotes: [ReleaseNote] {
+    [
+      ReleaseNote(
+        version: "9.9.9", title: "Workroom 9.9.9",
+        bodyMarkdown: """
+          ## Highlights
+          - Bell opens the **oldest** notification first
+          - Quick Terminal gained a `⌥§` shortcut
+
+          A short framing paragraph about this release.
+          """,
+        date: Date(timeIntervalSince1970: 1_700_000_000),
+        url: URL(string: "https://github.com/joelmoss/workroom/releases/tag/v9.9.9")),
+      ReleaseNote(
+        version: "9.9.8", title: "Workroom 9.9.8",
+        bodyMarkdown: "### Fixes\n- Stop the *exited with code 15* dialog on wake from sleep",
+        date: Date(timeIntervalSince1970: 1_699_000_000),
+        url: URL(string: "https://github.com/joelmoss/workroom/releases/tag/v9.9.8")),
+    ]
+  }
+
   /// Stable display name of the fixture project (also its sidebar accessibility id suffix:
   /// `sidebar.project.<name>`). Deliberately obvious so it never reads as a real project in logs.
   static let projectName = "UITestProject"

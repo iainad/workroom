@@ -7,6 +7,9 @@ import UserNotifications
 struct WorkroomApp: App {
   @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
   @StateObject private var updater = Updater()
+  /// Fetches release notes for the "What's New" dialog (auto after an update + Help ▸ What's New).
+  /// One instance shared across windows; presentation is owned window-side, gated to the key window.
+  @StateObject private var whatsNew = WhatsNewService(fetcher: GitHubReleasesClient())
   /// App-level coordinator for the multi-window world (issue #70): key-window routing, per-window
   /// store registration, run-command ownership, and the aggregated menu-bar/Dock notification count.
   @StateObject private var registry = WindowRegistry.shared
@@ -33,6 +36,8 @@ struct WorkroomApp: App {
     // window gets `.launch` (restores the saved selection).
     WindowGroup(for: WindowSeed.self) { $seed in
       RootWindow(seed: seed ?? .launch)
+        .environmentObject(updater)
+        .environmentObject(whatsNew)
     }
     .commands { WorkroomCommands(updater: updater) }
 
@@ -80,6 +85,9 @@ struct RootWindow: View {
     // Capture the current window's size ONCE, at this window's creation, so the new window can be
     // sized to match it before it's shown (issue #70). nil for the launch window.
     store.pendingInitialWindowSize = WindowRegistry.shared.preferredNewWindowSize
+    // Only the launch window runs the What's-New auto-check (see RootView), so restored ⌘N windows
+    // don't each pop the dialog.
+    store.isRestoreWindow = seed.restore
     _store = StateObject(wrappedValue: store)
   }
 
@@ -575,15 +583,25 @@ struct WorkroomCommands: Commands {
 
   var body: some Commands {
     CommandGroup(after: .appInfo) {
-      // Sparkle update check (App menu, just below "About Workroom"). Disabled while a check
-      // is already running. See Core/Updater.swift.
-      Button("Check for Updates…") { updater.checkForUpdates() }
-        .disabled(!updater.canCheckForUpdates)
-
       // App menu: symlink the bundled CLI into the user's PATH (like VS Code's "Install 'code'
       // command"). Prompts for admin only if the target dir needs it. See CommandLineInstaller.
       Button("Install ‘workroom’ Command in PATH…") {
         Task { await CommandLineInstaller.runFromMenu() }
+      }
+
+      // Updates form their own section below, set off by a divider.
+      Divider()
+
+      // Sparkle update check. Disabled while a check is already running. See Core/Updater.swift.
+      Button("Check for Updates…") { updater.checkForUpdates() }
+        .disabled(!updater.canCheckForUpdates)
+
+      // Reopen the "What's New" release-notes dialog on demand. Posts a notification the key window's
+      // RootView observes — a menu command can't anchor a sheet itself (same pattern as Theme… /
+      // Keyboard Shortcuts…). Lives in the App menu rather than its own Help group because
+      // `@CommandsBuilder` caps a Commands body at 10 statements.
+      Button("What’s New in Workroom…") {
+        NotificationCenter.default.post(name: .showWhatsNew, object: nil)
       }
     }
 

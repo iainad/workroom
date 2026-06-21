@@ -30,6 +30,7 @@ struct TitlebarDivider: View {
 /// `WindowBackgroundThemer` so it doesn't leave an overflow chevron.
 struct LeadingTitlebarBar: View {
   @EnvironmentObject var store: AppStore
+  @EnvironmentObject var updater: Updater
 
   var body: some View {
     HStack(spacing: 6) {
@@ -76,6 +77,13 @@ struct LeadingTitlebarBar: View {
       .help("Quick Terminal (⌥§)")
       .accessibilityLabel("Quick Terminal")
       .accessibilityIdentifier("toolbar.quickTerminal")
+
+      // A newer version is waiting (Sparkle gentle reminder) — a highlighted pill, right of Quick
+      // Terminal. Self-hides when no update is pending; the divider matches.
+      if updater.availableVersionString != nil {
+        TitlebarDivider()
+        UpdateAvailableButton()
+      }
     }
     .buttonStyle(ToolbarIconButtonStyle())
     .padding(.horizontal, 10)

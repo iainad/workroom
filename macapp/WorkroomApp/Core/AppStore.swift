@@ -68,6 +68,10 @@ final class AppStore: ObservableObject {
   /// nil for the launch window.
   var pendingInitialWindowSize: CGSize?
   private var didApplyInitialSize = false
+  /// True only for the window SwiftUI brings up at launch (`WindowSeed.restore`). Set by
+  /// `RootWindow.init`. The What's-New auto-check runs only from this window so a relaunch with
+  /// several restored windows doesn't fan out duplicate dialogs.
+  var isRestoreWindow = false
   /// Retained `NSWindow` frame-change observers that persist this window's size for the next launch.
   private var frameObservers: [NSObjectProtocol] = []
   /// Retains the `NSWindow.didUpdate` observer that keeps the title out of the title bar (issue #70).

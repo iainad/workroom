@@ -92,6 +92,18 @@ extension Defaults.Keys {
   static let inspectorPaneStates = Key<[String: InspectorPaneState]>(
     "inspector.paneStates", default: [:])
 
+  /// The app `CFBundleShortVersionString` whose release notes the user has already seen (issue: What's
+  /// New). nil on a fresh install / first launch after this feature shipped — recorded silently with
+  /// no historical backfill. The What's-New dialog shows only when the running version is newer.
+  static let lastSeenVersion = Key<String?>("app.lastSeenVersion", default: nil)
+
+  /// Bounded-retry bookkeeping for the auto What's-New fetch (so a firewalled machine doesn't fire a
+  /// doomed GitHub request every launch forever). `whatsNewAttemptVersion` is the version those
+  /// attempts were for; the count resets when the running version changes. After
+  /// `WhatsNewService.maxAutoAttempts` failures the auto fetch gives up (the menu item still works).
+  static let whatsNewAttemptVersion = Key<String?>("app.whatsNewAttemptVersion", default: nil)
+  static let whatsNewAttempts = Key<Int>("app.whatsNewAttempts", default: 0)
+
   /// Collapse state of the two jj Changes-panel lists (Working Copy `@` / Parent Commit `@-`). The
   /// working copy is expanded and the parent collapsed by default. Global (not per-workroom) for v1
   /// — a possible follow-up is to scope these per workroom like `inspectorPaneStates`.

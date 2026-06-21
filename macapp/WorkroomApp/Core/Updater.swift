@@ -1,40 +1,109 @@
 import Combine
 import Sparkle
 
-/// Wraps Sparkle's standard updater so SwiftUI can drive it: the "Check for Updates…" menu
-/// command and the Settings toggle bind here. The controller starts the updater at launch, so
-/// (with SUEnableAutomaticChecks on) it runs scheduled background checks against the appcast
-/// feed declared by SUFeedURL in Info.plist, verifying downloads against SUPublicEDKey.
-final class Updater: ObservableObject {
-  private let controller: SPUStandardUpdaterController
+/// Wraps Sparkle's standard updater so SwiftUI can drive it: the "Check for Updates…" menu command
+/// and the Settings toggle bind here. The controller starts the updater at launch, so (with
+/// SUEnableAutomaticChecks on) it runs scheduled background checks against the appcast feed declared
+/// by SUFeedURL in Info.plist, verifying downloads against SUPublicEDKey.
+///
+/// It also implements Sparkle's **gentle scheduled update reminders**
+/// (`SPUStandardUserDriverDelegate`): when a background check finds an update Sparkle would otherwise
+/// pop a window for, we instead surface a quiet toolbar "Update" pill (`availableVersionString`).
+/// `SPUUpdaterDelegate` lets us clear that pill when the update is installed or no longer offered —
+/// but NOT on cancel/Later, so a still-available update keeps its affordance.
+final class Updater: NSObject, ObservableObject, SPUUpdaterDelegate, SPUStandardUserDriverDelegate {
+  private var controller: SPUStandardUpdaterController!
 
   /// Mirrors `SPUUpdater.canCheckForUpdates` so the menu item disables itself while a check is
   /// already in flight.
   @Published var canCheckForUpdates = false
 
-  init() {
+  /// The version of an update Sparkle found in the background but is NOT itself presenting (a gentle
+  /// reminder) — drives the toolbar "Update" pill. nil means nothing to surface. Deliberately a
+  /// `String` (not `SUAppcastItem`) so views don't depend on Sparkle types.
+  @Published private(set) var availableVersionString: String?
+
+  override init() {
+    super.init()
     controller = SPUStandardUpdaterController(
-      startingUpdater: true, updaterDelegate: nil, userDriverDelegate: nil)
+      startingUpdater: true, updaterDelegate: self, userDriverDelegate: self)
     controller.updater.publisher(for: \.canCheckForUpdates)
       .assign(to: &$canCheckForUpdates)
+
+    // Visual-QA seam: surface a fake pending update so the pill renders without a live Sparkle check.
+    if let fake = UITestFixture.updateAvailableVersion { setAvailable(fake) }
+
     #if DEBUG
       // The "Workroom Dev" build shares the release appcast feed but carries a dev version, so a
       // scheduled check would offer to "update" it to the release DMG and replace the running dev
-      // build. Force scheduled checks off for Debug (the manual "Check for Updates…" menu item
-      // still works if you explicitly want it). Release is unaffected.
+      // build. Force scheduled checks off for Debug (the manual "Check for Updates…" menu item still
+      // works if you explicitly want it). Release is unaffected.
       controller.updater.automaticallyChecksForUpdates = false
+    #else
+      // Surface a previously-found update promptly on launch instead of waiting for the next
+      // scheduled check (the pill would otherwise stay empty until then). Silent unless one is found.
+      controller.updater.checkForUpdatesInBackground()
     #endif
   }
 
-  /// Show the updater UI now — the user-initiated "Check for Updates…" path.
+  /// Show the updater UI now — the user-initiated "Check for Updates…" path (also the pill's action,
+  /// which presents the already-found update).
   func checkForUpdates() {
     controller.updater.checkForUpdates()
   }
 
-  /// Whether Sparkle runs scheduled background checks. Bound to the Settings toggle; Sparkle
-  /// persists it under SUEnableAutomaticChecks in UserDefaults.
+  /// Whether Sparkle runs scheduled background checks. Bound to the Settings toggle; Sparkle persists
+  /// it under SUEnableAutomaticChecks in UserDefaults.
   var automaticallyChecksForUpdates: Bool {
     get { controller.updater.automaticallyChecksForUpdates }
     set { controller.updater.automaticallyChecksForUpdates = newValue }
+  }
+
+  // MARK: - Pill state
+
+  /// Set/clear the pill's version. Sparkle's delegate callbacks run on the main thread, but route the
+  /// `@Published` mutation through here so it's always main-thread even if that ever changes.
+  /// Factored out (not inlined in the callbacks) so the state transitions are unit-testable.
+  func setAvailable(_ version: String?) {
+    if Thread.isMainThread {
+      availableVersionString = version
+    } else {
+      DispatchQueue.main.async { [weak self] in self?.availableVersionString = version }
+    }
+  }
+
+  func clearAvailable() { setAvailable(nil) }
+
+  // MARK: - SPUStandardUserDriverDelegate (gentle scheduled update reminders)
+
+  var supportsGentleScheduledUpdateReminders: Bool { true }
+
+  func standardUserDriverShouldHandleShowingScheduledUpdate(
+    _ update: SUAppcastItem, andInImmediateFocus immediateFocus: Bool
+  ) -> Bool {
+    // Let Sparkle present updates it wants to show in immediate focus (e.g. just after launch);
+    // we handle quieter background ones ourselves via the pill.
+    immediateFocus
+  }
+
+  func standardUserDriverWillHandleShowingUpdate(
+    _ handleShowingUpdate: Bool, forUpdate update: SUAppcastItem, state: SPUUserUpdateState
+  ) {
+    // Only surface the pill for updates Sparkle ISN'T itself showing (background / gentle); when
+    // Sparkle handles the presentation (manual checks, immediate focus) the pill would be redundant.
+    guard !handleShowingUpdate else { return }
+    setAvailable(update.displayVersionString)
+  }
+
+  // MARK: - SPUUpdaterDelegate (pill clear policy — D7)
+
+  func updaterDidNotFindUpdate(_ updater: SPUUpdater) {
+    // A later check confirmed no update is available → the pill is stale, clear it.
+    clearAvailable()
+  }
+
+  func updater(_ updater: SPUUpdater, willInstallUpdate item: SUAppcastItem) {
+    // Installing now; the relaunch resets state anyway, but clear so the pill doesn't linger.
+    clearAvailable()
   }
 }

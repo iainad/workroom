@@ -34,6 +34,21 @@ DMG_URL="https://github.com/${REPO}/releases/download/${TAG}/workroom-macos-app_
 NOTES_URL="https://github.com/${REPO}/releases/tag/${TAG}"
 PUBDATE="$(date -u '+%a, %d %b %Y %H:%M:%S +0000')"
 
+# Embed the curated release notes, rendered to HTML, so Sparkle's update dialog shows the real notes
+# inline instead of just a link. Best-effort: if the release body can't be fetched or rendered (e.g.
+# notes not curated yet), NOTES_DESC stays empty and the item falls back to the <link> alone.
+NOTES_DESC=""
+if NOTES_MD="$(gh release view "$TAG" --repo "$REPO" --json body -q .body 2>/dev/null)" \
+  && [ -n "$NOTES_MD" ]; then
+  # GitHub renders the same GFM the release page shows.
+  if NOTES_HTML="$(gh api --method POST /markdown -f mode=gfm -f context="$REPO" \
+    -f text="$NOTES_MD" 2>/dev/null)" && [ -n "$NOTES_HTML" ]; then
+    # A CDATA section can't contain the literal "]]>"; split any occurrence so it stays well-formed.
+    NOTES_HTML="${NOTES_HTML//]]>/]]]]><![CDATA[>}"
+    NOTES_DESC="<description><![CDATA[${NOTES_HTML}]]></description>"
+  fi
+fi
+
 # Fetch the current feed, or start a skeleton if the appcast release/asset doesn't exist yet.
 if gh release download "$FEED_TAG" --repo "$REPO" --dir "$BUILD" -p appcast.xml --clobber 2>/dev/null; then
   echo "Fetched existing appcast.xml"
@@ -58,6 +73,7 @@ ITEM=$(
       <sparkle:shortVersionString>${SHORT_VERSION}</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>${MIN_OS}</sparkle:minimumSystemVersion>
       <link>${NOTES_URL}</link>
+      ${NOTES_DESC}
       <enclosure url="${DMG_URL}" ${ENCLOSURE_ATTRS} type="application/octet-stream" />
     </item>
 XML
