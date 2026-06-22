@@ -119,14 +119,31 @@ extension AppStore {
       await self.refreshGitHubCLI(resolver: resolver)
       if Task.isCancelled { return }
       guard self.githubCLIStatus == .available else { return }
-      let ci = await resolver.resolveCI(
+      // CI and the PR list are independent — run them concurrently. Apply CI the moment it lands so
+      // the sidebar/tab glyph never waits on the PR probe.
+      async let ciRes = resolver.resolveCI(
         path: item.path, vcs: item.vcs, projectRoot: item.projectRoot, branch: fresh.branchForCI)
+      async let prRawRes = resolver.resolvePRRaw(
+        path: item.path, vcs: item.vcs, projectRoot: item.projectRoot, branch: fresh.branchForCI)
+      let ci = await ciRes
       if Task.isCancelled { return }
       self.applyCIStatus(ci, to: sid)
-      let pr = await resolver.resolvePR(
-        path: item.path, vcs: item.vcs, projectRoot: item.projectRoot, branch: fresh.branchForCI)
+      let prRaw = await prRawRes
       if Task.isCancelled { return }
-      self.applyPRStatus(pr, to: sid)
+      self.applyPRStatus(prRaw, to: sid)
+      // With the PR number in hand, fetch its checks and enrich reviewer permalinks concurrently —
+      // checks must not wait behind the (conditional) reviewer-URL GraphQL round-trip (issue #75).
+      guard case .info(let info) = prRaw else { return }
+      async let enrichedRes = resolver.enrichPR(
+        prRaw, path: item.path, vcs: item.vcs, projectRoot: item.projectRoot)
+      async let checksRes = resolver.resolveChecks(
+        path: item.path, vcs: item.vcs, projectRoot: item.projectRoot, number: info.number)
+      let enriched = await enrichedRes
+      if Task.isCancelled { return }
+      self.applyPRStatus(enriched, to: sid)
+      let checks = await checksRes
+      if Task.isCancelled { return }
+      self.applyChecksStatus(checks, to: sid)
     }
   }
 
@@ -338,19 +355,54 @@ extension AppStore {
     workroomStatuses[sid] = s
   }
 
-  private func applyPRStatus(_ res: PRResolution, to sid: SidebarID) {
+  // Internal (not `private`) so `@testable` can drive the checks lifecycle (clear-on-PR-change /
+  // clear-on-no-PR, issue #75) directly.
+  func applyPRStatus(_ res: PRResolution, to sid: SidebarID) {
     guard var s = workroomStatuses[sid] else { return }
     switch res {
     case .info(let pr):
+      // Checks are keyed to a PR's identity (issue #75). If the PR changed (different number), the
+      // old PR's checks are stale — drop them so they can't render under the new PR until
+      // `resolveChecks` refills them. Same number ⇒ keep them (e.g. the raw→enriched re-apply).
+      if s.pr?.number != pr.number {
+        s.checks = nil
+        s.checksCheckedAt = nil
+      }
       s.pr = pr
       s.prCheckedAt = Date()
     case .absent:
+      // No PR ⇒ `resolveChecks` won't run, so the checks must be cleared here (not only in
+      // `applyChecksStatus`) or a disappearing PR would leave its checks rendered.
       s.pr = nil
+      s.checks = nil
+      s.checksCheckedAt = nil
       s.prCheckedAt = Date()
     case .keepPrior:
       // Transient blip: keep the last good PR. Stamp `prCheckedAt` so the TTL throttles re-probes,
       // but only if we've probed before — a first-ever blip leaves it nil so the next sweep retries.
       if s.prCheckedAt != nil { s.prCheckedAt = Date() }
+    }
+    workroomStatuses[sid] = s
+  }
+
+  /// Apply a PR-checks probe result (issue #75). `.list` (including `[]` for "loaded, no checks")
+  /// sets the rows and stamps `checksCheckedAt`. `.absent` (no checks reported / gh error) is *also*
+  /// a loaded state — it stamps with an empty list, distinct from the not-loaded `nil`, so the panel
+  /// stops falling back to the run-list aggregate. `.keepPrior` (transient blip) keeps the last good
+  /// list, stamping only if we've probed before (so a first-ever blip retries next time). Internal
+  /// (not `private`) so `@testable` reaches it. The clear-on-no-PR / clear-on-PR-change paths live in
+  /// `applyPRStatus` — `resolveChecks` never runs without a PR.
+  func applyChecksStatus(_ res: ChecksResolution, to sid: SidebarID) {
+    guard var s = workroomStatuses[sid] else { return }
+    switch res {
+    case .list(let checks):
+      s.checks = checks
+      s.checksCheckedAt = Date()
+    case .absent:
+      s.checks = []
+      s.checksCheckedAt = Date()
+    case .keepPrior:
+      if s.checksCheckedAt != nil { s.checksCheckedAt = Date() }
     }
     workroomStatuses[sid] = s
   }

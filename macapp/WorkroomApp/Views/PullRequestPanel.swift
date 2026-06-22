@@ -58,16 +58,18 @@ struct PullRequestPanel: View {
       inspectorMessage("Checking\u{2026}")
     } else if let status {
       // GitHub status for the branch: the PR (or "no PR"), and — only when there's an actual PR —
-      // its CI checks. CI is gated to PR presence and links to the PR's Checks tab; a branch with
-      // no PR shows just "No pull request" (no CI row).
+      // its CI checks: a summary line plus one row per individual check (issue #75). A branch with
+      // no PR shows just "No pull request" (no CI rows).
       VStack(alignment: .leading, spacing: 8) {
         if let pr = status.pr {
           prRows(pr)
-          // `gh run list` gives no URL of its own, but the PR's web URL + "/checks" is the
-          // canonical checks page.
-          if let ci = VCSStatusPresentation.ci(status) {
-            ciRow(ci, checksURL: URL(string: pr.url + "/checks"))
+          // Summary glyph, tappable → the PR's "/checks" tab. Derived from the loaded per-check list
+          // so it can't contradict the rows below; falls back to the `gh run list` aggregate only
+          // before checks have loaded (see `checksSummaryGlyph`).
+          if let summary = checksSummaryGlyph(status) {
+            ciRow(summary, checksURL: URL(string: pr.url + "/checks"))
           }
+          checkRows(status)
         } else {
           noPullRequestRow
         }
@@ -132,16 +134,66 @@ struct PullRequestPanel: View {
   /// A single reviewer row. `linked` adds the open-in-browser chevron (and a hit-testable shape)
   /// used when the reviewer has a review permalink to deep-link to.
   private func reviewerRow(_ reviewer: PRPresentation.ReviewerBadge, linked: Bool) -> some View {
+    statusLinkRow(
+      symbol: reviewer.symbol, color: reviewer.semantic.color, name: reviewer.displayName,
+      stateLabel: reviewer.stateLabel, linked: linked)
+  }
+
+  /// A status row: a colored glyph + a primary name + a secondary state label, with an optional
+  /// open-in-browser chevron (and hit-testable shape) when `linked`. Shared by the per-reviewer rows
+  /// (issue #52) and the per-CI-check rows (issue #75) — they're structurally identical.
+  private func statusLinkRow(
+    symbol: String, color: Color, name: String, stateLabel: String, linked: Bool
+  ) -> some View {
     HStack(spacing: 6) {
-      Image(systemName: reviewer.symbol).foregroundStyle(reviewer.semantic.color)
-      Text(reviewer.displayName).font(.footnote).lineLimit(1).truncationMode(.tail)
-      Text(reviewer.stateLabel).font(.footnote).foregroundStyle(.secondary)
+      Image(systemName: symbol).foregroundStyle(color)
+      Text(name).font(.footnote).lineLimit(1).truncationMode(.tail)
+      Text(stateLabel).font(.footnote).foregroundStyle(.secondary)
       if linked {
         Image(systemName: "arrow.up.right").font(.caption).foregroundStyle(.secondary)
       }
       Spacer(minLength: 0)
     }
     .contentShape(Rectangle())
+  }
+
+  /// The summary CI glyph for the panel: derived from the loaded per-check list (so it never
+  /// contradicts the rows), falling back to the `gh run list` aggregate only before checks load.
+  /// `checksCheckedAt` is the loaded marker — once set, the (possibly empty) `checks` is authoritative.
+  private func checksSummaryGlyph(_ s: WorkroomStatus) -> VCSStatusPresentation.CIGlyph? {
+    if s.checksCheckedAt != nil {
+      return PRPresentation.checksSummary(s.checks ?? [])
+    }
+    return VCSStatusPresentation.ci(s)
+  }
+
+  /// One row per CI check (issue #75): glyph + name + state label. A check with a details URL becomes
+  /// a tappable open-in-browser link straight to that check; the rest are plain rows. Renders nothing
+  /// until checks load (the summary line carries the run-list aggregate meanwhile — progressive fill).
+  @ViewBuilder
+  private func checkRows(_ status: WorkroomStatus) -> some View {
+    ForEach(PRPresentation.checks(status.checks ?? [])) { check in
+      if let url = check.link.flatMap(URL.init(string:)) {
+        Button {
+          openURL(url)
+        } label: {
+          statusLinkRow(
+            symbol: check.symbol, color: check.semantic.color, name: check.name,
+            stateLabel: check.stateLabel, linked: true)
+        }
+        .buttonStyle(.plain)
+        .help("Open \(check.name) check on GitHub")
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(check.accessibility), open check on GitHub")
+      } else {
+        statusLinkRow(
+          symbol: check.symbol, color: check.semantic.color, name: check.name,
+          stateLabel: check.stateLabel, linked: false
+        )
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(check.accessibility)
+      }
+    }
   }
 
   private var noPullRequestRow: some View {
@@ -210,6 +262,21 @@ extension PRPresentation.ReviewSemantic {
     case .requested: return .orange
     case .commented: return .secondary
     case .dismissed: return .secondary
+    }
+  }
+}
+
+extension PRPresentation.CheckSemantic {
+  /// Semantic → SwiftUI color for a per-check row glyph. Mirrors GitHub: passing green, failing red,
+  /// pending amber; skipped/cancelled stay quiet (the glyph carries it). Plain colors (like the
+  /// reviewer rows), so the two row kinds read consistently.
+  var color: Color {
+    switch self {
+    case .passing: return .green
+    case .failing: return .red
+    case .pending: return .orange
+    case .skipped: return .secondary
+    case .cancelled: return .secondary
     }
   }
 }

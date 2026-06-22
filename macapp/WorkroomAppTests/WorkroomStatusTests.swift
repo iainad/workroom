@@ -469,4 +469,190 @@ final class WorkroomStatusTests: XCTestCase {
     XCTAssertEqual(single.dir, "config")
     XCTAssertEqual(single.name, "routes.rb")
   }
+
+  // MARK: - PRPresentation.checks / checksSummary (issue #75: per-check rows)
+
+  private func check(
+    _ name: String, _ state: CICheck.State, workflow: String? = nil, link: String? = nil
+  ) -> CICheck {
+    CICheck(name: name, state: state, workflow: workflow, link: link)
+  }
+
+  func testChecksEmpty() {
+    XCTAssertTrue(PRPresentation.checks([]).isEmpty)
+    XCTAssertNil(PRPresentation.checksSummary([]))
+  }
+
+  func testChecksStateMapping() {
+    let badges = PRPresentation.checks([
+      check("a", .passing), check("b", .failing), check("c", .pending),
+      check("d", .skipped), check("e", .cancelled),
+    ])
+    func badge(_ n: String) -> PRPresentation.CheckBadge { badges.first { $0.name == n }! }
+    XCTAssertEqual(badge("a").symbol, "checkmark.circle.fill")
+    XCTAssertEqual(badge("a").semantic, .passing)
+    XCTAssertEqual(badge("a").stateLabel, "passing")
+    XCTAssertEqual(badge("b").symbol, "xmark.octagon.fill")
+    XCTAssertEqual(badge("b").semantic, .failing)
+    XCTAssertEqual(badge("b").stateLabel, "failing")
+    XCTAssertEqual(badge("c").symbol, "clock.arrow.circlepath")
+    XCTAssertEqual(badge("c").stateLabel, "running")
+    XCTAssertEqual(badge("d").symbol, "minus.circle")
+    XCTAssertEqual(badge("d").stateLabel, "skipped")
+    XCTAssertEqual(badge("e").symbol, "minus.circle")
+    XCTAssertEqual(badge("e").stateLabel, "cancelled")
+    XCTAssertEqual(badge("a").accessibility, "a passing")
+  }
+
+  /// Sort: failing → pending → passing → skipped → cancelled; within a band, by workflow then name.
+  func testChecksSortBySeverityThenWorkflowThenName() {
+    let badges = PRPresentation.checks([
+      check("build", .passing, workflow: "ci"),
+      check("test-b", .failing, workflow: "ci"),
+      check("test-a", .failing, workflow: "ci"),
+      check("deploy", .pending, workflow: "cd"),
+      check("lint", .passing, workflow: "ci"),
+    ])
+    XCTAssertEqual(badges.map(\.name), ["test-a", "test-b", "deploy", "build", "lint"])
+  }
+
+  /// Within a severity band, same-workflow jobs group together (workflow ordered before name).
+  func testChecksSortGroupsByWorkflow() {
+    let badges = PRPresentation.checks([
+      check("z-job", .passing, workflow: "zoo"),
+      check("a-job", .passing, workflow: "zoo"),
+      check("m-job", .passing, workflow: "apple"),
+    ])
+    XCTAssertEqual(badges.map(\.name), ["m-job", "a-job", "z-job"])
+  }
+
+  /// Link passthrough drives row tappability: a non-empty link survives, nil stays nil.
+  func testChecksLinkPassthrough() {
+    let badges = PRPresentation.checks([
+      check("a", .passing, link: "https://x/a"), check("b", .passing, link: nil),
+    ])
+    XCTAssertEqual(badges.first { $0.name == "a" }?.link, "https://x/a")
+    XCTAssertNil(badges.first { $0.name == "b" }?.link)
+  }
+
+  func testChecksSummaryPrecedence() {
+    // fail dominates everything
+    XCTAssertEqual(
+      PRPresentation.checksSummary([
+        check("a", .passing), check("b", .failing), check("c", .pending),
+      ])?
+      .semantic, .ciFail)
+    // pending over passing
+    XCTAssertEqual(
+      PRPresentation.checksSummary([check("a", .passing), check("b", .pending)])?.semantic,
+      .ciRunning)
+    // passing over neutral
+    XCTAssertEqual(
+      PRPresentation.checksSummary([check("a", .passing), check("b", .skipped)])?.semantic, .ciPass)
+    // neutral only
+    XCTAssertEqual(
+      PRPresentation.checksSummary([check("a", .skipped), check("b", .cancelled)])?.semantic,
+      .neutral)
+  }
+
+  // MARK: - applyChecksStatus + checks lifecycle (issue #75)
+
+  @MainActor
+  func testApplyChecksStatusListAbsentKeepPrior() {
+    let store = AppStore()
+    store.projects = [Project(path: "/p", vcs: "git", workrooms: [])]
+    let sid = SidebarID.root(project: "/p")
+    store.workroomStatuses[sid] = WorkroomStatus(dirty: false)
+
+    // .list → rows set + loaded marker stamped
+    store.applyChecksStatus(.list([check("a", .passing)]), to: sid)
+    XCTAssertEqual(store.workroomStatuses[sid]?.checks?.count, 1)
+    XCTAssertNotNil(store.workroomStatuses[sid]?.checksCheckedAt)
+
+    // .absent → loaded-empty ([]), NOT nil — so the panel won't fall back to the run-list aggregate
+    store.applyChecksStatus(.absent, to: sid)
+    XCTAssertEqual(store.workroomStatuses[sid]?.checks, [])
+    XCTAssertNotNil(store.workroomStatuses[sid]?.checksCheckedAt)
+
+    // .keepPrior after a prior load → keeps the last good list (doesn't blank)
+    store.applyChecksStatus(.list([check("z", .failing)]), to: sid)
+    store.applyChecksStatus(.keepPrior, to: sid)
+    XCTAssertEqual(store.workroomStatuses[sid]?.checks?.map(\.name), ["z"])
+  }
+
+  /// keepPrior on a first-ever probe (never loaded) leaves the marker nil so the next probe retries.
+  @MainActor
+  func testApplyChecksStatusKeepPriorFirstProbeStaysUnloaded() {
+    let store = AppStore()
+    store.projects = [Project(path: "/p", vcs: "git", workrooms: [])]
+    let sid = SidebarID.root(project: "/p")
+    store.workroomStatuses[sid] = WorkroomStatus(dirty: false)
+    store.applyChecksStatus(.keepPrior, to: sid)
+    XCTAssertNil(store.workroomStatuses[sid]?.checks)
+    XCTAssertNil(store.workroomStatuses[sid]?.checksCheckedAt)
+  }
+
+  /// REGRESSION (issue #75): selecting a row whose PR number changed must drop the old PR's checks
+  /// so they can't render under the new PR until `resolveChecks` refills them.
+  @MainActor
+  func testApplyPRStatusClearsChecksOnPRNumberChange() {
+    let store = AppStore()
+    store.projects = [Project(path: "/p", vcs: "git", workrooms: [])]
+    let sid = SidebarID.root(project: "/p")
+    store.workroomStatuses[sid] = WorkroomStatus(
+      dirty: false,
+      pr: PullRequestInfo(
+        number: 5, title: "t", state: .open, isDraft: false, url: "u", reviewDecision: nil,
+        reviewers: []),
+      checks: [check("old", .passing)])
+    store.workroomStatuses[sid]?.checksCheckedAt = Date()
+    store.applyPRStatus(
+      .info(
+        PullRequestInfo(
+          number: 9, title: "t2", state: .open, isDraft: false, url: "u2", reviewDecision: nil,
+          reviewers: [])), to: sid)
+    XCTAssertNil(store.workroomStatuses[sid]?.checks)
+    XCTAssertNil(store.workroomStatuses[sid]?.checksCheckedAt)
+  }
+
+  /// The same PR number (e.g. the raw→enriched re-apply) keeps the checks.
+  @MainActor
+  func testApplyPRStatusKeepsChecksOnSamePRNumber() {
+    let store = AppStore()
+    store.projects = [Project(path: "/p", vcs: "git", workrooms: [])]
+    let sid = SidebarID.root(project: "/p")
+    store.workroomStatuses[sid] = WorkroomStatus(
+      dirty: false,
+      pr: PullRequestInfo(
+        number: 5, title: "t", state: .open, isDraft: false, url: "u", reviewDecision: nil,
+        reviewers: []),
+      checks: [check("keep", .passing)])
+    store.workroomStatuses[sid]?.checksCheckedAt = Date()
+    store.applyPRStatus(
+      .info(
+        PullRequestInfo(
+          number: 5, title: "t", state: .open, isDraft: false, url: "u", reviewDecision: .approved,
+          reviewers: [Reviewer(identity: .user(login: "a"), state: .approved)])), to: sid)
+    XCTAssertEqual(store.workroomStatuses[sid]?.checks?.map(\.name), ["keep"])
+  }
+
+  /// REGRESSION (issue #75): a disappearing PR (.absent) must clear checks — `resolveChecks` won't
+  /// run without a PR, so the clearing has to happen on the PR path.
+  @MainActor
+  func testApplyPRStatusAbsentClearsChecks() {
+    let store = AppStore()
+    store.projects = [Project(path: "/p", vcs: "git", workrooms: [])]
+    let sid = SidebarID.root(project: "/p")
+    store.workroomStatuses[sid] = WorkroomStatus(
+      dirty: false,
+      pr: PullRequestInfo(
+        number: 5, title: "t", state: .open, isDraft: false, url: "u", reviewDecision: nil,
+        reviewers: []),
+      checks: [check("old", .passing)])
+    store.workroomStatuses[sid]?.checksCheckedAt = Date()
+    store.applyPRStatus(.absent, to: sid)
+    XCTAssertNil(store.workroomStatuses[sid]?.pr)
+    XCTAssertNil(store.workroomStatuses[sid]?.checks)
+    XCTAssertNil(store.workroomStatuses[sid]?.checksCheckedAt)
+  }
 }

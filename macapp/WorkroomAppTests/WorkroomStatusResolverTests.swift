@@ -1014,4 +1014,123 @@ final class WorkroomStatusResolverTests: XCTestCase {
     XCTAssertNotNil(authCall, "resolveGitHubCLI should invoke `gh auth status`")
     XCTAssertEqual(authCall?.args, ["auth", "status", "--active"])
   }
+
+  // MARK: - classifyChecks (issue #75)
+
+  /// All-pass: exit 0 + JSON → the full list, name/state/workflow/link mapped from `bucket`.
+  func testClassifyChecksAllPass() {
+    let json = #"""
+      [{"name":"build","bucket":"pass","state":"SUCCESS","link":"https://x/b","workflow":"CI"},
+       {"name":"lint","bucket":"pass","state":"SUCCESS","link":"https://x/l","workflow":"CI"}]
+      """#
+    guard case .list(let checks) = WorkroomStatusResolver.classifyChecks(ok(json)) else {
+      return XCTFail("expected .list")
+    }
+    XCTAssertEqual(checks.count, 2)
+    XCTAssertEqual(checks.first { $0.name == "build" }?.state, .passing)
+    XCTAssertEqual(checks.first { $0.name == "build" }?.link, "https://x/b")
+    XCTAssertEqual(checks.first { $0.name == "build" }?.workflow, "CI")
+  }
+
+  /// REGRESSION (exit-code overload): a *failed* check makes `gh pr checks` exit 1, but the JSON is
+  /// still on stdout — we must parse it, not treat exit 1 as a hard failure.
+  func testClassifyChecksFailingExit1ParsesJSON() {
+    let json =
+      #"[{"name":"test","bucket":"fail","state":"FAILURE","link":"https://x/t","workflow":"CI"}]"#
+    let r = CommandResult(stdout: json, stderr: "", exitCode: 1, timedOut: false)
+    guard case .list(let checks) = WorkroomStatusResolver.classifyChecks(r) else {
+      return XCTFail("expected .list despite exit 1")
+    }
+    XCTAssertEqual(checks.first?.state, .failing)
+  }
+
+  /// REGRESSION (exit-code overload): pending checks make `gh pr checks` exit 8, with JSON on stdout.
+  func testClassifyChecksPendingExit8ParsesJSON() {
+    let json =
+      #"[{"name":"e2e","bucket":"pending","state":"IN_PROGRESS","link":"","workflow":"CI"}]"#
+    let r = CommandResult(stdout: json, stderr: "", exitCode: 8, timedOut: false)
+    guard case .list(let checks) = WorkroomStatusResolver.classifyChecks(r) else {
+      return XCTFail("expected .list despite exit 8")
+    }
+    XCTAssertEqual(checks.first?.state, .pending)
+    XCTAssertNil(checks.first?.link)  // empty link string → nil (row not tappable)
+  }
+
+  /// Every `bucket` value maps to the right state; an unknown bucket falls back to `.skipped`.
+  func testClassifyChecksBucketMapping() {
+    let json = #"""
+      [{"name":"a","bucket":"pass"},{"name":"b","bucket":"fail"},{"name":"c","bucket":"pending"},
+       {"name":"d","bucket":"skipping"},{"name":"e","bucket":"cancel"},{"name":"f","bucket":"???"}]
+      """#
+    guard case .list(let checks) = WorkroomStatusResolver.classifyChecks(ok(json)) else {
+      return XCTFail("expected .list")
+    }
+    let byName = Dictionary(uniqueKeysWithValues: checks.map { ($0.name, $0.state) })
+    XCTAssertEqual(byName["a"], .passing)
+    XCTAssertEqual(byName["b"], .failing)
+    XCTAssertEqual(byName["c"], .pending)
+    XCTAssertEqual(byName["d"], .skipped)
+    XCTAssertEqual(byName["e"], .cancelled)
+    XCTAssertEqual(byName["f"], .skipped)  // unknown bucket → quiet skipped, never dropped
+  }
+
+  /// A valid empty array ⇒ "loaded, no checks" → .absent (the store maps it to `[]`).
+  func testClassifyChecksEmptyArrayIsAbsent() {
+    XCTAssertEqual(WorkroomStatusResolver.classifyChecks(ok("[]")), .absent)
+  }
+
+  /// "No checks reported" on a branch: gh exits non-zero with an empty stdout + a stderr message.
+  func testClassifyChecksNoChecksReportedIsAbsent() {
+    let r = CommandResult(
+      stdout: "", stderr: "no checks reported on the 'main' branch", exitCode: 1, timedOut: false)
+    XCTAssertEqual(WorkroomStatusResolver.classifyChecks(r), .absent)
+  }
+
+  func testClassifyChecksGhMissingIsAbsent() {
+    let r = CommandResult(
+      stdout: "", stderr: "env: gh: No such file", exitCode: 127, timedOut: false)
+    XCTAssertEqual(WorkroomStatusResolver.classifyChecks(r), .absent)
+  }
+
+  func testClassifyChecksRateLimitKeepsPrior() {
+    let r = CommandResult(
+      stdout: "", stderr: "API rate limit exceeded", exitCode: 1, timedOut: false)
+    XCTAssertEqual(WorkroomStatusResolver.classifyChecks(r), .keepPrior)
+  }
+
+  func testClassifyChecksTimeoutKeepsPrior() {
+    let r = CommandResult(stdout: "", stderr: "", exitCode: 0, timedOut: true)
+    XCTAssertEqual(WorkroomStatusResolver.classifyChecks(r), .keepPrior)
+  }
+
+  /// Non-empty but unparseable stdout (truncated output / schema change) keeps the last good rows,
+  /// mirroring classifyCI/classifyPR — only an EMPTY stdout falls through to .absent.
+  func testClassifyChecksMalformedKeepsPrior() {
+    XCTAssertEqual(WorkroomStatusResolver.classifyChecks(ok("not json")), .keepPrior)
+  }
+
+  // MARK: - resolveChecks (end-to-end via the mock)
+
+  /// git: `gh pr checks <number>` runs in the workroom path with the right args.
+  func testResolveChecksGitRunsInPath() async {
+    let json = #"[{"name":"build","bucket":"pass"}]"#
+    let runner = RecordingStatusRunner { exe, _ in exe == "gh" ? ok(json) : ok("") }
+    let r = WorkroomStatusResolver(runner: runner)
+    let res = await r.resolveChecks(path: "/proj", vcs: "git", projectRoot: "/proj", number: 9)
+    XCTAssertEqual(res, .list([CICheck(name: "build", state: .passing, workflow: nil, link: nil)]))
+    let gh = runner.calls.first { $0.exe == "gh" }
+    XCTAssertEqual(gh?.dir, "/proj")
+    XCTAssertEqual(gh?.args.prefix(3).map { $0 }, ["pr", "checks", "9"])
+  }
+
+  /// jj: `gh` must run from the colocated project root (the workspace has no `.git`).
+  func testResolveChecksJJRunsInProjectRoot() async {
+    let runner = RecordingStatusRunner { exe, _ in exe == "gh" ? ok("[]") : ok("") }
+    let r = WorkroomStatusResolver(runner: runner)
+    let res = await r.resolveChecks(path: "/proj/ws", vcs: "jj", projectRoot: "/proj", number: 3)
+    XCTAssertEqual(res, .absent)  // [] → loaded, no checks
+    let gh = runner.calls.first { $0.exe == "gh" }
+    XCTAssertEqual(gh?.dir, "/proj")
+    XCTAssertTrue(gh?.args.contains("3") ?? false)
+  }
 }

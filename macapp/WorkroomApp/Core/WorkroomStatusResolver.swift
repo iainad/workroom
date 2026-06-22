@@ -16,6 +16,15 @@ enum PRResolution: Equatable, Sendable {
   case keepPrior
 }
 
+/// What a PR-checks probe decided (issue #75). `list([])` is a valid "loaded, no checks" result —
+/// distinct from `absent`. `keepPrior` (transient rate-limit/network blip) keeps the last good list
+/// so a flaky `gh` doesn't flicker the panel's check rows.
+enum ChecksResolution: Equatable, Sendable {
+  case list([CICheck])
+  case absent  // gh missing/unauth, no remote, or no checks reported
+  case keepPrior
+}
+
 /// Resolves a workroom's VCS + CI status app-side by shelling to git/jj/gh. App-side (not in
 /// the `workroom --json` contract) for the same reasons as `BranchResolver`: GUI-only, keeps
 /// `list` instant, isolates a slow repo to its own row. Stage 1 (`resolveLocal`) is fast/local;
@@ -201,6 +210,18 @@ struct WorkroomStatusResolver: Sendable {
   func resolvePR(path: String, vcs: String, projectRoot: String, branch: String?) async
     -> PRResolution
   {
+    let res = await resolvePRRaw(path: path, vcs: vcs, projectRoot: projectRoot, branch: branch)
+    return await enrichPR(res, path: path, vcs: vcs, projectRoot: projectRoot)
+  }
+
+  /// The classified PR (`gh pr list`) *without* the reviewer-permalink enrichment round-trip. The
+  /// selection flow uses this so it has the PR `number` immediately — letting `resolveChecks` and the
+  /// (slower, conditional) reviewer-URL enrichment run concurrently instead of checks waiting behind
+  /// enrichment (issue #75, Codex #5). `resolvePR` composes this + `enrichPR` to preserve its old
+  /// behaviour for any other caller.
+  func resolvePRRaw(path: String, vcs: String, projectRoot: String, branch: String?) async
+    -> PRResolution
+  {
     guard
       let target = await ghProbeTarget(
         path: path, vcs: vcs, projectRoot: projectRoot, branch: branch)
@@ -212,8 +233,33 @@ struct WorkroomStatusResolver: Sendable {
         "pr", "list", "--head", target.branch, "--state", "all", "--limit", "1", "--json",
         "number,title,state,isDraft,url,reviewDecision,latestReviews,reviewRequests",
       ], in: target.dir, timeout: ciTimeout)
-    let res = Self.classifyPR(r)
-    return await enrichReviewURLs(res, in: target.dir)
+    return Self.classifyPR(r)
+  }
+
+  /// Attach reviewer permalinks to an already-classified PR. Runs `gh` in the same repo context as
+  /// the read probes (jj → colocated project root). A no-op for `.absent`/`.keepPrior` (and for a PR
+  /// with no submitted reviews — see `enrichReviewURLs`), so it's safe to call unconditionally.
+  func enrichPR(_ res: PRResolution, path: String, vcs: String, projectRoot: String) async
+    -> PRResolution
+  {
+    let dir = Self.ghProbeDirectory(path: path, vcs: vcs, projectRoot: projectRoot)
+    return await enrichReviewURLs(res, in: dir)
+  }
+
+  /// The PR's individual CI checks (issue #75) via `gh pr checks <number>`. Keyed off the PR
+  /// `number`, so unlike CI/PR it needs no branch resolution — just the gh repo context (jj →
+  /// colocated project root, like the other probes). The pure `classifyChecks` decides from stdout
+  /// regardless of exit code (see its doc), so a "pending" (exit 8) or "a check failed" (exit 1) run
+  /// still yields the list rather than being misread as a hard failure.
+  func resolveChecks(path: String, vcs: String, projectRoot: String, number: Int) async
+    -> ChecksResolution
+  {
+    let dir = Self.ghProbeDirectory(path: path, vcs: vcs, projectRoot: projectRoot)
+    let r = await runner.run(
+      "gh",
+      ["pr", "checks", "\(number)", "--json", "name,state,bucket,link,workflow"],
+      in: dir, timeout: ciTimeout)
+    return Self.classifyChecks(r)
   }
 
   /// Attach each submitted reviewer's review permalink so the PR panel can deep-link a row to its
@@ -714,5 +760,66 @@ struct WorkroomStatusResolver: Sendable {
       PullRequestInfo(
         number: raw.number, title: raw.title, state: state, isDraft: raw.isDraft, url: raw.url,
         reviewDecision: review, reviewers: Array(reviewersByID.values)))
+  }
+
+  /// Decode `gh pr checks <n> --json name,state,bucket,link,workflow` into the per-check list.
+  ///
+  /// CRITICAL: `gh pr checks` overloads its exit code — `8` = checks pending, `1` = a check *failed*
+  /// OR no-checks/other error, `0` = all pass — yet it still writes the JSON array to stdout for the
+  /// pending/failing cases. So this decides from the JSON, NOT the exit code, and deliberately does
+  /// NOT use `ghPreflight` (whose `!r.ok ⇒ .absent` rule is exactly wrong here). Parse stdout first;
+  /// only when there's no usable JSON do we fall back to gh's failure modes (missing/blip/absent).
+  ///
+  /// A valid empty array (`[]`) ⇒ `.absent` ("loaded, no checks" — the store maps it to `[]`). A
+  /// transient blip with no stdout ⇒ `.keepPrior` so the rows don't flicker.
+  static func classifyChecks(_ r: CommandResult) -> ChecksResolution {
+    struct Raw: Decodable {
+      let name: String?
+      let bucket: String?
+      let state: String?
+      let link: String?
+      let workflow: String?
+    }
+    let trimmed = r.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+    if !trimmed.isEmpty {
+      guard let data = r.stdout.data(using: .utf8),
+        let raws = try? JSONDecoder().decode([Raw].self, from: data)
+      else {
+        // Non-empty but unparseable (truncated output / a gh schema change) must NOT blank the rows
+        // — keep the last good list, like classifyCI/classifyPR do for malformed JSON.
+        return .keepPrior
+      }
+      let checks: [CICheck] = raws.compactMap { raw in
+        guard let name = raw.name, !name.isEmpty else { return nil }
+        return CICheck(
+          name: name,
+          state: Self.checkState(bucket: raw.bucket),
+          workflow: raw.workflow.flatMap { $0.isEmpty ? nil : $0 },
+          link: raw.link.flatMap { $0.isEmpty ? nil : $0 })
+      }
+      // Empty array, or rows that all lacked a usable name ⇒ genuinely no checks to show.
+      return checks.isEmpty ? .absent : .list(checks)
+    }
+    // Empty stdout (gh wrote nothing): distinguish gh-missing / transient blip / hard absence.
+    if r.timedOut { return .keepPrior }
+    if r.exitCode == CommandResult.commandNotFound { return .absent }  // gh not installed
+    let lowerErr = r.stderr.lowercased()
+    if lowerErr.contains("rate limit") || lowerErr.contains("503") || lowerErr.contains("timeout") {
+      return .keepPrior
+    }
+    return .absent  // no checks reported / auth failure / no remote / etc.
+  }
+
+  /// gh's normalized `bucket` → our `CICheck.State`. Unknown ⇒ `.skipped` (quiet) so a future gh
+  /// bucket value still renders a row rather than vanishing.
+  static func checkState(bucket: String?) -> CICheck.State {
+    switch bucket?.lowercased() {
+    case "pass": return .passing
+    case "fail": return .failing
+    case "pending": return .pending
+    case "skipping": return .skipped
+    case "cancel": return .cancelled
+    default: return .skipped
+    }
   }
 }

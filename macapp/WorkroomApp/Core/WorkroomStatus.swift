@@ -167,6 +167,23 @@ struct PullRequestInfo: Equatable, Sendable {
   let reviewers: [Reviewer]
 }
 
+/// One CI check on a pull request (issue #75), from `gh pr checks <n> --json
+/// name,state,bucket,link,workflow`. `state` is mapped from gh's normalized `bucket` (the most
+/// reliable field — `state` is the raw conclusion). `link` is the per-check details URL, blank for a
+/// check with nowhere to deep-link (then the row isn't tappable, like a pending reviewer). Pure data
+/// — the per-check glyph/label/sort live in `PRPresentation`.
+struct CICheck: Equatable, Sendable, Identifiable {
+  /// Mapped from gh's `bucket`: pass/fail/pending/skipping/cancel. An unknown bucket maps to
+  /// `.skipped` (quiet) rather than being dropped, so a future gh value still renders a row.
+  enum State: Equatable, Sendable { case passing, failing, pending, skipped, cancelled }
+  let name: String
+  let state: State
+  let workflow: String?  // workflow name; groups matrix jobs in the sort
+  let link: String?  // per-check URL; nil/"" ⇒ row not tappable
+  /// `workflow:name` so two checks of the same name in different workflows stay distinct `ForEach` keys.
+  var id: String { "\(workflow ?? "_"):\(name)" }
+}
+
 /// A point-in-time snapshot of one workroom's VCS + CI status, resolved app-side.
 ///
 /// `dirty == nil` means **unknown** (a probe failed) — never rendered as clean. `clean` is
@@ -199,12 +216,22 @@ struct WorkroomStatus: Equatable, Sendable {
   /// The branch's pull request (Phase 2), resolved by a separate slow `gh` probe like `ci`. `nil` ⇒
   /// none resolved (no PR, no remote, gh missing, or not yet probed).
   var pr: PullRequestInfo?
+  /// The PR's individual CI checks (issue #75), resolved by a separate `gh pr checks` probe on
+  /// selection. Three-state, deliberately: `nil` ⇒ **not loaded** (probe hasn't returned, so the
+  /// panel falls back to the `gh run list` aggregate summary); `[]` ⇒ **loaded, no checks** (the PR
+  /// genuinely has none, so the panel shows no summary/list rather than the stale aggregate);
+  /// non-empty ⇒ the checks to list. `checksCheckedAt` is the loaded marker that disambiguates `nil`
+  /// from `[]`. Cleared whenever the PR's identity changes or the PR goes away (see `applyPRStatus`).
+  var checks: [CICheck]?
   var lastChecked: Date?
   /// When CI was last probed — separate from `lastChecked` because CI has a much longer TTL
   /// (the local git probe refreshes often; the network `gh` call should not).
   var ciCheckedAt: Date?
   /// When the PR was last probed — its own TTL/backoff, like `ciCheckedAt`.
   var prCheckedAt: Date?
+  /// When the PR's checks were last probed. The loaded marker for `checks`: `nil` ⇒ not yet probed
+  /// (panel uses the run-list aggregate fallback); set ⇒ `checks` (possibly `[]`) is authoritative.
+  var checksCheckedAt: Date?
 
   /// Not yet probed (first render before the sweep resolves it).
   static let unresolved = WorkroomStatus()
@@ -443,5 +470,117 @@ enum PRPresentation {
   static func isBot(_ identity: Reviewer.Identity) -> Bool {
     guard case .user(let login) = identity else { return false }
     return login.hasSuffix("[bot]") || login == "copilot-pull-request-reviewer"
+  }
+
+  // MARK: Per-check rows (issue #75)
+
+  enum CheckSemantic: Equatable {
+    case passing, failing, pending, skipped, cancelled
+  }
+  /// One CI-check row: SF Symbol + semantic + a human state label, plus the check's details URL
+  /// (`nil` ⇒ row not tappable). `id` is the check's collision-free identity, a stable `ForEach` key.
+  struct CheckBadge: Equatable, Identifiable {
+    let id: String
+    let name: String
+    let symbol: String
+    let semantic: CheckSemantic
+    let stateLabel: String
+    let accessibility: String
+    let link: String?
+  }
+
+  /// The check rows for the PR panel, sorted by attention then grouping: failing first, then
+  /// pending, then pass/skip/cancel; within a severity band, same-workflow jobs stay together (so a
+  /// matrix's `test (ubuntu)`/`test (macos)` don't scatter), then by name. This is the ONLY place
+  /// check order is decided. Pure → unit-testable.
+  static func checks(_ checks: [CICheck]) -> [CheckBadge] {
+    checks
+      .sorted { lhs, rhs in
+        let l = checkSortRank(lhs.state)
+        let r = checkSortRank(rhs.state)
+        if l != r { return l < r }
+        let lw = lhs.workflow ?? ""
+        let rw = rhs.workflow ?? ""
+        if lw != rw { return lw < rw }
+        return lhs.name < rhs.name
+      }
+      .map(badge(for:))
+  }
+
+  private static func checkSortRank(_ s: CICheck.State) -> Int {
+    switch s {
+    case .failing: return 0
+    case .pending: return 1
+    case .passing: return 2
+    case .skipped: return 3
+    case .cancelled: return 4
+    }
+  }
+
+  private static func badge(for c: CICheck) -> CheckBadge {
+    let symbol: String
+    let semantic: CheckSemantic
+    let label: String
+    switch c.state {
+    case .passing:
+      symbol = "checkmark.circle.fill"
+      semantic = .passing
+      label = "passing"
+    case .failing:
+      symbol = "xmark.octagon.fill"
+      semantic = .failing
+      label = "failing"
+    case .pending:
+      symbol = "clock.arrow.circlepath"
+      semantic = .pending
+      label = "running"
+    case .skipped:
+      symbol = "minus.circle"
+      semantic = .skipped
+      label = "skipped"
+    case .cancelled:
+      symbol = "minus.circle"
+      semantic = .cancelled
+      label = "cancelled"
+    }
+    let link = c.link.flatMap { $0.isEmpty ? nil : $0 }
+    return CheckBadge(
+      id: c.id, name: c.name, symbol: symbol, semantic: semantic, stateLabel: label,
+      accessibility: "\(c.name) \(label)", link: link)
+  }
+
+  /// The aggregate summary glyph for the panel's CI line, *derived from the per-check list* so the
+  /// summary and the rows can never contradict (`gh pr checks` covers all checks; the `gh run list`
+  /// aggregate is Actions-only). Failure dominates > pending > passing > neutral (skip/cancel).
+  /// `nil` when there are no checks → the panel shows no summary line. Reuses `CIGlyph` so the
+  /// summary row renderer is unchanged.
+  static func checksSummary(_ checks: [CICheck]) -> VCSStatusPresentation.CIGlyph? {
+    guard !checks.isEmpty else { return nil }
+    var anyPending = false
+    var anyPassing = false
+    var anyNeutral = false
+    for c in checks {
+      switch c.state {
+      case .failing:
+        return VCSStatusPresentation.CIGlyph(
+          symbol: "xmark.octagon.fill", semantic: .ciFail, accessibility: "CI failing")
+      case .pending: anyPending = true
+      case .passing: anyPassing = true
+      case .skipped, .cancelled: anyNeutral = true
+      }
+    }
+    if anyPending {
+      return VCSStatusPresentation.CIGlyph(
+        symbol: "clock.arrow.circlepath", semantic: .ciRunning, accessibility: "CI running")
+    }
+    if anyPassing {
+      return VCSStatusPresentation.CIGlyph(
+        symbol: "checkmark.circle.fill", semantic: .ciPass, accessibility: "CI passing")
+    }
+    if anyNeutral {
+      return VCSStatusPresentation.CIGlyph(
+        symbol: "minus.circle", semantic: .neutral, accessibility: "CI cancelled")
+    }
+    return nil
   }
 }
