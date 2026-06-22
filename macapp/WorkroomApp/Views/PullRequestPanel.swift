@@ -110,48 +110,34 @@ struct PullRequestPanel: View {
     }
     // One row per reviewer: state glyph + name + state label (e.g. "Copilot in progress",
     // "iainad approved"). Glyph + label carry the meaning without relying on color. A reviewer who
-    // has *submitted* a review carries its permalink, so that row becomes a tappable open-in-browser
-    // link (same chevron affordance as the PR/CI rows) that jumps straight to their comment.
+    // has *submitted* a review carries its permalink, so the whole row is tappable and jumps to their
+    // comment (no chevron — the row itself is the tap target).
     ForEach(PRPresentation.reviewers(pr)) { reviewer in
       if let url = reviewer.url.flatMap(URL.init(string:)) {
         Button {
           openURL(url)
         } label: {
-          reviewerRow(reviewer, linked: true)
+          reviewerRow(reviewer)
         }
         .buttonStyle(.plain)
         .help("Open \(reviewer.displayName)\u{2019}s review on GitHub")
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(reviewer.accessibility), open review on GitHub")
       } else {
-        reviewerRow(reviewer, linked: false)
+        reviewerRow(reviewer)
           .accessibilityElement(children: .ignore)
           .accessibilityLabel(reviewer.accessibility)
       }
     }
   }
 
-  /// A single reviewer row. `linked` adds the open-in-browser chevron (and a hit-testable shape)
-  /// used when the reviewer has a review permalink to deep-link to.
-  private func reviewerRow(_ reviewer: PRPresentation.ReviewerBadge, linked: Bool) -> some View {
-    statusLinkRow(
-      symbol: reviewer.symbol, color: reviewer.semantic.color, name: reviewer.displayName,
-      stateLabel: reviewer.stateLabel, linked: linked)
-  }
-
-  /// A status row: a colored glyph + a primary name + a secondary state label, with an optional
-  /// open-in-browser chevron (and hit-testable shape) when `linked`. Used by the per-reviewer rows
-  /// (issue #52); CI-check rows use the leaner `checkRow` (glyph + name only).
-  private func statusLinkRow(
-    symbol: String, color: Color, name: String, stateLabel: String, linked: Bool
-  ) -> some View {
+  /// A single reviewer row: state glyph + name + state label. No open-in-browser chevron — when the
+  /// reviewer has a permalink the whole row is the tap target (see the `Button` wrap above).
+  private func reviewerRow(_ reviewer: PRPresentation.ReviewerBadge) -> some View {
     HStack(spacing: 6) {
-      Image(systemName: symbol).foregroundStyle(color)
-      Text(name).font(.footnote).lineLimit(1).truncationMode(.tail)
-      Text(stateLabel).font(.footnote).foregroundStyle(.secondary)
-      if linked {
-        Image(systemName: "arrow.up.right").font(.caption).foregroundStyle(.secondary)
-      }
+      Image(systemName: reviewer.symbol).foregroundStyle(reviewer.semantic.color)
+      Text(reviewer.displayName).font(.footnote).lineLimit(1).truncationMode(.tail)
+      Text(reviewer.stateLabel).font(.footnote).foregroundStyle(.secondary)
       Spacer(minLength: 0)
     }
     .contentShape(Rectangle())
