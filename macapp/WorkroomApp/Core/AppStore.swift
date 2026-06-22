@@ -306,6 +306,15 @@ final class AppStore: ObservableObject {
   let statusResolver = WorkroomStatusResolver()
   var statusSweepTask: Task<Void, Never>?
   var selectionStatusTask: Task<Void, Never>?
+  /// Keeps the selected workroom's local VCS status live (without polling) by watching its directory
+  /// for filesystem changes (issue #24 follow-up). Retargeted on selection; see
+  /// `updateSelectedWorkroomWatch` / `handleWorkroomFileChange`.
+  lazy var workroomFileWatcher = WorkroomFileWatcher { [weak self] paths in
+    self?.handleWorkroomFileChange(paths)
+  }
+  /// The watcher's local-refresh task (cancel-and-replace so the latest change wins and at most one
+  /// jj probe runs at a time — concurrent jj snapshots would contend on the working-copy lock).
+  var watchRefreshTask: Task<Void, Never>?
   /// When the project list was last loaded — used to throttle the on-focus refresh.
   private var lastLoadAt: Date = .distantPast
   /// The selection persisted from a previous launch (issue #14), applied once on the first

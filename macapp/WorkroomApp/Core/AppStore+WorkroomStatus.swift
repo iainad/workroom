@@ -103,6 +103,9 @@ extension AppStore {
   /// through rows doesn't fork a probe per row. Cancels the prior pending refresh.
   func scheduleSelectedStatusRefresh() {
     selectionStatusTask?.cancel()
+    // (Re)point the filesystem watcher at the newly-selected workroom so its local status stays live
+    // while you edit in its terminal (issue #24 follow-up). Cheap + safe to call on every selection.
+    updateSelectedWorkroomWatch()
     // Fixture mode keeps the deterministic seeded status — selecting a target must not fork a real
     // probe that would overwrite it.
     if UITestFixture.isActive { return }
@@ -417,5 +420,47 @@ extension AppStore {
       if s.checksCheckedAt != nil { s.checksCheckedAt = Date() }
     }
     workroomStatuses[sid] = s
+  }
+
+  // MARK: - Live filesystem watch (selected workroom)
+
+  /// Point the filesystem watcher at the selected workroom's directory, or stop it when nothing
+  /// statusable is selected. No-ops in fixture mode (the seeded status must stay deterministic).
+  func updateSelectedWorkroomWatch() {
+    guard !UITestFixture.isActive, let sid = selectedTargetID,
+      let item = selectedStatusWorkItem(for: sid)
+    else {
+      workroomFileWatcher.stop()
+      return
+    }
+    workroomFileWatcher.start(path: item.path)
+  }
+
+  /// React to a filesystem change under the selected workroom: re-probe its *local* status only
+  /// (dirty/ahead-behind/changed-files/jj head) and merge. CI/PR stay on their TTLs — a file save
+  /// shouldn't fire a `gh` call. Cancel-and-replace so the latest change wins and at most one probe
+  /// runs at a time.
+  func handleWorkroomFileChange(_ paths: [String]) {
+    guard !UITestFixture.isActive, let sid = selectedTargetID,
+      let item = selectedStatusWorkItem(for: sid)
+    else { return }
+    // A jj *local* probe snapshots `@` (writes under `.jj/`), which would itself trip the watcher —
+    // an endless refresh loop. So ignore a burst that touched ONLY jj-internal paths. (git probes are
+    // read-only, and `.git/index` changes from `git add` are real signal, so git events pass through.)
+    if item.vcs == "jj", !paths.isEmpty, paths.allSatisfy(Self.isJJInternalPath) { return }
+    let resolver = statusResolver
+    watchRefreshTask?.cancel()
+    watchRefreshTask = Task { [weak self] in
+      let fresh = await resolver.resolveLocal(path: item.path, vcs: item.vcs)
+      guard let self, !Task.isCancelled, self.selectedTargetID == sid else { return }
+      self.mergeLocalStatus(fresh, into: sid)
+    }
+  }
+
+  /// Whether an FSEvents path is inside a jj internal dir (a `.jj` path component) — used to skip the
+  /// snapshot self-trigger. Component-based so it doesn't match a working file merely named `.jj…`.
+  /// `nonisolated` (pure) so it's callable off the main actor.
+  nonisolated static func isJJInternalPath(_ path: String) -> Bool {
+    path.split(separator: "/").contains(".jj")
   }
 }
