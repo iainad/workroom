@@ -555,6 +555,28 @@ final class WorkroomStatusTests: XCTestCase {
       .neutral)
   }
 
+  /// `isFailing` (issue #77, the red header number badge): once checks are loaded, the per-check
+  /// list is authoritative; before then it falls back to the branch CI aggregate.
+  func testIsFailing() {
+    // checks loaded + a failing one → failing (the aggregate is ignored)
+    XCTAssertTrue(
+      PRPresentation.isFailing(
+        WorkroomStatus(ci: .passing, checks: [check("a", .failing)], checksCheckedAt: .distantPast))
+    )
+    // checks loaded, none failing → not failing even if the (stale) aggregate says failing
+    XCTAssertFalse(
+      PRPresentation.isFailing(
+        WorkroomStatus(ci: .failing, checks: [check("a", .passing)], checksCheckedAt: .distantPast))
+    )
+    // checks loaded but empty → not failing
+    XCTAssertFalse(
+      PRPresentation.isFailing(WorkroomStatus(checks: [], checksCheckedAt: .distantPast)))
+    // checks not yet loaded → fall back to the branch CI aggregate
+    XCTAssertTrue(PRPresentation.isFailing(WorkroomStatus(ci: .failing)))
+    XCTAssertFalse(PRPresentation.isFailing(WorkroomStatus(ci: .passing)))
+    XCTAssertFalse(PRPresentation.isFailing(WorkroomStatus()))
+  }
+
   // MARK: - applyChecksStatus + checks lifecycle (issue #75)
 
   @MainActor
@@ -654,5 +676,80 @@ final class WorkroomStatusTests: XCTestCase {
     XCTAssertNil(store.workroomStatuses[sid]?.pr)
     XCTAssertNil(store.workroomStatuses[sid]?.checks)
     XCTAssertNil(store.workroomStatuses[sid]?.checksCheckedAt)
+  }
+
+  // MARK: - performPRAction optimistic update + revert-on-failure (issue #77 follow-up)
+
+  /// A PR write action flips the PR state immediately (so the badge/buttons react on click), then —
+  /// when the `gh` command fails — reverts to the prior state and surfaces the error, so the UI
+  /// never lies about a change that didn't land.
+  @MainActor
+  func testPerformPRActionRevertsOnFailure() async {
+    let store = AppStore()
+    store.projects = [Project(path: "/p", vcs: "git", workrooms: [])]
+    store.statusResolver = WorkroomStatusResolver(
+      runner: StubPRRunner { _, _ in
+        CommandResult(stdout: "", stderr: "pr already ready", exitCode: 1, timedOut: false)
+      })
+    let sid = SidebarID.root(project: "/p")
+    let draft = PullRequestInfo(
+      number: 5, title: "t", state: .open, isDraft: true, url: "u", reviewDecision: nil,
+      reviewers: [])
+    store.workroomStatuses[sid] = WorkroomStatus(dirty: false, pr: draft)
+
+    store.performPRAction(.markReady, number: 5, on: sid)
+    // Optimistic: the draft flag is cleared the instant the action is invoked, before `gh` returns.
+    XCTAssertEqual(store.workroomStatuses[sid]?.pr?.isDraft, false)
+    XCTAssertTrue(store.prActionInFlight)
+
+    await waitUntilIdle(store)
+
+    // gh failed → reverted to the original draft, with the error surfaced.
+    XCTAssertEqual(store.workroomStatuses[sid]?.pr, draft)
+    XCTAssertEqual(store.errorTitle, "Couldn\u{2019}t ready for review")
+    XCTAssertEqual(store.errorMessage, "pr already ready")
+  }
+
+  /// Convert-to-draft also flips optimistically (open → draft) the instant it's invoked.
+  @MainActor
+  func testPerformPRActionConvertToDraftIsOptimistic() {
+    let store = AppStore()
+    store.projects = [Project(path: "/p", vcs: "git", workrooms: [])]
+    store.statusResolver = WorkroomStatusResolver(
+      runner: StubPRRunner { _, _ in
+        CommandResult(stdout: "", stderr: "boom", exitCode: 1, timedOut: false)
+      })
+    let sid = SidebarID.root(project: "/p")
+    store.workroomStatuses[sid] = WorkroomStatus(
+      dirty: false,
+      pr: PullRequestInfo(
+        number: 7, title: "t", state: .open, isDraft: false, url: "u", reviewDecision: nil,
+        reviewers: []))
+
+    store.performPRAction(.convertToDraft, number: 7, on: sid)
+    XCTAssertEqual(store.workroomStatuses[sid]?.pr?.isDraft, true)
+    XCTAssertEqual(store.workroomStatuses[sid]?.pr?.state, .open)
+  }
+
+  /// Spin until the in-flight `gh` task settles (the stub returns promptly), with a bound so a hang
+  /// fails the test rather than wedging it.
+  @MainActor
+  private func waitUntilIdle(_ store: AppStore) async {
+    let deadline = Date().addingTimeInterval(2)
+    while store.prActionInFlight && Date() < deadline {
+      try? await Task.sleep(nanoseconds: 2_000_000)
+    }
+    XCTAssertFalse(store.prActionInFlight, "PR action did not settle")
+  }
+}
+
+/// A `StatusCommandRunning` returning a canned result for the `gh pr …` write command, so
+/// `performPRAction`'s success/failure handling is exercised without spawning real `gh`.
+private struct StubPRRunner: StatusCommandRunning {
+  let handler: @Sendable (_ executable: String, _ args: [String]) -> CommandResult
+  func run(_ executable: String, _ args: [String], in directory: String, timeout: TimeInterval)
+    async -> CommandResult
+  {
+    handler(executable, args)
   }
 }

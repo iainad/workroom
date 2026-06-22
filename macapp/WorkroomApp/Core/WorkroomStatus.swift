@@ -165,7 +165,7 @@ struct PullRequestInfo: Equatable, Sendable {
   let url: String
   let reviewDecision: ReviewDecision?
   /// Per-reviewer status (issue #52). No default: every construction site must pass it, so the
-  /// compiler — not a runtime test — guarantees a rebuild (e.g. `applyFixturePRAction`) can't
+  /// compiler — not a runtime test — guarantees a rebuild (e.g. `applyOptimisticPRAction`) can't
   /// silently drop reviewers. Order is not significant here; `PRPresentation.reviewers` sorts.
   let reviewers: [Reviewer]
 }
@@ -585,5 +585,16 @@ enum PRPresentation {
         symbol: "minus.circle", semantic: .neutral, accessibility: "CI cancelled")
     }
     return nil
+  }
+
+  /// Whether the PR's CI is failing — drives the red header number badge (issue #77). Uses the
+  /// loaded per-check list when authoritative (`checksCheckedAt` set, mirroring the panel's
+  /// `checksSummaryGlyph`), falling back to the branch CI aggregate (`WorkroomStatus.ci`) before the
+  /// checks probe returns. Pure → unit-testable.
+  static func isFailing(_ s: WorkroomStatus) -> Bool {
+    if s.checksCheckedAt != nil {
+      return checksSummary(s.checks ?? [])?.semantic == .ciFail
+    }
+    return s.ci == .failing
   }
 }

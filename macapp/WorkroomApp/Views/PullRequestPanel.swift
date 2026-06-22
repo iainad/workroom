@@ -1,8 +1,9 @@
 import SwiftUI
 
 /// The "Pull Request" inspector section (issue #24, Phase 2): the pull request for the selected
-/// workroom's branch — its state (open/draft/merged/closed), number, title (a link), and review
-/// decision. Read-only in this iteration; create/merge/rebase actions come later. Reads
+/// workroom's branch — its full (wrapping) title, review decision, per-reviewer rows, and CI
+/// checks. The PR's state + number + open-in-browser link live in the section header's number badge
+/// (see `RightInspector.prNumberLink`, issue #77), not here. Reads
 /// `store.selectedTargetID` + `store.workroomStatuses[sid].pr`, which a slow `gh pr list` probe
 /// fills on selection (like CI). Covers the same edge states as the Changes panel: nothing
 /// selected, a project (non-target), still-probing, and no PR for the branch.
@@ -81,28 +82,14 @@ struct PullRequestPanel: View {
 
   @ViewBuilder
   private func prRows(_ pr: PullRequestInfo) -> some View {
-    let badge = PRPresentation.badge(pr)
-    // Status + an open-in-browser affordance, linking to the PR. The number lives in the section
-    // header badge now, so it's dropped here.
-    Button {
-      if let url = URL(string: pr.url) { openURL(url) }
-    } label: {
-      HStack(spacing: 6) {
-        Image(systemName: badge.symbol).foregroundStyle(badge.semantic.color)
-        Text(badge.label).fontWeight(.medium).foregroundStyle(badge.semantic.color)
-        Image(systemName: "arrow.up.right").font(.caption).foregroundStyle(.secondary)
-        Spacer(minLength: 0)
-      }
-      .font(.callout)
-      .contentShape(Rectangle())
-    }
-    .buttonStyle(.plain)
-    .help("Open pull request #\(String(pr.number)) in browser")
-    .accessibilityLabel("\(badge.label), pull request #\(String(pr.number)), open in browser")
+    // Full PR title, wrapping onto as many lines as it needs (issue #77). The PR's state and the
+    // open-in-browser link now live in the section-header number badge, so the panel leads with the
+    // title rather than repeating a status label/link here.
     Text(pr.title)
       .font(.callout)
       .foregroundStyle(.primary)
-      .lineLimit(2).truncationMode(.tail)
+      .fixedSize(horizontal: false, vertical: true)
+      .frame(maxWidth: .infinity, alignment: .leading)
     // Aggregate decision header (issue #52): always shown when GitHub reports one, so a
     // branch-protected PR that's REVIEW_REQUIRED with no named reviewers still shows a signal.
     if let review = PRPresentation.reviewLabel(pr.reviewDecision) {

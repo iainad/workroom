@@ -167,10 +167,13 @@ extension AppStore {
   /// status instead of spawning `gh`, so the actions menu is exercisable hermetically.
   func performPRAction(_ action: PRAction, number: Int, on sid: SidebarID) {
     guard let item = selectedStatusWorkItem(for: sid) else { return }
-    if UITestFixture.isActive {
-      applyFixturePRAction(action, on: sid)
-      return
-    }
+    // Flip the PR state immediately so the badge/buttons react the instant the user acts — otherwise
+    // nothing visibly changes during the (multi-second) `gh` call + status re-probe, which reads as
+    // "the click did nothing". Keep the prior PR to restore if `gh` fails (and in fixture mode, this
+    // optimistic update *is* the result — no `gh` to confirm it).
+    let priorPR = workroomStatuses[sid]?.pr
+    applyOptimisticPRAction(action, on: sid)
+    if UITestFixture.isActive { return }
     prActionInFlight = true
     let resolver = statusResolver
     // Run `gh pr …` where the read probes run: in-place for git, but the colocated project root for
@@ -182,8 +185,14 @@ extension AppStore {
       guard let self else { return }
       self.prActionInFlight = false
       if r.ok {
+        // Re-probe to replace the optimistic state with GitHub's authoritative one.
         self.scheduleSelectedStatusRefresh()
       } else {
+        // The command failed — undo the optimistic flip so the UI doesn't lie, then surface stderr.
+        if var s = self.workroomStatuses[sid] {
+          s.pr = priorPR
+          self.workroomStatuses[sid] = s
+        }
         self.errorTitle = "Couldn’t \(action.label.lowercased())"
         let stderr = r.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
         self.errorMessage = stderr.isEmpty ? "The gh command failed." : stderr
@@ -191,9 +200,10 @@ extension AppStore {
     }
   }
 
-  /// Fixture-only: optimistically reflect a PR action in the seeded status (no `gh`), so the menu +
-  /// confirm dialog are demoable and the badge/state visibly update.
-  private func applyFixturePRAction(_ action: PRAction, on sid: SidebarID) {
+  /// Optimistically reflect a PR action in the in-memory status (no `gh`): the badge/state flip
+  /// immediately on click, before the command returns. The real path restores the prior PR if `gh`
+  /// fails and re-probes on success; fixture mode keeps this as the final result.
+  private func applyOptimisticPRAction(_ action: PRAction, on sid: SidebarID) {
     guard var s = workroomStatuses[sid], let pr = s.pr else { return }
     let state: PullRequestInfo.State
     let draft: Bool

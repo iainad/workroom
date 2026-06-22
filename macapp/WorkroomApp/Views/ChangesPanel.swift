@@ -32,10 +32,9 @@ struct RightInspector: View {
           .environmentObject(store).environmentObject(notifications)),
         AnyView(
           SectionHeader(
-            title: "Pull Request", collapsed: $store.prSectionCollapsed,
-            indicator: prIndicator, indicatorLabel: prIndicatorLabel
+            title: "Pull Request", collapsed: $store.prSectionCollapsed
           ) {
-            prActionsMenu
+            prHeaderAccessory
           }
           .environmentObject(store).environmentObject(notifications)),
         AnyView(
@@ -77,6 +76,73 @@ struct RightInspector: View {
         store.performPRAction(item.action, number: item.number, on: item.sid)
       }
       Button("Cancel", role: .cancel) {}
+    }
+  }
+
+  /// The Pull Request header's trailing controls (issue #77): the PR number badge — a link to the
+  /// PR, tinted by state and turning red when checks fail — then, only for a draft, a "Ready for
+  /// Review" button, and finally the actions menu. Order is left → right, so the ellipsis stays
+  /// rightmost (matching the other section headers).
+  @ViewBuilder private var prHeaderAccessory: some View {
+    HStack(spacing: 6) {
+      prNumberLink
+      readyForReviewButton
+      prActionsMenu
+    }
+  }
+
+  /// The PR number badge, now a link that opens the PR in the browser (issue #77) — it replaces the
+  /// in-panel status row's open-in-browser affordance, so the header always carries the link. Tinted
+  /// by PR state (open/draft/merged/closed), but red when the PR's checks are failing.
+  @ViewBuilder private var prNumberLink: some View {
+    if store.githubCLIStatus == .available, let status = selectedStatus, let pr = status.pr {
+      let badge = PRPresentation.badge(pr)
+      // Failing checks only recolor an *open* PR — a merged (purple) / closed (red) badge shouldn't
+      // be repainted by stale check history.
+      let failing = pr.state == .open && PRPresentation.isFailing(status)
+      let tint: Color = failing ? .red : badge.semantic.color
+      let failSuffix = failing ? ", checks failing" : ""
+      let helpText =
+        "Pull request #\(String(pr.number)): \(badge.label)\(failSuffix). Open in browser."
+      let a11y = "Pull request #\(String(pr.number)), \(badge.label)\(failSuffix), open in browser"
+      Button {
+        if let url = URL(string: pr.url) { openURL(url) }
+      } label: {
+        // `verbatim:` so the Int isn't run through LocalizedStringKey number formatting, which would
+        // group it as "#1,042" — a PR number is an identifier, not a quantity.
+        Text(verbatim: "#\(pr.number)")
+          .font(.caption2).fontWeight(.semibold).monospacedDigit()
+          .foregroundStyle(tint)
+          .padding(.horizontal, 5).padding(.vertical, 1)
+          .background(Capsule().fill(tint.opacity(0.22)))
+          .contentShape(Capsule())
+      }
+      .buttonStyle(.plain)
+      .help(helpText)
+      .accessibilityLabel(a11y)
+    }
+  }
+
+  /// A draft-only shortcut to mark the PR ready for review (issue #77), sitting to the left of the
+  /// actions menu. Gated on `PRAction.available` so it mirrors the menu's own ready action exactly.
+  @ViewBuilder private var readyForReviewButton: some View {
+    if store.githubCLIStatus == .available, let pr = selectedStatus?.pr,
+      let sid = store.selectedTargetID, PRAction.available(for: pr).contains(.markReady)
+    {
+      Button {
+        store.performPRAction(.markReady, number: pr.number, on: sid)
+      } label: {
+        Text("Ready for Review")
+          .font(.caption2).fontWeight(.medium)
+          .padding(.horizontal, 7).padding(.vertical, 2)
+          .foregroundStyle(Color.accentColor)
+          .background(Capsule().fill(Color.accentColor.opacity(0.15)))
+          .contentShape(Capsule())
+      }
+      .buttonStyle(.plain)
+      .disabled(store.prActionInFlight)
+      .help("Mark pull request #\(String(pr.number)) ready for review")
+      .accessibilityLabel("Ready for review")
     }
   }
 
@@ -167,26 +233,6 @@ struct RightInspector: View {
         .help(dot.accessibility))
   }
 
-  /// Pull Request header badge: the PR number in a pill tinted by the PR state (open/draft/merged/
-  /// closed). Nothing when there's no PR or gh is unavailable.
-  private var prIndicator: AnyView {
-    guard store.githubCLIStatus == .available, let pr = selectedStatus?.pr else {
-      return AnyView(EmptyView())
-    }
-    let badge = PRPresentation.badge(pr)
-    // Status color as text on a subtle tint of itself (GitHub-label style) — white-on-color was
-    // illegible on the light states (e.g. green). Readable across open/draft/merged/closed.
-    return AnyView(
-      // `verbatim:` so the Int isn't run through LocalizedStringKey number formatting, which would
-      // group it as "#1,042" — a PR number is an identifier, not a quantity.
-      Text(verbatim: "#\(pr.number)")
-        .font(.caption2).fontWeight(.semibold).monospacedDigit()
-        .foregroundStyle(badge.semantic.color)
-        .padding(.horizontal, 5).padding(.vertical, 1)
-        .background(Capsule().fill(badge.semantic.color.opacity(0.22)))
-        .help("Pull request #\(String(pr.number)): \(badge.label)"))
-  }
-
   /// Notifications header count badge, with a tooltip.
   private var notificationsIndicator: AnyView {
     let count = notifications.items.count
@@ -206,11 +252,6 @@ struct RightInspector: View {
       return (s.conflicted ? "conflicted, " : "") + "\(ins) insertions, \(del) deletions"
     }
     return VCSStatusPresentation.dot(s)?.accessibility ?? ""
-  }
-
-  private var prIndicatorLabel: String {
-    guard store.githubCLIStatus == .available, let pr = selectedStatus?.pr else { return "" }
-    return "pull request #\(pr.number), \(PRPresentation.badge(pr).label)"
   }
 
   private var notificationsIndicatorLabel: String {

@@ -302,8 +302,9 @@ final class AppStore: ObservableObject {
   private var branchTask: Task<Void, Never>?
   /// VCS/CI status resolution (issue #24). `internal` (not `private`) so the
   /// `AppStore+WorkroomStatus.swift` extension can drive them. Tasks are cancelled+replaced
-  /// per sweep / per selection so a slow probe never writes stale status over a newer one.
-  let statusResolver = WorkroomStatusResolver()
+  /// per sweep / per selection so a slow probe never writes stale status over a newer one. `var`
+  /// (not `let`) so tests can inject a `WorkroomStatusResolver` with a mock command runner.
+  var statusResolver = WorkroomStatusResolver()
   var statusSweepTask: Task<Void, Never>?
   var selectionStatusTask: Task<Void, Never>?
   /// Keeps the selected workroom's local VCS status live (without polling) by watching its directory
