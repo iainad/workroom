@@ -140,8 +140,8 @@ struct PullRequestPanel: View {
   }
 
   /// A status row: a colored glyph + a primary name + a secondary state label, with an optional
-  /// open-in-browser chevron (and hit-testable shape) when `linked`. Shared by the per-reviewer rows
-  /// (issue #52) and the per-CI-check rows (issue #75) — they're structurally identical.
+  /// open-in-browser chevron (and hit-testable shape) when `linked`. Used by the per-reviewer rows
+  /// (issue #52); CI-check rows use the leaner `checkRow` (glyph + name only).
   private func statusLinkRow(
     symbol: String, color: Color, name: String, stateLabel: String, linked: Bool
   ) -> some View {
@@ -167,9 +167,6 @@ struct PullRequestPanel: View {
     return VCSStatusPresentation.ci(s)
   }
 
-  /// One row per CI check (issue #75): glyph + name + state label. A check with a details URL becomes
-  /// a tappable open-in-browser link straight to that check; the rest are plain rows. Renders nothing
-  /// until checks load (the summary line carries the run-list aggregate meanwhile — progressive fill).
   @ViewBuilder
   private func checkRows(_ status: WorkroomStatus) -> some View {
     ForEach(PRPresentation.checks(status.checks ?? [])) { check in
@@ -177,23 +174,30 @@ struct PullRequestPanel: View {
         Button {
           openURL(url)
         } label: {
-          statusLinkRow(
-            symbol: check.symbol, color: check.semantic.color, name: check.name,
-            stateLabel: check.stateLabel, linked: true)
+          checkRow(check)
         }
         .buttonStyle(.plain)
         .help("Open \(check.name) check on GitHub")
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(check.accessibility), open check on GitHub")
       } else {
-        statusLinkRow(
-          symbol: check.symbol, color: check.semantic.color, name: check.name,
-          stateLabel: check.stateLabel, linked: false
-        )
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(check.accessibility)
+        checkRow(check)
+          .accessibilityElement(children: .ignore)
+          .accessibilityLabel(check.accessibility)
       }
     }
+  }
+
+  /// A single CI-check row: just the status glyph + the check name. The glyph alone carries the
+  /// state (the per-state label is redundant), and no open-in-browser chevron — the whole row is the
+  /// tap target. VoiceOver still gets the state via the row's `accessibilityLabel`.
+  private func checkRow(_ check: PRPresentation.CheckBadge) -> some View {
+    HStack(spacing: 6) {
+      Image(systemName: check.symbol).foregroundStyle(check.semantic.color)
+      Text(check.name).font(.footnote).lineLimit(1).truncationMode(.tail)
+      Spacer(minLength: 0)
+    }
+    .contentShape(Rectangle())
   }
 
   private var noPullRequestRow: some View {
