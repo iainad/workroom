@@ -165,12 +165,14 @@ struct RightInspector: View {
     // Status color as text on a subtle tint of itself (GitHub-label style) — white-on-color was
     // illegible on the light states (e.g. green). Readable across open/draft/merged/closed.
     return AnyView(
-      Text("#\(pr.number)")
+      // `verbatim:` so the Int isn't run through LocalizedStringKey number formatting, which would
+      // group it as "#1,042" — a PR number is an identifier, not a quantity.
+      Text(verbatim: "#\(pr.number)")
         .font(.caption2).fontWeight(.semibold).monospacedDigit()
         .foregroundStyle(badge.semantic.color)
         .padding(.horizontal, 5).padding(.vertical, 1)
         .background(Capsule().fill(badge.semantic.color.opacity(0.22)))
-        .help("Pull request #\(pr.number): \(badge.label)"))
+        .help("Pull request #\(String(pr.number)): \(badge.label)"))
   }
 
   /// Notifications header count badge, with a tooltip.

@@ -97,8 +97,8 @@ struct PullRequestPanel: View {
       .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
-    .help("Open pull request #\(pr.number) in browser")
-    .accessibilityLabel("\(badge.label), pull request #\(pr.number), open in browser")
+    .help("Open pull request #\(String(pr.number)) in browser")
+    .accessibilityLabel("\(badge.label), pull request #\(String(pr.number)), open in browser")
     Text(pr.title)
       .font(.callout)
       .foregroundStyle(.primary)
