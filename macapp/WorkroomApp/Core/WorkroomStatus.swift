@@ -20,7 +20,7 @@ enum PRAction: String, CaseIterable, Sendable {
 
   var label: String {
     switch self {
-    case .markReady: return "Mark Ready for Review"
+    case .markReady: return "Ready for Review"
     case .convertToDraft: return "Convert to Draft"
     case .close: return "Close Pull Request"
     case .reopen: return "Reopen Pull Request"

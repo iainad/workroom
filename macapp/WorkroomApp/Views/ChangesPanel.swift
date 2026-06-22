@@ -9,6 +9,7 @@ import SwiftUI
 struct RightInspector: View {
   @EnvironmentObject var store: AppStore
   @EnvironmentObject var notifications: NotificationCenterStore
+  @Environment(\.openURL) private var openURL
   /// A PR action awaiting confirmation (close), surfaced via a confirmation dialog.
   @State private var pendingConfirm: PendingPRAction?
 
@@ -79,22 +80,33 @@ struct RightInspector: View {
     }
   }
 
-  /// The PR write-actions menu (Phase 2b), shown in the Pull Request header. State-dependent
-  /// (ready/draft, close, reopen); destructive actions route through a confirmation dialog.
+  /// The PR header menu: "Go to Pull Request" (always available when there's a PR), plus the
+  /// state-dependent write actions (ready/draft, close, reopen — Phase 2b; destructive ones route
+  /// through a confirmation dialog). Shown whenever there's a PR, so a merged/closed PR with no
+  /// remaining actions can still be opened in the browser.
   @ViewBuilder private var prActionsMenu: some View {
     if store.githubCLIStatus == .available, let pr = selectedStatus?.pr,
-      let sid = store.selectedTargetID, !PRAction.available(for: pr).isEmpty
+      let sid = store.selectedTargetID
     {
+      let actions = PRAction.available(for: pr)
       Menu {
-        ForEach(PRAction.available(for: pr), id: \.self) { action in
-          Button(role: action.isDestructive ? .destructive : nil) {
-            if action.needsConfirmation {
-              pendingConfirm = PendingPRAction(action: action, number: pr.number, sid: sid)
-            } else {
-              store.performPRAction(action, number: pr.number, on: sid)
+        Button {
+          if let url = URL(string: pr.url) { openURL(url) }
+        } label: {
+          Label("Go to Pull Request", systemImage: "arrow.up.right.square")
+        }
+        if !actions.isEmpty {
+          Divider()
+          ForEach(actions, id: \.self) { action in
+            Button(role: action.isDestructive ? .destructive : nil) {
+              if action.needsConfirmation {
+                pendingConfirm = PendingPRAction(action: action, number: pr.number, sid: sid)
+              } else {
+                store.performPRAction(action, number: pr.number, on: sid)
+              }
+            } label: {
+              Label(action.label, systemImage: action.systemImage)
             }
-          } label: {
-            Label(action.label, systemImage: action.systemImage)
           }
         }
       } label: {
