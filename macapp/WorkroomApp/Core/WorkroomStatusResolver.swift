@@ -179,13 +179,20 @@ struct WorkroomStatusResolver: Sendable {
 
   // MARK: Stage 2 — CI (slow, network; never blocks stage 1)
 
-  /// CI for `branch` (stage 1's branch/bookmark). `vcs`/`projectRoot` pick where `gh` runs and which
-  /// commit its runs must match — see `ghProbeTarget`. For jj the matched commit is the bookmark's
-  /// tip (jj's `@` is an unpushed empty change), so a `gh run` for `@` could never match. CI is
-  /// hidden whenever the branch / commit / git+gh context can't be resolved.
-  func resolveCI(path: String, vcs: String, projectRoot: String, branch: String?) async
-    -> CIResolution
-  {
+  /// CI for `branch` (stage 1's branch/bookmark), as GitHub's own combined **status check rollup**
+  /// for the branch-tip commit — the same aggregate the GitHub UI shows, covering *all* check types
+  /// (Actions check-runs + external commit statuses + check-run apps), not just Actions runs (#76).
+  ///
+  /// `vcs`/`projectRoot` pick where `gh` runs (`ghProbeTarget`; jj → colocated project root). The
+  /// commit is `ciMatchCommit`'s tip (for jj that's the bookmark's tip, since `@` is an unpushed
+  /// empty change). `nameWithOwner` (`owner/repo`) keys the GraphQL `repository(owner:name:)` lookup;
+  /// pass it from the sweep's per-project cache, or leave `nil` to resolve it inline (one extra
+  /// `gh repo view`). Everything goes through the authenticated `gh` token, so private repos work
+  /// with no extra config. CI is hidden whenever the branch / commit / repo / gh context can't be
+  /// resolved.
+  func resolveCI(
+    path: String, vcs: String, projectRoot: String, branch: String?, nameWithOwner: String? = nil
+  ) async -> CIResolution {
     guard
       let target = await ghProbeTarget(
         path: path, vcs: vcs, projectRoot: projectRoot, branch: branch)
@@ -193,14 +200,48 @@ struct WorkroomStatusResolver: Sendable {
     guard let head = await ciMatchCommit(path: path, vcs: vcs, branch: target.branch) else {
       return .absent
     }
+    // Use the caller's cached `owner/repo` when given (the sweep's per-project cache); otherwise
+    // resolve it inline. (`??` can't wrap an `await` — its rhs is a non-async autoclosure.)
+    let resolvedNWO: String?
+    if let nameWithOwner {
+      resolvedNWO = nameWithOwner
+    } else {
+      resolvedNWO = await resolveNameWithOwner(in: target.dir)
+    }
+    guard let nwo = resolvedNWO, let slash = nwo.firstIndex(of: "/") else { return .absent }
+    let owner = String(nwo[..<slash])
+    let name = String(nwo[nwo.index(after: slash)...])
+    guard !owner.isEmpty, !name.isEmpty else { return .absent }
 
     let r = await runner.run(
       "gh",
       [
-        "run", "list", "--branch", target.branch, "--limit", "20", "--json",
-        "headSha,status,conclusion,workflowName",
-      ], in: target.dir, timeout: ciTimeout)
-    return Self.classifyCI(r, head: head)
+        "api", "graphql", "-f",
+        "query=\(Self.checkRollupQuery(owner: owner, name: name, oid: head))",
+      ],
+      in: target.dir, timeout: ciTimeout)
+    return Self.classifyCheckRollup(r)
+  }
+
+  /// The repo's `owner/repo` for the GraphQL rollup lookup, from `gh repo view` in the probe dir
+  /// (resolves via the dir's git remote — works for git worktrees and a jj colocated project root).
+  /// The sweep caches this per project; `resolveCI` falls back to calling it inline. `nil` ⇒ no
+  /// remote / not a gh repo ⇒ caller treats CI as absent.
+  func resolveNameWithOwner(in dir: String) async -> String? {
+    let r = await runner.run(
+      "gh", ["repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"], in: dir,
+      timeout: ciTimeout)
+    guard r.ok else { return nil }
+    let s = r.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+    return s.isEmpty ? nil : s
+  }
+
+  /// GraphQL query for a commit's status-check rollup state. Uses `repository(owner:name:)` +
+  /// `object(oid:)` so it runs against whatever host `gh` resolves for the repo (github.com or GHE),
+  /// no hardcoded URL. Mirrors the `reviewURLQuery` style (interpolated, trusted inputs: repo names
+  /// can't contain quotes; `oid` is a hex sha).
+  static func checkRollupQuery(owner: String, name: String, oid: String) -> String {
+    "{repository(owner:\"\(owner)\",name:\"\(name)\"){object(oid:\"\(oid)\"){... on Commit{statusCheckRollup{state}}}}}"
   }
 
   /// The pull request for `branch`. Like `resolveCI`, `vcs`/`projectRoot` pick where `gh` runs (a
@@ -613,59 +654,47 @@ struct WorkroomStatusResolver: Sendable {
     return .proceed
   }
 
-  /// Decode `gh run list ... --json` and collapse to a single CI state, considering only runs
-  /// whose `headSha` matches the current HEAD (so a stale older run for a different commit can't
-  /// mislead). Distinguishes absent (no gh / no runs / sha mismatch) from a transient rate-limit
-  /// (`keepPrior`).
-  static func classifyCI(_ r: CommandResult, head: String) -> CIResolution {
+  /// Decode the `checkRollupQuery` response into a single CI state (#76). `gh api graphql` exits 0
+  /// even when the body carries a GraphQL `errors` payload (the HTTP was 200), and non-zero on
+  /// transport failures (auth / rate-limit / 5xx) — so `ghPreflight` is the right gate here (unlike
+  /// `gh pr checks`, which overloads its exit code). A GraphQL `errors` payload or malformed JSON ⇒
+  /// `.keepPrior` (don't blank a good badge on a transient/schema blip, matching the other
+  /// classifiers); a null `resource`/`statusCheckRollup` ⇒ `.absent` (the commit has no checks).
+  static func classifyCheckRollup(_ r: CommandResult) -> CIResolution {
     switch ghPreflight(r) {
     case .absent: return .absent
     case .keepPrior: return .keepPrior
     case .proceed: break
     }
 
-    struct Run: Decodable {
-      let headSha: String?
-      let status: String?
-      let conclusion: String?
-      let workflowName: String?
+    struct Rollup: Decodable { let state: String? }
+    struct Object: Decodable { let statusCheckRollup: Rollup? }
+    struct Repository: Decodable { let object: Object? }
+    struct DataT: Decodable { let repository: Repository? }
+    struct GQLError: Decodable { let message: String? }
+    struct Payload: Decodable {
+      let data: DataT?
+      let errors: [GQLError]?
     }
-    // Malformed/truncated JSON (a gh schema change, or output capped mid-stream) must NOT erase the
-    // CI badge — keep the last good value rather than flip to "no CI".
     guard let data = r.stdout.data(using: .utf8),
-      let runs = try? JSONDecoder().decode([Run].self, from: data)
-    else { return .keepPrior }
+      let payload = try? JSONDecoder().decode(Payload.self, from: data)
+    else { return .keepPrior }  // malformed/truncated → keep last good (like classifyPR)
+    // A GraphQL `errors` payload (HTTP 200) is a transient/lookup error → don't blank a good badge.
+    if let errors = payload.errors, !errors.isEmpty { return .keepPrior }
 
-    // Newest-first; keep the first run per workflow, only for the current HEAD.
-    var latestByWorkflow: [String: Run] = [:]
-    for run in runs where run.headSha == head {
-      let key = run.workflowName ?? "_"
-      if latestByWorkflow[key] == nil { latestByWorkflow[key] = run }
+    // `object` null (commit not found yet) or `statusCheckRollup` null (no checks) ⇒ nothing to show.
+    guard let state = payload.data?.repository?.object?.statusCheckRollup?.state else {
+      return .absent
     }
-    guard !latestByWorkflow.isEmpty else { return .absent }
-
-    var anyRunning = false
-    var anySuccess = false
-    var anyNeutral = false
-    for run in latestByWorkflow.values {
-      let status = run.status?.lowercased() ?? ""
-      let conclusion = run.conclusion?.lowercased() ?? ""
-      if status != "completed" {
-        anyRunning = true
-        continue
-      }
-      switch conclusion {
-      case "success": anySuccess = true
-      case "failure", "timed_out", "startup_failure", "action_required":
-        return .state(.failing)  // a failure dominates
-      case "cancelled", "skipped", "neutral", "stale": anyNeutral = true
-      default: anyNeutral = true
-      }
+    // GraphQL `StatusState`: SUCCESS / FAILURE / ERROR / PENDING / EXPECTED. Rollup folds
+    // skipped/neutral into SUCCESS, so this path never yields `.neutral` (the panel's `checksSummary`
+    // still distinguishes it). An unknown/future value ⇒ `.absent` rather than a misleading glyph.
+    switch state.uppercased() {
+    case "SUCCESS": return .state(.passing)
+    case "FAILURE", "ERROR": return .state(.failing)
+    case "PENDING", "EXPECTED": return .state(.running)
+    default: return .absent
     }
-    if anyRunning { return .state(.running) }
-    if anySuccess { return .state(.passing) }
-    if anyNeutral { return .state(.neutral) }
-    return .absent
   }
 
   /// Decode `gh pr list --head <branch> --state all --json … --limit 1` (a JSON array) into the

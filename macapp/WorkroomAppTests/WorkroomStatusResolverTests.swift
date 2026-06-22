@@ -256,89 +256,82 @@ final class WorkroomStatusResolverTests: XCTestCase {
     XCTAssertEqual(WorkroomStatusResolver.classifyGitFailure(r), .notRepository)
   }
 
-  // MARK: - classifyCI
+  // MARK: - classifyCheckRollup (#76: sidebar CI from GitHub's status-check rollup)
 
-  func testCIPassing() {
-    let json = #"[{"headSha":"H","status":"completed","conclusion":"success","workflowName":"CI"}]"#
-    XCTAssertEqual(WorkroomStatusResolver.classifyCI(ok(json), head: "H"), .state(.passing))
+  /// `{"data":{"repository":{"object":{"statusCheckRollup":{"state":STATE}}}}}` for a given rollup state.
+  private func rollup(_ state: String) -> CommandResult {
+    ok(#"{"data":{"repository":{"object":{"statusCheckRollup":{"state":"\#(state)"}}}}}"#)
   }
 
-  func testCIFailingDominates() {
-    let json = """
-      [{"headSha":"H","status":"completed","conclusion":"success","workflowName":"lint"},
-       {"headSha":"H","status":"completed","conclusion":"failure","workflowName":"test"}]
-      """
-    XCTAssertEqual(WorkroomStatusResolver.classifyCI(ok(json), head: "H"), .state(.failing))
+  func testCheckRollupPassing() {
+    XCTAssertEqual(WorkroomStatusResolver.classifyCheckRollup(rollup("SUCCESS")), .state(.passing))
   }
 
-  func testCIRunning() {
-    let json = #"[{"headSha":"H","status":"in_progress","conclusion":null,"workflowName":"CI"}]"#
-    XCTAssertEqual(WorkroomStatusResolver.classifyCI(ok(json), head: "H"), .state(.running))
+  func testCheckRollupFailing() {
+    XCTAssertEqual(WorkroomStatusResolver.classifyCheckRollup(rollup("FAILURE")), .state(.failing))
+    XCTAssertEqual(WorkroomStatusResolver.classifyCheckRollup(rollup("ERROR")), .state(.failing))
   }
 
-  func testCIEmptyIsAbsent() {
-    XCTAssertEqual(WorkroomStatusResolver.classifyCI(ok("[]"), head: "H"), .absent)
+  func testCheckRollupRunning() {
+    XCTAssertEqual(WorkroomStatusResolver.classifyCheckRollup(rollup("PENDING")), .state(.running))
+    XCTAssertEqual(WorkroomStatusResolver.classifyCheckRollup(rollup("EXPECTED")), .state(.running))
   }
 
-  func testCIShaMismatchIsAbsent() {
-    let json =
-      #"[{"headSha":"OTHER","status":"completed","conclusion":"success","workflowName":"CI"}]"#
-    XCTAssertEqual(WorkroomStatusResolver.classifyCI(ok(json), head: "H"), .absent)
+  /// No checks on the commit ⇒ a null rollup (or null object) ⇒ .absent (no glyph).
+  func testCheckRollupNullIsAbsent() {
+    XCTAssertEqual(
+      WorkroomStatusResolver.classifyCheckRollup(
+        ok(#"{"data":{"repository":{"object":{"statusCheckRollup":null}}}}"#)), .absent)
+    XCTAssertEqual(
+      WorkroomStatusResolver.classifyCheckRollup(
+        ok(#"{"data":{"repository":{"object":null}}}"#)), .absent)
   }
 
-  func testCIGhAbsent() {
+  /// An unknown/future StatusState renders nothing rather than a misleading glyph.
+  func testCheckRollupUnknownStateIsAbsent() {
+    XCTAssertEqual(WorkroomStatusResolver.classifyCheckRollup(rollup("WAT")), .absent)
+  }
+
+  /// `gh api graphql` returns HTTP 200 (exit 0) with an `errors` payload on a GraphQL-level error —
+  /// keep the last good badge rather than blank it.
+  func testCheckRollupGraphQLErrorsKeepsPrior() {
+    let r = ok(
+      #"{"data":{"repository":null},"errors":[{"message":"Could not resolve to a Repository"}]}"#)
+    XCTAssertEqual(WorkroomStatusResolver.classifyCheckRollup(r), .keepPrior)
+  }
+
+  func testCheckRollupMalformedKeepsPrior() {
+    XCTAssertEqual(WorkroomStatusResolver.classifyCheckRollup(ok("not json")), .keepPrior)
+  }
+
+  func testCheckRollupGhMissingIsAbsent() {
     let r = CommandResult(
       stdout: "", stderr: "env: gh: No such file", exitCode: 127, timedOut: false)
-    XCTAssertEqual(WorkroomStatusResolver.classifyCI(r, head: "H"), .absent)
+    XCTAssertEqual(WorkroomStatusResolver.classifyCheckRollup(r), .absent)
   }
 
-  func testCIRateLimitKeepsPrior() {
+  func testCheckRollupRateLimitKeepsPrior() {
     let r = CommandResult(
       stdout: "", stderr: "API rate limit exceeded", exitCode: 1, timedOut: false)
-    XCTAssertEqual(WorkroomStatusResolver.classifyCI(r, head: "H"), .keepPrior)
+    XCTAssertEqual(WorkroomStatusResolver.classifyCheckRollup(r), .keepPrior)
   }
 
-  func testCITimeoutKeepsPrior() {
-    let r = CommandResult(stdout: "", stderr: "", exitCode: 0, timedOut: true)
-    XCTAssertEqual(WorkroomStatusResolver.classifyCI(r, head: "H"), .keepPrior)
-  }
-
-  func testCINeutral() {
-    // A sole completed run with a non-pass/non-fail conclusion collapses to .neutral.
-    let json =
-      #"[{"headSha":"H","status":"completed","conclusion":"cancelled","workflowName":"CI"}]"#
-    XCTAssertEqual(WorkroomStatusResolver.classifyCI(ok(json), head: "H"), .state(.neutral))
-  }
-
-  func testCIFailingConclusions() {
-    // All of these map to .failing, not just "failure".
-    for conclusion in ["failure", "timed_out", "startup_failure", "action_required"] {
-      let json =
-        "[{\"headSha\":\"H\",\"status\":\"completed\",\"conclusion\":\"\(conclusion)\",\"workflowName\":\"CI\"}]"
-      XCTAssertEqual(
-        WorkroomStatusResolver.classifyCI(ok(json), head: "H"), .state(.failing),
-        "conclusion \(conclusion) should be failing")
-    }
-  }
-
-  func testCIRunningWinsOverPassing() {
-    // Across workflows, a running check outranks a passing one.
-    let json = """
-      [{"headSha":"H","status":"completed","conclusion":"success","workflowName":"lint"},
-       {"headSha":"H","status":"in_progress","conclusion":null,"workflowName":"test"}]
-      """
-    XCTAssertEqual(WorkroomStatusResolver.classifyCI(ok(json), head: "H"), .state(.running))
-  }
-
-  func testCIServerErrorKeepsPrior() {
+  func testCheckRollupServerErrorKeepsPrior() {
     let r = CommandResult(
       stdout: "", stderr: "HTTP 503 Service Unavailable", exitCode: 1, timedOut: false)
-    XCTAssertEqual(WorkroomStatusResolver.classifyCI(r, head: "H"), .keepPrior)
+    XCTAssertEqual(WorkroomStatusResolver.classifyCheckRollup(r), .keepPrior)
   }
 
-  func testCIMalformedKeepsPrior() {
-    // Malformed/truncated JSON (schema change, capped output) must NOT erase the CI badge.
-    XCTAssertEqual(WorkroomStatusResolver.classifyCI(ok("not json"), head: "H"), .keepPrior)
+  func testCheckRollupTimeoutKeepsPrior() {
+    let r = CommandResult(stdout: "", stderr: "", exitCode: 0, timedOut: true)
+    XCTAssertEqual(WorkroomStatusResolver.classifyCheckRollup(r), .keepPrior)
+  }
+
+  func testCheckRollupQueryEmbedsOwnerNameOid() {
+    let q = WorkroomStatusResolver.checkRollupQuery(owner: "octo", name: "repo", oid: "abc123")
+    XCTAssertTrue(q.contains(#"repository(owner:"octo",name:"repo")"#))
+    XCTAssertTrue(q.contains(#"object(oid:"abc123")"#))
+    XCTAssertTrue(q.contains("statusCheckRollup{state}"))
   }
 
   // MARK: - resolveLocal (end-to-end via the mock)
@@ -552,16 +545,37 @@ final class WorkroomStatusResolverTests: XCTestCase {
   // MARK: - resolveCI (end-to-end via the mock)
 
   func testResolveCIPassing() async {
-    let json =
-      #"[{"headSha":"HEADSHA","status":"completed","conclusion":"success","workflowName":"CI"}]"#
     let r = WorkroomStatusResolver(
       runner: MockStatusRunner { exe, args in
         if exe == "git", args.contains("rev-parse") { return ok("HEADSHA\n") }
-        if exe == "gh" { return ok(json) }
+        if exe == "gh", args.contains("repo") { return ok("octo/repo\n") }
+        if exe == "gh", args.contains("graphql") {
+          return ok(
+            #"{"data":{"repository":{"object":{"statusCheckRollup":{"state":"SUCCESS"}}}}}"#)
+        }
         return ok("")
       })
     let res = await r.resolveCI(path: existing, vcs: "git", projectRoot: existing, branch: "main")
     XCTAssertEqual(res, .state(.passing))
+  }
+
+  /// `nameWithOwner` passed in (the sweep's per-project cache) ⇒ no inline `gh repo view`; the rollup
+  /// query is keyed by the resolved HEAD sha.
+  func testResolveCIUsesCachedNameWithOwner() async {
+    let runner = RecordingStatusRunner { exe, args in
+      if exe == "git", args.contains("rev-parse") { return ok("HEADSHA\n") }
+      if exe == "gh", args.contains("graphql") {
+        return ok(#"{"data":{"repository":{"object":{"statusCheckRollup":{"state":"FAILURE"}}}}}"#)
+      }
+      return ok("")
+    }
+    let r = WorkroomStatusResolver(runner: runner)
+    let res = await r.resolveCI(
+      path: existing, vcs: "git", projectRoot: existing, branch: "main", nameWithOwner: "octo/repo")
+    XCTAssertEqual(res, .state(.failing))
+    XCTAssertFalse(runner.calls.contains { $0.exe == "gh" && $0.args.contains("repo") })
+    let gh = runner.calls.first { $0.exe == "gh" && $0.args.contains("graphql") }
+    XCTAssertTrue(gh?.args.contains { $0.contains("HEADSHA") } ?? false)  // keyed by the tip sha
   }
 
   func testResolveCINoGitBackingIsAbsent() async {
@@ -860,22 +874,24 @@ final class WorkroomStatusResolverTests: XCTestCase {
   // MARK: - resolveCI / resolvePR for jj (gh runs from the colocated project root)
 
   func testResolveCIJJProbesProjectRootWithBookmarkSha() async {
-    // jj's `commit_id` for the bookmark == the git sha gh reports for the run on that branch.
-    let json =
-      #"[{"headSha":"JJSHA","status":"completed","conclusion":"success","workflowName":"CI"}]"#
+    // jj's `commit_id` for the bookmark is the git sha the rollup query is keyed on.
     let runner = RecordingStatusRunner { exe, _ in
       if exe == "jj" { return ok("JJSHA\n") }  // `jj log -r <bookmark> -T commit_id`
-      if exe == "gh" { return ok(json) }
+      if exe == "gh" {
+        return ok(#"{"data":{"repository":{"object":{"statusCheckRollup":{"state":"SUCCESS"}}}}}"#)
+      }
       return ok("")
     }
     let r = WorkroomStatusResolver(runner: runner)
     let res = await r.resolveCI(
-      path: "/proj/ws", vcs: "jj", projectRoot: "/proj", branch: "feature/login")
+      path: "/proj/ws", vcs: "jj", projectRoot: "/proj", branch: "feature/login",
+      nameWithOwner: "octo/repo")
     XCTAssertEqual(res, .state(.passing))
-    // gh must run from the colocated project root (the workspace has no `.git`), keyed by the bookmark.
+    // gh must run from the colocated project root (the workspace has no `.git`), keyed by the
+    // bookmark's commit sha.
     let gh = runner.calls.first { $0.exe == "gh" }
     XCTAssertEqual(gh?.dir, "/proj")
-    XCTAssertTrue(gh?.args.contains("feature/login") ?? false)
+    XCTAssertTrue(gh?.args.contains { $0.contains("JJSHA") } ?? false)
     // the commit-id probe runs in the workspace itself (jj resolves the workspace from cwd)
     let jj = runner.calls.first { $0.exe == "jj" }
     XCTAssertEqual(jj?.dir, "/proj/ws")
@@ -950,7 +966,7 @@ final class WorkroomStatusResolverTests: XCTestCase {
     // A `gh` exit-1 whose stderr contains "timeout" (a network blip, distinct from the timedOut
     // flag) → keepPrior, so a transient failure doesn't erase the badge.
     let r = CommandResult(stdout: "", stderr: "dial tcp: i/o timeout", exitCode: 1, timedOut: false)
-    XCTAssertEqual(WorkroomStatusResolver.classifyCI(r, head: "H"), .keepPrior)
+    XCTAssertEqual(WorkroomStatusResolver.classifyCheckRollup(r), .keepPrior)
     XCTAssertEqual(WorkroomStatusResolver.classifyPR(r), .keepPrior)
   }
 

@@ -1,8 +1,11 @@
 import Foundation
 
-/// CI conclusion for a workroom's branch, collapsed from the latest GitHub Actions run per
-/// workflow. `nil` (absent) means "no CI to show" — gh missing, no remote, no runs, or the
-/// runs are for a different commit. Absent renders as *nothing* (no glyph); it is NOT a state.
+/// CI conclusion for a workroom's branch, from GitHub's status-check rollup for the branch-tip
+/// commit (#76) — *all* check types (Actions + external commit statuses + check-run apps), not just
+/// Actions runs. `nil` (absent) means "no CI to show" — gh missing, no remote, or the commit has no
+/// checks. Absent renders as *nothing* (no glyph); it is NOT a state. `.neutral` is no longer
+/// produced by the sidebar rollup path (rollup folds skipped/neutral into passing), but the PR
+/// panel's per-check `checksSummary` still distinguishes it, so the case stays.
 enum CIState: Equatable, Sendable {
   case passing
   case failing
@@ -218,7 +221,7 @@ struct WorkroomStatus: Equatable, Sendable {
   var pr: PullRequestInfo?
   /// The PR's individual CI checks (issue #75), resolved by a separate `gh pr checks` probe on
   /// selection. Three-state, deliberately: `nil` ⇒ **not loaded** (probe hasn't returned, so the
-  /// panel falls back to the `gh run list` aggregate summary); `[]` ⇒ **loaded, no checks** (the PR
+  /// panel falls back to the branch CI aggregate summary, `WorkroomStatus.ci`); `[]` ⇒ **loaded, no checks** (the PR
   /// genuinely has none, so the panel shows no summary/list rather than the stale aggregate);
   /// non-empty ⇒ the checks to list. `checksCheckedAt` is the loaded marker that disambiguates `nil`
   /// from `[]`. Cleared whenever the PR's identity changes or the PR goes away (see `applyPRStatus`).
@@ -550,8 +553,8 @@ enum PRPresentation {
   }
 
   /// The aggregate summary glyph for the panel's CI line, *derived from the per-check list* so the
-  /// summary and the rows can never contradict (`gh pr checks` covers all checks; the `gh run list`
-  /// aggregate is Actions-only). Failure dominates > pending > passing > neutral (skip/cancel).
+  /// summary and the rows can never contradict. Failure dominates > pending > passing > neutral
+  /// (skip/cancel).
   /// `nil` when there are no checks → the panel shows no summary line. Reuses `CIGlyph` so the
   /// summary row renderer is unchanged.
   static func checksSummary(_ checks: [CICheck]) -> VCSStatusPresentation.CIGlyph? {

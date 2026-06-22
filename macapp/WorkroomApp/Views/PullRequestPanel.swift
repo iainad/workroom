@@ -64,8 +64,8 @@ struct PullRequestPanel: View {
         if let pr = status.pr {
           prRows(pr)
           // Summary glyph, tappable → the PR's "/checks" tab. Derived from the loaded per-check list
-          // so it can't contradict the rows below; falls back to the `gh run list` aggregate only
-          // before checks have loaded (see `checksSummaryGlyph`).
+          // so it can't contradict the rows below; falls back to the branch CI aggregate
+          // (`WorkroomStatus.ci`) only before checks have loaded (see `checksSummaryGlyph`).
           if let summary = checksSummaryGlyph(status) {
             ciRow(summary, checksURL: URL(string: pr.url + "/checks"))
           }
@@ -158,7 +158,7 @@ struct PullRequestPanel: View {
   }
 
   /// The summary CI glyph for the panel: derived from the loaded per-check list (so it never
-  /// contradicts the rows), falling back to the `gh run list` aggregate only before checks load.
+  /// contradicts the rows), falling back to the branch CI aggregate (`WorkroomStatus.ci`) only before checks load.
   /// `checksCheckedAt` is the loaded marker — once set, the (possibly empty) `checks` is authoritative.
   private func checksSummaryGlyph(_ s: WorkroomStatus) -> VCSStatusPresentation.CIGlyph? {
     if s.checksCheckedAt != nil {

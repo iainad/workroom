@@ -280,6 +280,14 @@ extension AppStore {
     async
   {
     guard !items.isEmpty else { return }
+    // The CI rollup probe (#76) needs the repo's `owner/repo`. It's per-project, so resolve it once
+    // per distinct project root and reuse it across that project's workrooms — not one `gh repo view`
+    // per workroom. A project that can't resolve maps to `nil` (its workrooms then report CI absent).
+    var nwoCache: [String: String?] = [:]
+    for root in Set(items.map(\.projectRoot)) {
+      if Task.isCancelled { return }
+      nwoCache[root] = await resolver.resolveNameWithOwner(in: root)
+    }
     await withTaskGroup(of: (SidebarID, CIResolution).self) { group in
       var idx = 0
       let initial = min(cap, items.count)
@@ -287,11 +295,13 @@ extension AppStore {
         let item = items[idx]
         idx += 1
         let branch = workroomStatuses[item.sid]?.branchForCI
+        let nwo = nwoCache[item.projectRoot] ?? nil
         group.addTask {
           (
             item.sid,
             await resolver.resolveCI(
-              path: item.path, vcs: item.vcs, projectRoot: item.projectRoot, branch: branch)
+              path: item.path, vcs: item.vcs, projectRoot: item.projectRoot, branch: branch,
+              nameWithOwner: nwo)
           )
         }
       }
@@ -302,11 +312,13 @@ extension AppStore {
           let item = items[idx]
           idx += 1
           let branch = workroomStatuses[item.sid]?.branchForCI
+          let nwo = nwoCache[item.projectRoot] ?? nil
           group.addTask {
             (
               item.sid,
               await resolver.resolveCI(
-                path: item.path, vcs: item.vcs, projectRoot: item.projectRoot, branch: branch)
+                path: item.path, vcs: item.vcs, projectRoot: item.projectRoot, branch: branch,
+                nameWithOwner: nwo)
             )
           }
         }
