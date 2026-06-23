@@ -26,6 +26,7 @@ struct WorkroomTabBar: View {
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   @State private var hoveredID: SidebarID?
+  @State private var addHovering = false
 
   // Drag-to-reorder: the order is frozen during a drag (the dragged chip follows the cursor, the rest
   // slide aside to open a gap), committed once on drop — mirrors `TerminalTabStrip`.
@@ -99,6 +100,9 @@ struct WorkroomTabBar: View {
           .animation(
             isDragging || reduceMotion ? nil : .easeInOut(duration: 0.18), value: offsetX)
         }
+        // The "new workroom" (+) button, immediately after the last chip (scrolls with them) — mirrors
+        // the terminal strip's `addTerminalButton`.
+        addWorkroomButton
       }
       .background(alignment: .leading) { splitWell }
       .padding(.horizontal, 8)
@@ -190,6 +194,31 @@ struct WorkroomTabBar: View {
       draggingID = nil
       dragTranslation = 0
     }
+  }
+
+  /// The "new workroom" (+) button — raises the New Workroom picker (`requestNewWorkroomPicker`, the
+  /// same flag File ▸ New Workroom / ⌘N sets). Styled like the terminal strip's `addTerminalButton`:
+  /// a hover-washed rounded glyph. Shown only alongside open tabs (the bar itself is hidden when
+  /// nothing's open), so it's icon-only.
+  private var addWorkroomButton: some View {
+    Button {
+      store.requestNewWorkroomPicker = true
+    } label: {
+      Image(systemName: "plus")
+        .font(.system(size: 11))
+        .foregroundStyle(.secondary)
+        .padding(4)
+        .background(
+          RoundedRectangle(cornerRadius: 5)
+            .fill(ThemeService.shared.tokens.hover.opacity(addHovering ? 1 : 0))
+        )
+    }
+    .buttonStyle(.plain)
+    .onHover { addHovering = $0 }
+    .padding(.leading, 2)
+    .help("New workroom")
+    .accessibilityLabel("New workroom")
+    .accessibilityIdentifier("NewWorkroom")
   }
 }
 
@@ -338,6 +367,27 @@ private struct WorkroomTabChip: View {
     }
     .contentShape(Rectangle())
     .help(target.path)
+    .contextMenu {
+      // Close the whole workroom (all its tabs); the workroom's files stay. Confirmed via RootView's
+      // `pendingWorkroomClose` dialog — mirrors the sidebar delete's store-flag → dialog bridge.
+      Button {
+        store.pendingWorkroomClose = PendingWorkroomClose(
+          target: target, name: workroomName ?? primaryLabel)
+      } label: {
+        Label("Close", systemImage: "xmark")
+      }
+      // Delete only applies to a workroom (roots are never deletable). Raises the same confirmation
+      // the sidebar's delete affordances do.
+      if let pair = store.workroomAndProject(for: sid) {
+        Divider()
+        Button(role: .destructive) {
+          store.pendingDeletion = PendingWorkroomDeletion(
+            workroom: pair.workroom, project: pair.project)
+        } label: {
+          Label("Delete Workroom…", systemImage: "trash")
+        }
+      }
+    }
     .accessibilityElement(children: .combine)
     .accessibilityLabel(
       accessibilityLabel(hasActivity: hasActivity, running: hasRunTab && runRunning)

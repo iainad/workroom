@@ -30,6 +30,16 @@ struct PendingWorkroomDeletion {
   let project: Project
 }
 
+/// A workroom (or root) target awaiting close confirmation. "Closing" tears down all of the
+/// target's terminal tabs — its chip leaves the tab bar — but leaves the workroom itself (its
+/// directory/worktree) intact; that's the distinction from `PendingWorkroomDeletion`. Held on the
+/// store so the tab bar's "Close" context-menu item raises one shared confirmation prompt.
+struct PendingWorkroomClose {
+  let target: TerminalTarget
+  /// The chip's display name (workroom name, or the project name for a root) — used in the prompt.
+  let name: String
+}
+
 /// A project queued for deletion, awaiting the user's type-the-name confirmation. Held on
 /// the store (and `Identifiable` so it drives a `.sheet(item:)`) so the sidebar's Delete
 /// Project affordance and the confirm sheet share one piece of state. `id` is the project
@@ -268,6 +278,8 @@ final class AppStore: ObservableObject {
   @Published var requestNewWorkroomPicker = false
   /// A workroom awaiting delete confirmation; setting it raises the confirmation prompt.
   @Published var pendingDeletion: PendingWorkroomDeletion?
+  /// A target awaiting close confirmation (tab bar "Close"); setting it raises the close prompt.
+  @Published var pendingWorkroomClose: PendingWorkroomClose?
   /// A project awaiting type-to-confirm deletion (drives the DeleteProjectSheet). Set by the
   /// project row's context menu; cleared when the sheet's Delete/Cancel resolves.
   @Published var pendingProjectDeletion: PendingProjectDeletion?
@@ -2094,6 +2106,28 @@ final class AppStore: ObservableObject {
     let victims = terminals.tabs(for: target).map(\.id)
     guard !victims.isEmpty else { return }
     requestClose(victims, for: target, keep: nil)
+  }
+
+  /// Close a workroom (or root) and all its terminal tabs — the tab bar's "Close" context-menu item,
+  /// confirmed first via `pendingWorkroomClose`. Skips the per-tab `closeNeedsConfirm` prompt (the
+  /// close-the-whole-workroom confirmation already covered it), then tears every tab down through the
+  /// shared `performClose` (graceful run-command stop included). Once the last tab closes the chip
+  /// leaves the bar. The workroom's files are untouched — that's `deleteWorkroom`. No-op if empty.
+  func closeWorkroom(for target: TerminalTarget) {
+    let victims = terminals.tabs(for: target).map(\.id)
+    guard !victims.isEmpty else { return }
+    performClose(victims, for: target)
+  }
+
+  /// The `(workroom, project)` a workroom `SidebarID` points at, or nil for a root/project id or a
+  /// since-removed workroom. Lets the tab bar's context menu raise the same delete confirm the
+  /// sidebar does without re-deriving the lookup.
+  func workroomAndProject(for sid: SidebarID) -> (workroom: Workroom, project: Project)? {
+    guard case .workroom(let path, let name) = sid,
+      let project = projects.first(where: { $0.id == path }),
+      let workroom = project.workrooms.first(where: { $0.id == name })
+    else { return nil }
+    return (workroom, project)
   }
 
   /// Close every tab in `target` except `keepID` ("Close others"), confirming once if any victim has

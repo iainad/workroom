@@ -176,6 +176,25 @@ struct RootView: View {
         "This removes the workroom's directory and runs its teardown script. For Git, the branch is left in place."
       )
     }
+    // Tab bar "Close": tear down all of the workroom's terminal tabs (its chip leaves the bar),
+    // leaving the workroom itself in place. Same store-flag → confirmationDialog bridge as delete.
+    .confirmationDialog(
+      store.pendingWorkroomClose.map { "Close ‘\($0.name)’?" } ?? "Close workroom?",
+      isPresented: Binding(
+        get: { store.pendingWorkroomClose != nil },
+        set: { if !$0 { store.pendingWorkroomClose = nil } }),
+      titleVisibility: .visible
+    ) {
+      Button("Close", role: .destructive) {
+        if let pending = store.pendingWorkroomClose { store.closeWorkroom(for: pending.target) }
+        store.pendingWorkroomClose = nil
+      }
+      Button("Cancel", role: .cancel) { store.pendingWorkroomClose = nil }
+    } message: {
+      Text(
+        "This closes all of the workroom's terminal tabs and stops anything running in them. The workroom itself is kept."
+      )
+    }
     // Project deletion uses a type-to-confirm sheet (not a one-tap dialog): it's a bigger,
     // optionally-cascading action, so it demands typing the project name. `.sheet(item:)`
     // rebuilds per pending identity, resetting the sheet's typed/toggle state.
