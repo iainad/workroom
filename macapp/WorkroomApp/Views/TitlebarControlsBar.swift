@@ -60,6 +60,12 @@ struct TitlebarControlsBar: View {
       .accessibilityLabel("Right sidebar")
       .accessibilityValue(showNotifications ? "shown" : "hidden")
       .accessibilityIdentifier("titlebar.toggleInspector")
+      // Hovering this button (while the inspector is collapsed) peeks it via the edge-reveal overlay
+      // (issue #74) — the trigger is the button alone, mirroring the leading sidebar toggle. Only
+      // report while collapsed so a hover with the inspector open doesn't churn reveal state.
+      .onHover { hovering in
+        if !showNotifications { store.hoveringRightToggle = hovering }
+      }
     }
     .buttonStyle(ToolbarIconButtonStyle())
     // No leading padding: the bell's left divider lives in TrailingTitlebarBar (its 4pt pad + the bar's

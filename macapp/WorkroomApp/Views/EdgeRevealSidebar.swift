@@ -1,18 +1,21 @@
 import AppKit
 import SwiftUI
 
-/// Edge-hover reveal for a collapsed sidebar (issue #56). When a sidebar is closed, mousing to its
-/// window edge slides the sidebar content IN, OVER the detail (an overlay, not a pushed column —
-/// `NavigationSplitView`/`.inspector` only push, with no native macOS overlay mode), and mousing off
-/// slides it back out.
+/// Edge-hover reveal for a collapsed sidebar (issue #56, #74). When a sidebar is closed, hovering its
+/// title-bar *toggle button* slides the sidebar content IN, OVER the detail (an overlay, not a pushed
+/// column — `NavigationSplitView`/`.inspector` only push, with no native macOS overlay mode), and
+/// mousing off slides it back out.
 ///
-/// Three pieces:
+/// The trigger is the toggle button alone (`AppStore.hovering{Left,Right}Toggle`, set by the title-bar
+/// bars). It used to be a wide click-through strip over the toolbar (issue #56), but that strip sat
+/// directly above the leftmost workroom tabs — reaching for a tab tripped the reveal, whose panel then
+/// covered the very tab you wanted (issue #74). Pinning the trigger to the button keeps it clear of
+/// the tabs by construction.
+///
+/// Two pieces:
 /// - `EdgeRevealReducer` — the pure reveal/hide decision logic, unit-tested in isolation (the view is
-///   a thin shell over it). No timers, no AppKit, no SwiftUI — just state transitions + effects.
-/// - `EdgeHoverSensor` — a click-through `NSView` strip (placed over the top toolbar) that reports
-///   cursor enter/exit via an `NSTrackingArea` without intercepting clicks (so the toolbar buttons,
-///   window controls, and the tabs below keep working). It sits over the toolbar rather than the full
-///   window edge so it never covers the workroom/terminal tabs as the cursor reaches them (issue #56).
+///   a thin shell over it). No timers, no AppKit, no SwiftUI — just state transitions + effects. Its
+///   `setSensorHover` input is now driven by the toggle button's hover rather than a sensor strip.
 /// - `EdgeRevealSidebar` — the SwiftUI overlay layer: it always mounts the panel while the sidebar is
 ///   closed and animates reveal/hide by offset+opacity (so a context menu / sheet / dialog the panel
 ///   presents is never destroyed mid-flow), drives the debounce, and mirrors the reveal into
@@ -95,62 +98,6 @@ struct EdgeRevealReducer: Equatable {
   }
 }
 
-// MARK: - Hover sensor
-
-/// A click-through strip that reports cursor enter/exit (placed over the top toolbar by
-/// `EdgeRevealSidebar`). It overrides
-/// `hitTest` to return nil (so clicks/drags/selection pass straight through to the terminal beneath,
-/// like `ScrollbarThumbView`) while an `NSTrackingArea` still delivers enter/exit (like
-/// `GoToBottomButton`). The two behaviours are independent: `hitTest` routes button events; tracking
-/// areas are driven by the window's mouse tracking against the registered rect.
-struct EdgeHoverSensor: NSViewRepresentable {
-  var onHoverChange: (Bool) -> Void
-
-  func makeNSView(context: Context) -> SensorView {
-    let view = SensorView()
-    view.onHoverChange = onHoverChange
-    return view
-  }
-
-  func updateNSView(_ nsView: SensorView, context: Context) {
-    nsView.onHoverChange = onHoverChange
-  }
-
-  final class SensorView: NSView {
-    var onHoverChange: ((Bool) -> Void)?
-    private var tracking: NSTrackingArea?
-
-    override init(frame frameRect: NSRect) { super.init(frame: frameRect) }
-
-    @available(*, unavailable)
-    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
-
-    // Click-through: never intercept mouse events meant for the content beneath.
-    override func hitTest(_ point: NSPoint) -> NSView? { nil }
-
-    // Rebuild against the live bounds on every geometry change (window resize, full-screen) — a
-    // tracking area cached against stale bounds would stop firing at the (moved) edge.
-    override func updateTrackingAreas() {
-      super.updateTrackingAreas()
-      if let tracking { removeTrackingArea(tracking) }
-      let area = NSTrackingArea(
-        rect: bounds,
-        options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
-        owner: self)
-      addTrackingArea(area)
-      tracking = area
-    }
-
-    override func mouseEntered(with event: NSEvent) {
-      onHoverChange?(true)
-    }
-
-    override func mouseExited(with event: NSEvent) {
-      onHoverChange?(false)
-    }
-  }
-}
-
 // MARK: - Reveal overlay
 
 /// One edge's reveal layer. Drop it on the split view as an `.overlay`; pass `enabled` = the matching
@@ -174,39 +121,33 @@ struct EdgeRevealSidebar<Content: View>: View {
   @State private var reducer = EdgeRevealReducer()
   @State private var hideTask: Task<Void, Never>?
 
-  /// Off-screen clearance added to the hidden panel's slide so its shadow fully clears the edge.
-  private let sensorWidth: CGFloat = 6
-  /// The trigger zone: a strip over the top toolbar/titlebar (issue #56 feedback), not the full window
-  /// edge. Height ≈ the unified titlebar+toolbar; width is a generous, easy-to-hit leading/trailing
-  /// portion of the toolbar.
-  private let topSensorHeight: CGFloat = 52
-  private let topSensorWidth: CGFloat = 180
-  /// Debounce before hiding after the cursor leaves — long enough to cross the sensor→panel seam
-  /// without a flicker, short enough to feel responsive.
+  /// Debounce before hiding after the cursor leaves — long enough to cross the button→panel gap (the
+  /// lower title-bar between the toggle button and the panel below it) without a flicker, short enough
+  /// to feel responsive.
   private let hideDelay: Duration = .milliseconds(180)
+
+  /// The toggle-button hover that drives this edge, read from the store (set by the title-bar bars).
+  private var toggleHover: Bool {
+    side == .leading ? store.hoveringLeftToggle : store.hoveringRightToggle
+  }
 
   var body: some View {
     ZStack(alignment: stackAlignment) {
       if enabled {
         // The panel respects the toolbar safe area (it starts BELOW the top toolbar, not over it).
-        // The sensor is kept in a SEPARATE overlay below — its `ignoresSafeArea` must not drag the
-        // panel's stack up into the titlebar (issue #56).
         panel
       }
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: stackAlignment)
-    // The trigger is confined to the top toolbar strip (issue #56 feedback), not the full-height
-    // window edge — a full-height edge sensor covered the workroom/terminal tabs at the top of the
-    // detail, revealing the panel before the cursor could reach them. It reaches up into the
-    // (transparent) titlebar via `ignoresSafeArea` and stays click-through, so the toolbar buttons and
-    // window controls beneath it keep working. Hosted in its own overlay so that `ignoresSafeArea`
-    // affects only the sensor, leaving the panel below the toolbar.
-    .overlay(alignment: side == .leading ? .topLeading : .topTrailing) {
-      if enabled {
-        EdgeHoverSensor { hovering in apply { $0.setSensorHover(hovering) } }
-          .frame(width: topSensorWidth, height: topSensorHeight)
-          .ignoresSafeArea(.container, edges: .top)
-      }
+    // The trigger is the title-bar toggle button alone (issue #74): the matching toggle reports its
+    // hover into the store, and we feed that into the reducer. The button sits well clear of the
+    // workroom tabs, so reaching for a tab no longer trips the reveal (the old toolbar-wide sensor
+    // strip sat directly above the leftmost tabs — issue #56's strip, replaced here). Guarded by
+    // `enabled` so a hover that arrives mid-collapse-animation can't reveal a panel that's about to
+    // tear down.
+    .onChange(of: toggleHover) { _, hovering in
+      guard enabled else { return }
+      apply { $0.setSensorHover(hovering) }
     }
     .onChange(of: enabled) { _, isEnabled in
       // When the docked sidebar opens, force the reveal hidden so nothing lingers.
@@ -305,6 +246,12 @@ struct EdgeRevealSidebar<Content: View>: View {
     hideTask?.cancel()
     hideTask = nil
     withAnimation(revealAnimation) { _ = reducer.disable() }
+    // Drop any lingering toggle-hover so the next collapse starts from a known-clear baseline (the
+    // button stops reporting once its sidebar is pinned, so it can't clear this itself).
+    switch side {
+    case .leading: store.hoveringLeftToggle = false
+    case .trailing: store.hoveringRightToggle = false
+    }
     syncPreviewing()
   }
 

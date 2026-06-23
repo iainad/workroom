@@ -42,6 +42,13 @@ struct LeadingTitlebarBar: View {
       .help(store.sidebarVisible ? "Hide sidebar" : "Show sidebar")
       .accessibilityLabel("Toggle sidebar")
       .accessibilityIdentifier("toolbar.toggleSidebar")
+      // Hovering this button (while the sidebar is collapsed) peeks the sidebar via the edge-reveal
+      // overlay (issue #74) — the trigger is the button alone, never the toolbar strip that used to
+      // sit above the workroom tabs. Only report while collapsed so a hover with the sidebar pinned
+      // doesn't churn reveal state.
+      .onHover { hovering in
+        if !store.sidebarVisible { store.hoveringLeftToggle = hovering }
+      }
 
       TitlebarDivider()
 
