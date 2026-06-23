@@ -256,6 +256,49 @@ final class WorkroomSplitTests: XCTestCase {
     XCTAssertEqual(rootRatio(store) ?? -1, 0.3, accuracy: 0.0001)
   }
 
+  // MARK: equalize (issue #83 — "Resize Workroom Splits Evenly")
+
+  func testEqualizeWeightsByLeafCount() {
+    let store = store3()
+    store.insertWorkroomSplit(wr("feature"), beside: wr("main"), edge: .right)
+    store.insertWorkroomSplit(wr("bugfix"), beside: wr("feature"), edge: .bottom)
+    // tree: main | (feature / bugfix). Skew the outer divider, then equalize.
+    store.setWorkroomSplitRatio(0.9, forSplit: rootSplitID(store)!)
+    store.equalizeWorkroomSplit()
+    XCTAssertEqual(rootRatio(store) ?? -1, 1.0 / 3.0, accuracy: 0.0001, "main is 1 of 3 leaves")
+  }
+
+  func testEqualizeNoOpWithoutSplit() {
+    let store = store3()
+    store.equalizeWorkroomSplit()
+    XCTAssertNil(store.workroomSplit)
+  }
+
+  func testEqualizePrunesDeadLeavesFirst() {
+    // A stored split holding a dead leaf (not in the project list, so `target(for:)` is nil) must be
+    // pruned before weighting — otherwise it budgets space for a ghost pane and the visible panes end
+    // uneven (Codex #2). Set the tree directly since `insertWorkroomSplit` rejects non-resolving leaves.
+    let store = store3()
+    store.workroomSplit = .split(
+      id: UUID(), orientation: .horizontal, ratio: 0.9,
+      first: .leaf(wr("deleted")),
+      second: .split(
+        id: UUID(), orientation: .horizontal, ratio: 0.9,
+        first: .leaf(wr("main")), second: .leaf(wr("feature"))))
+    store.equalizeWorkroomSplit()
+    XCTAssertEqual(store.workroomSplit?.tabIDs, [wr("main"), wr("feature")], "ghost leaf pruned")
+    XCTAssertEqual(rootRatio(store) ?? -1, 0.5, accuracy: 0.0001, "two live panes split evenly")
+  }
+
+  func testEqualizeDissolvesWhenOneLiveLeafRemains() {
+    let store = store3()
+    store.workroomSplit = .split(
+      id: UUID(), orientation: .horizontal, ratio: 0.7,
+      first: .leaf(wr("deleted")), second: .leaf(wr("main")))
+    store.equalizeWorkroomSplit()
+    XCTAssertNil(store.workroomSplit, "only one live leaf → no split")
+  }
+
   // MARK: resolve / self-heal
 
   func testResolvedSplitLeavesDropsDeletedAndNilsBelowTwo() {

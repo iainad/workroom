@@ -661,6 +661,13 @@ final class TerminalSessions: ObservableObject {
     splitByTarget[target.id] = split.settingRatio(ratio, forSplit: splitID)
   }
 
+  /// Rebalance the target's split so every pane renders the same size (issue #83 "Resize Splits
+  /// Evenly"). No-op when the target has no split.
+  func equalizeSplit(for target: TerminalTarget) {
+    guard let split = splitByTarget[target.id] else { return }
+    splitByTarget[target.id] = split.equalized()
+  }
+
   /// Close a tab. If it's a split member the split collapses to the surviving sibling subtree (and
   /// dissolves when only one member would remain). Closing the last tab leaves the target with none.
   func closeTab(_ tabID: TerminalTab.ID, for target: TerminalTarget) {

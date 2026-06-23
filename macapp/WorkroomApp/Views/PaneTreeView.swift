@@ -70,7 +70,7 @@ struct PaneTreeView: View {
           SplitDivider(orientation: d.orientation, ratio: d.ratio, total: d.total) {
             sessions.setRatio($0, forSplit: d.id, for: target)
           }
-          .frame(width: d.rect.width, height: d.rect.height)
+          .frame(width: d.hitRect.width, height: d.hitRect.height)
           .position(x: d.rect.midX, y: d.rect.midY)
         }
         dropHighlight(plan: plan)
@@ -158,7 +158,13 @@ struct PaneDragState {
 struct PaneDividerFrame: Identifiable {
   let id: UUID
   let orientation: SplitOrientation
+  /// The 4pt visual gutter rect — where the divider sits and the value `.position` centers on.
   let rect: CGRect
+  /// The draggable hit-zone rect (issue #83): `rect` widened along the split axis to
+  /// `dividerHitThickness`, centered on `rect`. Wider than the visual gutter so the divider is
+  /// easier to grab, but still entirely within the transparent gutter + pane padding so it never
+  /// overhangs a live terminal surface (which would steal the terminal's own mouse input).
+  let hitRect: CGRect
   let ratio: CGFloat
   let total: CGFloat
 }
@@ -168,6 +174,13 @@ enum PaneTreeLayout {
 
   static var dividerThickness: CGFloat { TerminalSessions.dividerThickness }
   static var minPane: CGFloat { TerminalSessions.minPaneSize }
+  /// Draggable hit-zone thickness for the resize divider (issue #83). The visible gutter stays
+  /// `dividerThickness` (4pt); the hit zone is widened to this so the divider is easier to grab. It is
+  /// capped at `dividerThickness + 2pt pane padding on each side` (= 8pt) — the widest band that stays
+  /// over only the transparent gutter + the panes' 2pt padding (see `PaneLeafView`'s `.padding(2)`), so
+  /// it never overhangs a live terminal surface and can't intercept the terminal's own mouse input
+  /// (text selection, OSC8 link clicks, right-click menu, TUI mouse reporting).
+  static var dividerHitThickness: CGFloat { dividerThickness + 4 }
 
   /// Lengths of the first/second child along the split axis for a container of `total` points. Rounds
   /// the first child to whole points (avoids sub-pixel seams) and clamps so neither child falls below
@@ -218,8 +231,19 @@ enum PaneTreeLayout {
       let s = plan(second, in: secondRect)
       var panes = f.panes
       panes.merge(s.panes) { a, _ in a }
+      // Widen the hit zone along the split axis, centered on the gutter rect (issue #83). The
+      // perpendicular dimension is unchanged, so the band runs the full length of the divider.
+      let hit = dividerHitThickness
+      let hitRect =
+        orientation == .horizontal
+        ? CGRect(
+          x: dividerRect.midX - hit / 2, y: dividerRect.minY, width: hit, height: dividerRect.height
+        )
+        : CGRect(
+          x: dividerRect.minX, y: dividerRect.midY - hit / 2, width: dividerRect.width, height: hit)
       let divider = PaneDividerFrame(
-        id: sid, orientation: orientation, rect: dividerRect, ratio: ratio, total: axis)
+        id: sid, orientation: orientation, rect: dividerRect, hitRect: hitRect, ratio: ratio,
+        total: axis)
       return (panes, f.dividers + [divider] + s.dividers)
     }
   }

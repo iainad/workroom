@@ -153,6 +153,36 @@ indirect enum PaneLayout<Leaf: Hashable>: Equatable {
         second: second.settingRatio(ratio, forSplit: splitID))
     }
   }
+
+  /// Number of leaves in this (sub)tree (issue #83). A lone leaf is 1; a split is the sum of its
+  /// children. Used to weight `equalized()` so every leaf ends the same size.
+  var leafCount: Int {
+    switch self {
+    case .leaf:
+      return 1
+    case .split(_, _, _, let first, let second):
+      return first.leafCount + second.leafCount
+    }
+  }
+
+  /// "Resize splits evenly" (issue #83): rebalance every split node so all leaves render the same
+  /// size. Each node's ratio becomes its first child's share of the leaf count
+  /// (`first.leafCount / total`), so an unbalanced tree still divides space evenly across leaves —
+  /// e.g. `split(A, split(B, C))` → top ratio 1/3, inner 1/2, giving A = B = C. (A flat 0.5
+  /// everywhere would leave A at 1/2 and B, C at 1/4.) The renderer subtracts a divider per split
+  /// and rounds, so visible sizes land within a divider-thickness of equal — sub-character drift on
+  /// a terminal, deliberately not corrected here.
+  func equalized() -> PaneLayout<Leaf> {
+    switch self {
+    case .leaf:
+      return self
+    case .split(let sid, let o, _, let first, let second):
+      let ratio = CGFloat(first.leafCount) / CGFloat(first.leafCount + second.leafCount)
+      return .split(
+        id: sid, orientation: o, ratio: PaneRatio.sanitize(ratio),
+        first: first.equalized(), second: second.equalized())
+    }
+  }
 }
 
 /// The terminal split's concrete instantiation (issue #3): leaves are tab ids. Keeps terminal call

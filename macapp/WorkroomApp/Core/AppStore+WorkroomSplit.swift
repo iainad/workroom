@@ -187,6 +187,20 @@ extension AppStore {
     workroomSplit = workroomSplit?.settingRatio(ratio, forSplit: splitID)
   }
 
+  /// Resize the workroom split so every pane is the same size (issue #83 "Resize Workroom Splits
+  /// Evenly"). Prunes dead-workroom leaves FIRST — the renderer drops them on read
+  /// (`visibleWorkroomLayout`) while the stored tree still holds them, so equalizing the raw tree
+  /// would budget space for a ghost pane and leave the visible panes uneven. Dissolves to nil when
+  /// fewer than two leaves remain live (a lone leaf is "no split"). No-op when there's no split.
+  func equalizeWorkroomSplit() {
+    guard let split = workroomSplit else { return }
+    var live = split
+    for sid in split.tabIDs where target(for: sid) == nil {
+      live = live.removingLeaf(sid) ?? live
+    }
+    workroomSplit = live.tabIDs.count >= 2 ? live.equalized() : nil
+  }
+
   /// Drop split leaves whose workroom no longer resolves (deleted / reloaded away), collapsing or
   /// dissolving as needed. Called from `apply(_:)` after the selection is validated, so a dissolve can
   /// re-point selection to a live survivor when the old selection was nilled out.

@@ -57,7 +57,7 @@ struct WorkroomSplitView: View {
           WorkroomSplitDivider(orientation: d.orientation, ratio: d.ratio, total: d.total) {
             onSetRatio($0, d.id)
           }
-          .frame(width: d.rect.width, height: d.rect.height)
+          .frame(width: d.hitRect.width, height: d.hitRect.height)
           .position(x: d.rect.midX, y: d.rect.midY)
         }
         dropHighlight(plan: plan)

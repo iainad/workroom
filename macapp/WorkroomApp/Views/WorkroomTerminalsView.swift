@@ -110,6 +110,10 @@ struct WorkroomTerminalsView: View {
     .focusedSceneValue(\.hasTerminal, !tabs.isEmpty)
     // Drive the Go-menu Previous/Next Terminal Tab items (issue #29) — only meaningful with ≥2 tabs.
     .focusedSceneValue(\.multipleTerminalTabs, tabs.count > 1)
+    // Drive View ▸ "Resize Splits Evenly" (issue #83) — only when a terminal split is on screen. This
+    // view mounts only in the single-workroom path and only once a blocking setup script clears, so
+    // the item can never act on a hidden split.
+    .focusedSceneValue(\.terminalSplitVisible, sessions.isSplitVisible(for: target))
   }
 
   /// The layout the content area renders: the split when it's visible, else the focused solo tab.

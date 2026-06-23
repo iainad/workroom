@@ -550,3 +550,25 @@ diff tab opens and written back from `TerminalSessions.setDiffViewMode`.
 `Core/TerminalSessions.swift`).
 
 **Priority:** P3 (the per-file toggle works; persistence is an optional nicety).
+
+## AppKit tracking-handle divider for an even wider resize target (macapp) — #83 follow-up
+
+**What:** Replace the SwiftUI invisible-`Rectangle` resize divider (`SplitDivider` in
+`Views/PaneTreeView.swift`, `WorkroomSplitDivider` in `Views/WorkroomSplitView.swift`) with a
+dedicated AppKit tracking/drag handle (pattern: the existing `InspectorResizeHandle`) so the grab
+target can extend *over* the terminal surface without stealing its mouse input.
+
+**Why:** Issue #83 widened the hit zone to `PaneTreeLayout.dividerHitThickness` (8pt = the 4pt gutter
+plus the 2pt pane padding on each side). That's the safe ceiling for the overlay approach — any wider
+would overhang the live libghostty surface and intercept text selection, OSC8 link clicks, the
+right-click menu, and TUI mouse reporting near the gutter. A real AppKit handle owns its own tracking
+area, so it can be larger and still not fight the terminal NSView.
+
+**How to start:** Model it on `InspectorResizeHandle`; mount one per `PaneDividerFrame`, positioned on
+`d.rect`, calling the same `onRatio`/`setRatio` path the current divider uses. Keep the visual gutter
+invisible (the panes' own borders mark the boundary).
+
+**Depends on:** shipping #83 first, then real-use feedback that 8pt still feels fiddly. Surfaced by the
+Codex outside-voice pass during `/plan-eng-review`.
+
+**Priority:** P3 (8pt already doubles the old 4pt target; only revisit if users still find it tight).

@@ -273,27 +273,31 @@ struct RootView: View {
       store.dismissFocusedTerminalNotifications()
       Task { await store.reloadIfStale() }
     }
-    // Publish selection state for menu-command enablement (see WorkroomCommands). While a
-    // setup script blocks the selected workroom's terminal, report false so ⌘T can't open
-    // a (hidden) terminal behind the setup pane; the toolbar's Open/Reveal still work.
-    .focusedSceneValue(\.workroomSelected, terminalInteractionAvailable)
-    // Drive the "Next Notification" menu command's enabled state.
-    .focusedSceneValue(\.hasNotifications, !notifications.items.isEmpty)
-    // Drive the "New Workroom" (⌘N) menu command's enabled state — disabled with no projects (#81).
-    .focusedSceneValue(\.hasProjects, !store.projects.isEmpty)
-    // Drive the Go-menu Back/Forward commands' enabled state (issue #26).
-    .focusedSceneValue(\.canNavigateBack, store.canGoBack)
-    .focusedSceneValue(\.canNavigateForward, store.canGoForward)
-    // Drive the Run/Stop/Restart menu items (issue #7). Run-state lives on the store (OV-A), so
-    // these stay live as the command starts/stops/exits.
-    .focusedSceneValue(\.hasRunCommand, selectedHasRunCommand)
-    .focusedSceneValue(\.runCommandActive, selectedRunCommandActive)
-    .focusedSceneValue(\.hasRunTerminal, store.hasAnyRunTerminal)
-    // Drive the Go-menu Previous/Next Workroom Tab items (issue #29) — only meaningful with ≥2 tabs.
-    // RootView observes `terminals`, so this stays live as workrooms gain/lose their tabs.
-    .focusedSceneValue(\.multipleWorkroomTabs, store.orderedWorkroomTargets().count > 1)
-    // Drive the Go-menu "Open in…" item + ⌘O — enabled only with an editor and a valid selection.
-    .focusedSceneValue(\.canOpenInEditor, store.canOpenInEditor)
+    // Publish selection state for menu-command enablement (see WorkroomCommands). Grouped into one
+    // modifier so the long publisher chain stays a single, fast-to-type-check expression (SwiftUI
+    // chokes on ~12 `.focusedSceneValue` calls inline).
+    .modifier(
+      MenuStateValues(
+        // `workroomSelected`: while a setup script blocks the selected workroom's terminal, report
+        // false so ⌘T can't open a (hidden) terminal behind the setup pane (Open/Reveal still work).
+        workroomSelected: terminalInteractionAvailable,
+        hasNotifications: !notifications.items.isEmpty,
+        // `hasProjects`: "New Workroom" (⌘N) disabled with no projects (#81).
+        hasProjects: !store.projects.isEmpty,
+        // Go-menu Back/Forward (issue #26).
+        canNavigateBack: store.canGoBack,
+        canNavigateForward: store.canGoForward,
+        // Run/Stop/Restart (issue #7) — run-state lives on the store, so these stay live.
+        hasRunCommand: selectedHasRunCommand,
+        runCommandActive: selectedRunCommandActive,
+        hasRunTerminal: store.hasAnyRunTerminal,
+        // Go-menu Previous/Next Workroom Tab (issue #29) — only meaningful with ≥2 tabs.
+        multipleWorkroomTabs: store.orderedWorkroomTargets().count > 1,
+        // Go-menu "Open in…" + ⌘O — enabled only with an editor and a valid selection.
+        canOpenInEditor: store.canOpenInEditor,
+        // View ▸ "Resize Workroom Splits Evenly" (#83) — only when the selected workroom is a live
+        // member of a workroom-into-workroom split.
+        workroomSplitVisible: store.isWorkroomSplitVisible))
   }
 
   /// The project path of the selected root or workroom (nil for no selection) — the run command is
@@ -507,5 +511,40 @@ private struct SidebarWidthKey: PreferenceKey {
   static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
     let next = nextValue()
     if next != 0 { value = next }
+  }
+}
+
+/// Publishes the per-window menu-command enablement values as `focusedSceneValue`s in one place. A
+/// `Commands` body doesn't re-evaluate when the shared store mutates, but it does track focused
+/// values — so RootView recomputes these (it observes the store/sessions) and the menu reads them via
+/// `@FocusedValue` (see `WorkroomCommands`). Collapsed into a `ViewModifier` so RootView's body stays a
+/// single, fast-to-type-check expression (a dozen inline `.focusedSceneValue` calls blow the
+/// type-checker's budget).
+private struct MenuStateValues: ViewModifier {
+  let workroomSelected: Bool
+  let hasNotifications: Bool
+  let hasProjects: Bool
+  let canNavigateBack: Bool
+  let canNavigateForward: Bool
+  let hasRunCommand: Bool
+  let runCommandActive: Bool
+  let hasRunTerminal: Bool
+  let multipleWorkroomTabs: Bool
+  let canOpenInEditor: Bool
+  let workroomSplitVisible: Bool
+
+  func body(content: Content) -> some View {
+    content
+      .focusedSceneValue(\.workroomSelected, workroomSelected)
+      .focusedSceneValue(\.hasNotifications, hasNotifications)
+      .focusedSceneValue(\.hasProjects, hasProjects)
+      .focusedSceneValue(\.canNavigateBack, canNavigateBack)
+      .focusedSceneValue(\.canNavigateForward, canNavigateForward)
+      .focusedSceneValue(\.hasRunCommand, hasRunCommand)
+      .focusedSceneValue(\.runCommandActive, runCommandActive)
+      .focusedSceneValue(\.hasRunTerminal, hasRunTerminal)
+      .focusedSceneValue(\.multipleWorkroomTabs, multipleWorkroomTabs)
+      .focusedSceneValue(\.canOpenInEditor, canOpenInEditor)
+      .focusedSceneValue(\.workroomSplitVisible, workroomSplitVisible)
   }
 }
