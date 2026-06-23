@@ -51,8 +51,9 @@ final class NewWindowUITests: XCTestCase {
     return XCTWaiter().wait(for: [exp], timeout: timeout) == .completed
   }
 
-  /// The File menu carries a "New Window" item (it replaced the suppressed default). ⌘N is its
-  /// shortcut (shown in the item); asserting the item exists is the reliable a11y check.
+  /// The File menu carries a "New Window" item (it replaced the suppressed default). It has no
+  /// keyboard shortcut — ⌘N now belongs to "New Workroom" (issue #81); New Window is menu-only.
+  /// Asserting the item exists is the reliable a11y check.
   func testNewWindowMenuItemPresent() throws {
     let app = launchedApp()
     waitForLaunchWindow(app)

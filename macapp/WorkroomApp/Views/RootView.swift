@@ -153,6 +153,11 @@ struct RootView: View {
         Task { await store.addProject(url) }
       }
     }
+    // New Workroom picker (⌘N, issue #81): same store-flag bridge as the importer above, packaged as
+    // a modifier so this large `body` stays within the type-checker's budget (like EdgeRevealSidebars).
+    // The menu command gates on `hasProjects`, so it only fires with ≥1 project; the dialog itself
+    // still handles a filter that matches nothing.
+    .modifier(NewWorkroomPresenter(store: store))
     .confirmationDialog(
       store.pendingDeletion.map { "Delete '\($0.workroom.name)'?" } ?? "Delete workroom?",
       isPresented: Binding(
@@ -274,6 +279,8 @@ struct RootView: View {
     .focusedSceneValue(\.workroomSelected, terminalInteractionAvailable)
     // Drive the "Next Notification" menu command's enabled state.
     .focusedSceneValue(\.hasNotifications, !notifications.items.isEmpty)
+    // Drive the "New Workroom" (⌘N) menu command's enabled state — disabled with no projects (#81).
+    .focusedSceneValue(\.hasProjects, !store.projects.isEmpty)
     // Drive the Go-menu Back/Forward commands' enabled state (issue #26).
     .focusedSceneValue(\.canNavigateBack, store.canGoBack)
     .focusedSceneValue(\.canNavigateForward, store.canGoForward)

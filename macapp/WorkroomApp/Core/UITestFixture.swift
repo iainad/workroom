@@ -20,6 +20,13 @@ enum UITestFixture {
     UserDefaults.standard.bool(forKey: defaultsKey)
   }
 
+  /// When set (`-WorkroomUITestNoProjects 1`), the fixture loads an EMPTY project list — the
+  /// fresh-install / nothing-configured state. Used by `NewWorkroomDialogUITests` to assert File ▸
+  /// New Workroom is disabled when there's nothing to pick (issue #81 D3).
+  static var noProjects: Bool {
+    UserDefaults.standard.bool(forKey: "WorkroomUITestNoProjects")
+  }
+
   /// When set (`-WorkroomUITestManyChanges 1`), the fixture workroom reports a long changed-file
   /// list so the Changes section overflows and fills the inspector — the scenario in which the
   /// inspector's section-disclosure animation misbehaves (the header title swims relative to its
@@ -91,6 +98,8 @@ enum UITestFixture {
   /// sidebar's root row renders normally; no real VCS call is ever made (loading is short-circuited
   /// in `AppStore`, which also skips branch resolution for these paths).
   static func projects() -> [Project] {
+    // Empty list for the no-projects scenario (issue #81 D3) — nothing to create or select.
+    if noProjects { return [] }
     let base = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
       .appendingPathComponent("workroom-uitest", isDirectory: true)
     let projectDir = base.appendingPathComponent(projectName, isDirectory: true)

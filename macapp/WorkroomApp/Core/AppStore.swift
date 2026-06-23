@@ -263,6 +263,9 @@ final class AppStore: ObservableObject {
   }
   /// Set by the "Add Project" menu command to trigger the sidebar's file importer.
   @Published var requestAddProject = false
+  /// Set by the "New Workroom" menu command (⌘N) to raise the project-picker dialog (issue #81).
+  /// RootView observes it, presents the sheet, and resets the flag — same idiom as `requestAddProject`.
+  @Published var requestNewWorkroomPicker = false
   /// A workroom awaiting delete confirmation; setting it raises the confirmation prompt.
   @Published var pendingDeletion: PendingWorkroomDeletion?
   /// A project awaiting type-to-confirm deletion (drives the DeleteProjectSheet). Set by the

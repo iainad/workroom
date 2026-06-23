@@ -146,6 +146,7 @@ extension KeyboardShortcutsView {
     ShortcutGroup(
       title: "App",
       items: [
+        ShortcutItem(label: "New Workroom", keys: "⌘N"),
         ShortcutItem(label: "New Project…", keys: "⌘O"),
         ShortcutItem(label: "Settings", keys: "⌘,"),
         ShortcutItem(label: "Quit", keys: "⌘Q"),

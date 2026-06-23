@@ -435,6 +435,13 @@ struct HasNotificationsKey: FocusedValueKey {
   typealias Value = Bool
 }
 
+/// Whether the app has at least one project — published by RootView, so "New Workroom" (⌘N, issue
+/// #81) disables when there's nothing to pick (a fresh install): ⌘N is then a silent no-op rather
+/// than opening an empty dialog.
+struct HasProjectsKey: FocusedValueKey {
+  typealias Value = Bool
+}
+
 /// Whether back/forward navigation can move (issue #26) — published by RootView, so the Go-menu
 /// Back/Forward commands disable at the ends of history.
 struct CanNavigateBackKey: FocusedValueKey {
@@ -495,6 +502,10 @@ extension FocusedValues {
     get { self[HasNotificationsKey.self] }
     set { self[HasNotificationsKey.self] = newValue }
   }
+  var hasProjects: Bool? {
+    get { self[HasProjectsKey.self] }
+    set { self[HasProjectsKey.self] = newValue }
+  }
   var canNavigateBack: Bool? {
     get { self[CanNavigateBackKey.self] }
     set { self[CanNavigateBackKey.self] = newValue }
@@ -541,6 +552,7 @@ struct WorkroomCommands: Commands {
   @FocusedValue(\.workroomSelected) private var workroomSelected
   @FocusedValue(\.hasTerminal) private var hasTerminal
   @FocusedValue(\.hasNotifications) private var hasNotifications
+  @FocusedValue(\.hasProjects) private var hasProjects
   @FocusedValue(\.canNavigateBack) private var canNavigateBack
   @FocusedValue(\.canNavigateForward) private var canNavigateForward
   @FocusedValue(\.hasRunCommand) private var hasRunCommand
@@ -740,12 +752,18 @@ struct WorkroomCommands: Commands {
       Toggle("Copy on Select", isOn: $copyOnSelect)
     }
 
-    // File ▸ New Window (⌘N, issue #70): opens a window with its own independent state — no open
-    // workrooms or tabs, only the shared project list (a fresh `WindowSeed` so it starts blank).
-    // Replaces the standard WindowGroup item so the label/shortcut are explicit.
+    // File ▸ New Workroom (⌘N, issue #81) + New Window. New Workroom raises the project-picker
+    // dialog (RootView observes `requestNewWorkroomPicker`); picking a project creates + opens a
+    // workroom in it. It takes ⌘N — the more frequent action — so New Window keeps its menu item but
+    // loses the accelerator (the ⌘N/⌥⌘N/⇧⌘N "N" family is already spent on the notifications feature:
+    // ⌥⌘N = View ▸ Notifications, ⇧⌘N = Next Notification — no clean key was free). New Workroom is
+    // disabled with no projects, so ⌘N is a silent no-op rather than an empty dialog (issue #81 D3).
+    // Replaces the standard WindowGroup item so the labels are explicit.
     CommandGroup(replacing: .newItem) {
-      Button("New Window") { openWindow(value: WindowSeed(id: UUID(), restore: false)) }
+      Button("New Workroom") { store?.requestNewWorkroomPicker = true }
         .keyboardShortcut("n", modifiers: .command)
+        .disabled(hasProjects != true)
+      Button("New Window") { openWindow(value: WindowSeed(id: UUID(), restore: false)) }
     }
 
     CommandGroup(after: .newItem) {
