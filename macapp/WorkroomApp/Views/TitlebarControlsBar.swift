@@ -29,6 +29,12 @@ struct TitlebarControlsBar: View {
 
   var body: some View {
     HStack(spacing: 10) {
+      // Hairline divider separating the bell from the controls to its left (quick terminal / run /
+      // open-in). Moved here from between the bell and the inspector toggle, which now read as one group.
+      Rectangle()
+        .fill(theme.tokens.border)
+        .frame(width: 1, height: 14)
+
       // Notifications bell with live unread badge — opens the oldest pending notification's terminal.
       Button {
         store.openOldestNotification()
@@ -42,11 +48,6 @@ struct TitlebarControlsBar: View {
       .help(notifications.total > 0 ? "Open oldest notification" : "No notifications")
       .accessibilityLabel(Self.bellLabel(unread: notifications.total))
       .accessibilityIdentifier("titlebar.notifications")
-
-      // Hairline divider grouping the bell with the inspector toggle.
-      Rectangle()
-        .fill(theme.tokens.border)
-        .frame(width: 1, height: 14)
 
       // Inspector toggle — fills while the inspector is open so the on/off state reads at a glance,
       // mirroring the leading sidebar toggle.
@@ -68,10 +69,9 @@ struct TitlebarControlsBar: View {
       }
     }
     .buttonStyle(ToolbarIconButtonStyle())
-    // No leading padding: the bell's left divider lives in TrailingTitlebarBar (its 4pt pad + the bar's
-    // 6pt spacing already give a 10pt gap to the bell). A leading 10 here would stack on top, leaving
-    // the bell with a wider gap on its left than its right (the 10pt HStack spacing to its right
-    // divider). Trailing 10 keeps the inspector toggle off the window edge.
+    // No leading padding: the leading divider above is the bar's first element, and the gap to its
+    // left comes from TrailingTitlebarBar's 6pt HStack spacing. A leading 10 here would stack on top.
+    // Trailing 10 keeps the inspector toggle off the window edge.
     .padding(.trailing, 10)
     // Fill the full-height (52pt) accessory host so the HStack centres its buttons — see LeadingTitlebarBar.
     .frame(maxHeight: .infinity)

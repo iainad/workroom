@@ -24,7 +24,7 @@ struct TitlebarDivider: View {
   }
 }
 
-/// Leading title-bar controls: sidebar toggle + history nav + quick terminal (issue #26, #39). Our
+/// Leading title-bar controls: sidebar toggle + history nav (issue #26). Our
 /// own sidebar toggle (leftmost, right after the traffic lights) replaces NavigationSplitView's auto
 /// one — removed via `.toolbar(removing:)`, with the now-itemless window toolbar hidden in
 /// `WindowBackgroundThemer` so it doesn't leave an overflow chevron.
@@ -70,23 +70,8 @@ struct LeadingTitlebarBar: View {
       .accessibilityLabel("Forward")
       .disabled(!store.canGoForward)
 
-      // Separate the history nav from the quick-terminal action — it's a different kind of control.
-      TitlebarDivider()
-
-      Button {
-        NotificationCenter.default.post(name: .showQuickTerminal, object: nil)
-      } label: {
-        // The `.badge.plus` extends this glyph's box upward, so a plain centre sits ~0.5pt high vs the
-        // other icons; nudge it down to sit on the same line.
-        Image(systemName: "macwindow.badge.plus")
-          .offset(y: 0.5)
-      }
-      .help("Quick Terminal (⌥§)")
-      .accessibilityLabel("Quick Terminal")
-      .accessibilityIdentifier("toolbar.quickTerminal")
-
-      // A newer version is waiting (Sparkle gentle reminder) — a highlighted pill, right of Quick
-      // Terminal. Self-hides when no update is pending; the divider matches.
+      // A newer version is waiting (Sparkle gentle reminder) — a highlighted pill, right of the
+      // history nav. Self-hides when no update is pending; the divider matches.
       if updater.availableVersionString != nil {
         TitlebarDivider()
         UpdateAvailableButton()
@@ -101,16 +86,33 @@ struct LeadingTitlebarBar: View {
   }
 }
 
-/// Trailing title-bar controls: the selected target's run/open-in actions (issue #7) plus the
-/// notifications bell + inspector toggle. `RunControls`/`OpenInControl` render nothing when not
-/// applicable, so the group collapses to just the bell + toggle in the empty state.
+/// Trailing title-bar controls: the quick terminal (issue #39), the selected target's run/open-in
+/// actions (issue #7), plus the notifications bell + inspector toggle. `RunControls`/`OpenInControl`
+/// render nothing when not applicable, so the group collapses to just quick terminal + bell + toggle
+/// in the empty state.
 struct TrailingTitlebarBar: View {
   @EnvironmentObject var store: AppStore
   @EnvironmentObject var notifications: NotificationCenterStore
 
   var body: some View {
     HStack(spacing: 6) {
+      // Quick Terminal (⌥§) — a ~/ shell in its own window. Leftmost in the trailing group, just left
+      // of the run controls. Always present (independent of the selection), so it leads the group.
+      Button {
+        NotificationCenter.default.post(name: .showQuickTerminal, object: nil)
+      } label: {
+        // The `.badge.plus` extends this glyph's box upward, so a plain centre sits ~0.5pt high vs the
+        // other icons; nudge it down to sit on the same line.
+        Image(systemName: "macwindow.badge.plus")
+          .offset(y: 0.5)
+      }
+      .help("Quick Terminal (⌥§)")
+      .accessibilityLabel("Quick Terminal")
+      .accessibilityIdentifier("toolbar.quickTerminal")
+
       if let target = store.selectedTarget, !target.isMissing {
+        // Separate the quick terminal from the target's run/open-in actions — a different group.
+        TitlebarDivider()
         if let projectPath = AppStore.projectPath(of: store.selectedTargetID) {
           RunControls(target: target, projectPath: projectPath)
         }
