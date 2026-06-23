@@ -141,6 +141,47 @@ extension AppStore {
     removeWorkroomSplitMember(sid)  // guards `split.contains(sid)` → no-op for a non-member
   }
 
+  /// When the *currently-viewed* workroom loses its last panel (terminal or diff), jump to the
+  /// rightmost remaining workroom tab so you aren't stranded on the empty "New Terminal" state of a
+  /// workroom whose chip has already left the bar (issue #80). No-op unless the emptied target is the
+  /// selected one — a *background* workroom emptying must never steal focus, and a *delete* nils (or
+  /// re-points to a split survivor) selection before its async reap fires `onTabsRemoved`, so this is a
+  /// no-op there too. The split-member case is already handled by `autoCloseEmptiedSplitMember`, which
+  /// runs first and moves selection to the survivor — so by here the emptied target is no longer
+  /// selected and this no-ops (no double-jump). Called from the `onTabsRemoved` hook AFTER the split
+  /// auto-close.
+  func selectFallbackWorkroomAfterEmpty(_ targetID: TerminalTarget.ID) {
+    guard terminals.tabCount(forTargetID: targetID) == 0,
+      let sid = Self.sidebarID(forTargetID: targetID, in: projects),
+      selectedTargetID == sid
+    else { return }
+    selectFallbackWorkroom()
+  }
+
+  /// Select the rightmost workroom tab *as the eye sees it* (issue #80). Uses `displayedWorkroomTargets`
+  /// — the split-aware on-screen order that `cycleWorkroomTab` / `focusWorkroomTab` also index — so
+  /// "rightmost" is the rightmost *chip*, not the last id in raw persisted order (which a split regroups
+  /// away from). No-op when no other workroom tab is open (`last == nil`): the caller's emptied workroom
+  /// stays selected on its empty state, or the delete caller's selection stays nil — "do nothing else".
+  /// Records nav history via `focusWorkroomMember`, matching how the neighbour auto-focused after a close
+  /// is a real back/forward step (`NavigationHistory`). Shared by the close-path hook above and
+  /// `deleteWorkroom`'s last-workroom re-point.
+  func selectFallbackWorkroom() {
+    guard let last = displayedWorkroomTargets().last else { return }
+    focusWorkroomMember(last.sid)
+  }
+
+  /// The delete-path counterpart to `selectFallbackWorkroomAfterEmpty` (issue #80): after a deleted
+  /// workroom is detached from this window, land on the rightmost remaining tab — but only when the
+  /// deletion was of the *selected* workroom AND the detach left selection nil. A split member yields
+  /// to its survivor inside `detachTarget` (selection is non-nil), so we skip it there; deleting a
+  /// non-selected workroom leaves selection untouched. Extracted from `deleteWorkroom` so this
+  /// synchronous re-point is unit-testable without `deleteWorkroom`'s async CLI/VCS teardown.
+  func reselectAfterWorkroomDetached(wasSelectedHere: Bool) {
+    guard wasSelectedHere, selectedTargetID == nil else { return }
+    selectFallbackWorkroom()
+  }
+
   /// Set a divider ratio (driven by `WorkroomSplitView`'s divider drag).
   func setWorkroomSplitRatio(_ ratio: CGFloat, forSplit splitID: UUID) {
     workroomSplit = workroomSplit?.settingRatio(ratio, forSplit: splitID)

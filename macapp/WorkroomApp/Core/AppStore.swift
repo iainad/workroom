@@ -386,6 +386,12 @@ final class AppStore: ObservableObject {
       // affordance is the remove-from-split ✕ — close it for the user by dropping the now-empty
       // workroom from the split (issue #55). No-op for a solo workroom or a non-member.
       self.autoCloseEmptiedSplitMember(targetID)
+      // Then, if the workroom you're *viewing* just lost its last panel, jump to the rightmost
+      // remaining tab instead of stranding you on its empty state (issue #80). Runs AFTER the split
+      // auto-close, which re-points selection off a split member first — so this only fires for a
+      // selected *solo* workroom. No-op for a background close or a delete (selection isn't the
+      // emptied target by the time its reap reaches here).
+      self.selectFallbackWorkroomAfterEmpty(targetID)
     }
     // Mirror the aggregate unread count onto the Dock icon badge (issue #32). Owned here, not in a
     // view: see `NotificationCenterStore.onTotalChange` for why a view-driven badge misses
@@ -1848,6 +1854,10 @@ final class AppStore: ObservableObject {
   func deleteWorkroom(_ workroom: Workroom, in project: Project) {
     let sid = SidebarID.workroom(project: project.path, name: workroom.name)
     let targetID = TerminalTarget.workroomID(project: project.path, name: workroom.name)
+    // Was the deleted workroom the one selected in *this* window? Captured before `detachTarget`
+    // mutates selection, so the issue #80 fallback below can re-point only when the delete left us
+    // with nothing selected (a solo selected workroom — a split member yields to its survivor).
+    let wasSelectedHere = selectedTargetID == sid
     // Optimistic shared-model removal, visible in every window: drop it from the project list and its
     // shared VCS/CI status now (snappy UI). Terminals stay alive for the graceful stop; the reap +
     // VCS teardown follow once the process exits, so a dev server isn't orphaned against a deleted dir.
@@ -1858,6 +1868,11 @@ final class AppStore: ObservableObject {
     // surfaces or processes.
     let stores = affectedStores
     for store in stores { store.detachTarget(sid) }
+    // If deleting the selected workroom left this window with no selection (the solo case — a split
+    // member already yielded to its survivor, so selection is non-nil and we skip), land on the
+    // rightmost remaining tab rather than the bare launch state — the same fallback closing the last
+    // panel uses (issue #80). `displayedWorkroomTargets` already excludes the just-removed workroom.
+    reselectAfterWorkroomDetached(wasSelectedHere: wasSelectedHere)
     // Ctrl-C the run command and reap the surfaces in every window that held this workroom, then run
     // the VCS teardown once — no dev server in any window left running against the deleted directory
     // (issue #7/#70). No live run command anywhere → immediate.
