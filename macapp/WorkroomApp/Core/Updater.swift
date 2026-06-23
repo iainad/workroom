@@ -6,11 +6,12 @@ import Sparkle
 /// SUEnableAutomaticChecks on) it runs scheduled background checks against the appcast feed declared
 /// by SUFeedURL in Info.plist, verifying downloads against SUPublicEDKey.
 ///
-/// It also implements Sparkle's **gentle scheduled update reminders**
-/// (`SPUStandardUserDriverDelegate`): when a background check finds an update Sparkle would otherwise
-/// pop a window for, we instead surface a quiet toolbar "Update" pill (`availableVersionString`).
-/// `SPUUpdaterDelegate` lets us clear that pill when the update is installed or no longer offered —
-/// but NOT on cancel/Later, so a still-available update keeps its affordance.
+/// It also surfaces a quiet toolbar "Update" pill (`availableVersionString`) whenever an update is
+/// available: `SPUUpdaterDelegate.updater(_:didFindValidUpdate:)` sets it for *any* check — manual
+/// "Check for Updates…" included — and the `SPUStandardUserDriverDelegate` gentle-reminder path keeps
+/// background checks from forcing a window. The pill is cleared when the update is installed or no
+/// longer offered — but NOT on cancel/Later, so after the user dismisses Sparkle's prompt a
+/// still-available update keeps its affordance.
 final class Updater: NSObject, ObservableObject, SPUUpdaterDelegate, SPUStandardUserDriverDelegate {
   private var controller: SPUStandardUpdaterController!
 
@@ -96,6 +97,14 @@ final class Updater: NSObject, ObservableObject, SPUUpdaterDelegate, SPUStandard
   }
 
   // MARK: - SPUUpdaterDelegate (pill clear policy — D7)
+
+  func updater(_ updater: SPUUpdater, didFindValidUpdate item: SUAppcastItem) {
+    // Surface the pill for ANY found update — including a manual "Check for Updates…" — so that once
+    // the user dismisses Sparkle's prompt (Later / close) the affordance stays. Fires for both manual
+    // and scheduled checks, unlike the gentle-reminder driver path, which only sees updates Sparkle
+    // isn't itself presenting.
+    setAvailable(item.displayVersionString)
+  }
 
   func updaterDidNotFindUpdate(_ updater: SPUUpdater) {
     // A later check confirmed no update is available → the pill is stale, clear it.
