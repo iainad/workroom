@@ -2381,6 +2381,15 @@ final class AppStore: ObservableObject {
 
   // MARK: Notifications
 
+  /// Whether a freshly-active on-screen pane should pulse its border. The *cursor* pane of the
+  /// focused workroom never pulses — you're looking at it. A co-displayed NON-selected workroom is
+  /// backgrounded/dimmed, so any of its on-screen panes pulses (issue #82). Pure + unit-tested.
+  nonisolated static func shouldPulse(isOnScreen: Bool, isSelectedMember: Bool, isCursorTab: Bool)
+    -> Bool
+  {
+    isOnScreen && (isSelectedMember ? !isCursorTab : true)
+  }
+
   /// Record a terminal's activity, then surface it: backgrounded ⇒ a native banner; foregrounded ⇒
   /// an in-app toast (inspector closed) or a sidebar row flash (inspector open), plus the arrival
   /// sound (issue #31). `record` drops the event entirely when the user is already looking at that
@@ -2390,12 +2399,18 @@ final class AppStore: ObservableObject {
   ) {
     // "Seen" = on screen (the focused solo tab or any pane of the visible split) — those are
     // suppressed (D3). A visible pane that isn't the cursor pane gets a border flash instead of a
-    // badge, so split-mates still signal activity without nagging.
+    // badge, so split-mates still signal activity without nagging. A co-displayed NON-selected
+    // workroom is backgrounded, so any of its on-screen panes flashes too (issue #82); `seen`
+    // implies `onScreenTarget` is non-nil.
     let seen = isFocused(targetID: targetID, tabID: tabID)
-    if seen, let target = selectedTarget, target.id == targetID,
-      terminals.focusedTab(for: target)?.id != tabID
-    {
-      terminals.pulsePaneActivity(tabID)
+    if seen, let onScreen = onScreenTarget(forID: targetID) {
+      let isSelectedMember = onScreen.id == selectedTarget?.id
+      let isCursorTab = terminals.focusedTab(for: onScreen)?.id == tabID
+      if Self.shouldPulse(
+        isOnScreen: true, isSelectedMember: isSelectedMember, isCursorTab: isCursorTab)
+      {
+        terminals.pulsePaneActivity(tabID)
+      }
     }
     guard
       let note = notifications.record(

@@ -30,6 +30,19 @@ struct PaneTreeView: View {
   /// Whichever drag is active: an in-tree pane-handle drag, or an incoming chip drag.
   private var activeDrag: PaneDragState? { drag ?? externalDrag }
 
+  /// Whether a pane should show the dim scrim. `multiPane || !surfaceActive`: dim split-mates AND
+  /// every pane of a *backgrounded* workroom — `surfaceActive` is `false` only for a co-displayed,
+  /// non-focused workroom split member (`WorkroomSplitView`), so "no first responder == backgrounded
+  /// == dim" is a *deliberate* coupling here; split this into its own flag if a future caller ever
+  /// disables focus for some other reason. `!focused` never dims the active pane. Gating on
+  /// `surfaceActive` (not merely `!focused`) keeps a solo *focused* workroom undimmed even if its
+  /// `focusedID` is momentarily nil. `!flashing`: an activity pulse briefly lifts the dim so a
+  /// backgrounded pane's pulse is visible. Pure + unit-tested (issue #82) like the layout math.
+  static func shouldDim(multiPane: Bool, surfaceActive: Bool, focused: Bool, flashing: Bool) -> Bool
+  {
+    (multiPane || !surfaceActive) && !focused && !flashing
+  }
+
   var body: some View {
     let focusedID = sessions.focusedTab(for: target)?.id
     let multiPane = layout.tabIDs.count >= 2
@@ -42,6 +55,7 @@ struct PaneTreeView: View {
               tabID: tabID, content: tab.content, target: target, sessions: sessions,
               title: tab.title,
               focused: surfaceActive && tabID == focusedID, multiPane: multiPane,
+              surfaceActive: surfaceActive,
               paneIndex: index + 1, paneCount: layout.tabIDs.count, coordinateSpace: Self.space,
               onDragChanged: { beginOrUpdateDrag(tabID: tabID, at: $0) },
               onDragEnded: { commitDrag(plan: plan) },
@@ -294,6 +308,11 @@ private struct PaneLeafView: View {
   let title: String
   let focused: Bool
   let multiPane: Bool
+  /// Whether this pane's workroom may hold keyboard focus — `false` for a co-displayed, non-focused
+  /// workroom split member (the only `surfaceActive: false` caller). Drives the dim scrim alongside
+  /// `multiPane` (see `PaneTreeView.shouldDim`). Non-defaulted on purpose: the compiler then forces
+  /// the call site to thread it through, so the dim can't silently no-op (issue #82).
+  let surfaceActive: Bool
   let paneIndex: Int
   let paneCount: Int
   let coordinateSpace: String
@@ -313,23 +332,28 @@ private struct PaneLeafView: View {
 
   var body: some View {
     paneContent
-      // Dim every pane that isn't the focused one so the active terminal reads instantly — across both
-      // splits and co-displayed workrooms (an unfocused workroom passes `surfaceActive: false`, so all
-      // its panes arrive here `focused == false`). A solo terminal is always logically focused, so it
-      // never dims. A scrim (not `.opacity`) because the libghostty Metal surface composites its own
-      // layer. The scrim is the terminal's own background colour (`.terminalDim`) so it washes the text
-      // toward the background — the BG itself barely changes in any mode. An activity flash lifts the
-      // dim so the pulse is visible on a backgrounded pane.
-      // The dim scrim is split-only: it marks the *unfocused* panes, and a solo terminal is always
-      // focused so it has nothing to dim.
+      // Dim every pane that isn't the focused one so the active terminal reads instantly. This fires
+      // for split-mates AND for every pane of a co-displayed *backgrounded* workroom — which passes
+      // `surfaceActive: false`, so all its panes arrive here `focused == false` (`shouldDim` gates on
+      // `multiPane || !surfaceActive`, so a backgrounded *solo* workroom dims too — issue #82). A
+      // focused solo terminal never dims. A scrim (not `.opacity`) because the libghostty Metal
+      // surface composites its own layer. The scrim is the terminal's own background colour
+      // (`.terminalDim`) so it washes the text toward the background — the BG itself barely changes.
+      // The scrim is ALWAYS mounted and only its opacity animates (0↔0.3): conditionally inserting it
+      // would make a solo workroom's focus transition snap instead of fade. An activity flash lifts
+      // the dim so the pulse is visible on a backgrounded pane.
       .overlay {
-        if multiPane {
-          RoundedRectangle(cornerRadius: TerminalPanelMetrics.cornerRadius)
-            .fill(theme.tokens.terminalDim.opacity(dimmed ? 0.3 : 0))
-            .allowsHitTesting(false)
-            .animation(reduceMotion ? nil : .easeInOut(duration: 0.1), value: flashing)
-            .animation(reduceMotion ? nil : .easeInOut(duration: 0.07), value: focused)
-        }
+        RoundedRectangle(cornerRadius: TerminalPanelMetrics.cornerRadius)
+          .fill(
+            theme.tokens.terminalDim.opacity(
+              PaneTreeView.shouldDim(
+                multiPane: multiPane, surfaceActive: surfaceActive, focused: focused,
+                flashing: flashing) ? 0.3 : 0)
+          )
+          .allowsHitTesting(false)
+          .animation(reduceMotion ? nil : .easeInOut(duration: 0.1), value: flashing)
+          .animation(reduceMotion ? nil : .easeInOut(duration: 0.07), value: focused)
+          .animation(reduceMotion ? nil : .easeInOut(duration: 0.07), value: surfaceActive)
       }
       // A rounded border frames every terminal, the same in a split or solo: `borderColor` is the
       // focus tint on the focused pane (a solo terminal is always focused, so it always gets it) and a
@@ -356,7 +380,10 @@ private struct PaneLeafView: View {
       .modifier(ActivateOnPress(enabled: !isTerminal, onActivate: onActivate))
       .onHover { hovering = $0 }
       .onChange(of: sessions.activityPulses[tabID]) { _, _ in
-        guard multiPane, !focused else { return }
+        // Flash a backgrounded pane on activity — a split-mate, or any pane of a co-displayed
+        // backgrounded workroom (`!surfaceActive`), mirroring the dim gate so the pulse lifts the
+        // scrim (issue #82). Never the focused pane — you're looking at it.
+        guard multiPane || !surfaceActive, !focused else { return }
         flashing = true
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { flashing = false }
       }
@@ -432,10 +459,6 @@ private struct PaneLeafView: View {
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.15), value: hovering)
     }
   }
-
-  /// Dim a pane that's neither focused nor mid activity-flash. The flash exemption lets a pulse on a
-  /// backgrounded pane briefly un-dim itself (paired with the focus-tint border flash).
-  private var dimmed: Bool { !focused && !flashing }
 
   private var borderColor: Color {
     // The focused terminal gets the solid, theme-following `focused` tint — solo or split alike (and
