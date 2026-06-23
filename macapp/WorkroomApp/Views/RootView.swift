@@ -49,24 +49,44 @@ struct RootView: View {
     return true
   }
 
-  /// The leading title-bar controls (sidebar toggle + history nav + quick terminal) hosted as an
-  /// `NSTitlebarAccessoryViewController`, pinned just after the traffic lights. Env objects are
-  /// injected inside the closure because the hosted tree lives outside the WindowGroup's environment.
-  private var leadingTitlebar: some View {
-    TitlebarAccessory(edge: .leading, identifier: .init("workroom.titlebarLeading")) {
-      LeadingTitlebarBar()
-        .environmentObject(store)
-        .environmentObject(updater)
-    }
-  }
-
-  /// The trailing title-bar controls (run/open-in + notifications bell + inspector toggle) hosted as
-  /// an `NSTitlebarAccessoryViewController`, pinned to the window's true trailing edge.
-  private var trailingTitlebar: some View {
-    TitlebarAccessory(edge: .trailing, identifier: .init("workroom.titlebarTrailing")) {
-      TrailingTitlebarBar()
-        .environmentObject(store)
-        .environmentObject(notifications)
+  /// The single, full-width title-bar bar (issue #23), hosted as one `NSTitlebarAccessoryViewController`
+  /// stretched from just right of the traffic lights to the window's trailing edge (`fillsWidth`). It
+  /// lays out, left to right: the leading controls (sidebar toggle + history nav), then — when any
+  /// workroom/root has a terminal — a divider and the **workroom tab bar, which fills all the space
+  /// between** the leading and trailing controls; then the trailing controls (run/open-in + bell +
+  /// inspector toggle), hugging the right edge. One accessory rather than two because both halves can't
+  /// claim the trailing edge while a stretchable bar fills the middle. Env objects + the chip-drag
+  /// plumbing are injected/captured inside the closure because the hosted tree lives outside the
+  /// WindowGroup's environment.
+  private var titlebar: some View {
+    TitlebarAccessory(
+      edge: .leading, identifier: .init("workroom.titlebar"), fillsWidth: true
+    ) {
+      let tabs = store.displayedWorkroomTargets()
+      HStack(spacing: 6) {
+        LeadingTitlebarBar()
+        if !tabs.isEmpty {
+          TitlebarDivider()
+          WorkroomTabBar(
+            tabs: tabs, selectedID: store.selectedTargetID,
+            onSelect: { selectWorkroomTab($0) },
+            chipPaneDrag: $workroomChipDrag,
+            localize: { workroomChipLocal($0) },
+            dropTarget: { workroomChipDropTarget(at: $0) }
+          )
+        } else {
+          Spacer(minLength: 0)
+        }
+        TrailingTitlebarBar()
+      }
+      .environmentObject(store)
+      .environmentObject(updater)
+      .environmentObject(notifications)
+      .environmentObject(terminals)
+      // Fill the accessory host so the controls + tabs stay vertically centred on the title-bar row.
+      // The row's extra height (a little padding above/below) comes from the unified-compact toolbar
+      // set in `WindowBackgroundThemer`.
+      .frame(maxHeight: .infinity)
     }
   }
 
@@ -278,11 +298,10 @@ struct RootView: View {
     // the toolbar, so they stay.
     .toolbar(removing: .sidebarToggle)
     .background(WindowBackgroundThemer())
-    // The single unified title-bar toolbar: leading + trailing accessories sharing the native
-    // title-bar row with the traffic lights (see `TitlebarBars`). Both hosted outside the
-    // WindowGroup's environment, so each injects its env objects inside the closure.
-    .background(leadingTitlebar)
-    .background(trailingTitlebar)
+    // The single, full-width unified title-bar bar sharing the native title-bar row with the traffic
+    // lights (see `titlebar` / `TitlebarBars`). Hosted outside the WindowGroup's environment, so it
+    // injects its env objects inside the closure.
+    .background(titlebar)
     // Keep the root branch labels reasonably current: refresh when the app regains
     // focus (throttled, so rapid alt-tabbing doesn't fork a git/jj process per project).
     // Regaining focus also dismisses the now-visible terminal's notifications (you're looking at it).
@@ -349,24 +368,10 @@ struct RootView: View {
 
   @ViewBuilder
   private var detail: some View {
-    // The workroom tab bar rides above the terminal whenever ≥1 workroom/root has a terminal (issue
-    // #23). Tapping a tab selects that target, exactly like clicking it in the sidebar. It hides
-    // entirely when nothing's open. Split members are pulled into a contiguous run so the bar can
-    // bracket them (`displayedWorkroomTargets`, mirroring the terminal strip's `displayedTabIDs`).
-    let tabs = store.displayedWorkroomTargets()
+    // The workroom tab bar now rides in the title bar (issue #23 — see `leadingTitlebar`), between the
+    // leading controls and the trailing toolbar, so the detail is just the terminal / empty-state
+    // content below it.
     VStack(spacing: 0) {
-      if !tabs.isEmpty {
-        WorkroomTabBar(
-          tabs: tabs, selectedID: store.selectedTargetID, onSelect: { selectWorkroomTab($0) },
-          chipPaneDrag: $workroomChipDrag,
-          localize: { workroomChipLocal($0) },
-          dropTarget: { workroomChipDropTarget(at: $0) }
-        )
-        // Match the 2pt inset the content below carries (the `WorkroomPaneLeaf` inter-pane gutter),
-        // so the workroom tab chips, the terminal tab strip, and the panel border all left-align —
-        // the bar lives outside that padding, so without this it sat 2pt left of everything below.
-        .padding(.horizontal, 2)
-      }
       detailContent
         // Always fill the remaining height so the tab bar above stays pinned to the top. The
         // terminal branch fills on its own, but the empty states (Nothing selected / Directory not

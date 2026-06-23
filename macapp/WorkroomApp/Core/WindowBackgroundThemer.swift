@@ -40,11 +40,15 @@ struct WindowBackgroundThemer: NSViewRepresentable {
     // No title text in the bar — the leading/trailing title-bar accessories (the unified toolbar) and
     // the workroom tabs carry the chrome; an app-name title would just clutter the row.
     window.titleVisibility = .hidden
-    // Hide NavigationSplitView's window toolbar. Its only item (the auto sidebar toggle) is removed
-    // (`.toolbar(removing:)`), and an itemless toolbar still draws an overflow chevron in the title
-    // bar. The traffic lights (window buttons) and our title-bar accessories are separate from the
-    // toolbar, so hiding it leaves the single unified accessory row clean.
-    window.toolbar?.isVisible = false
+    // A taller (unified-compact) title-bar row, so the controls + workroom tabs get a little breathing
+    // room above and below — a `.leading`/`.trailing` accessory can't grow the bar on its own, but a
+    // unified toolbar does. Keep NavigationSplitView's own toolbar (its only item, the sidebar toggle,
+    // is removed via `.toolbar(removing:)`, so it's itemless and draws no overflow chevron at this
+    // style) but make it visible and unified-compact. (Replacing the toolbar outright crashes — SwiftUI
+    // owns it.) `.none` separator so no hairline rule appears under the bar when the terminal scrolls.
+    window.toolbar?.isVisible = true
+    window.toolbarStyle = .unifiedCompact
+    window.titlebarSeparatorStyle = .none
     // The title bar belongs to the chrome panel, so it takes the panel colour (a subtle step off
     // the terminal background) — title bar + tab bar + panel read as one surface, terminals as
     // another (issue #36).

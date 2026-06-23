@@ -98,9 +98,9 @@ private struct WorkroomPaneLeaf: View {
     content
       // No frame around the workroom pane itself — the bordered terminals inside do the framing, and
       // the focused member already reads from its focused terminal's accent border + the selected tab
-      // chip. Keep the 2pt inset (the inter-pane gutter), so a surface sits in the same place solo or
-      // split.
-      .padding(2)
+      // chip. Keep the 2pt inter-pane gutter on the sides and bottom, but NOT the top: the top edge sits
+      // flush so the terminal tab strip aligns with the top of the sidebar (consistent solo and split).
+      .padding(EdgeInsets(top: 0, leading: 2, bottom: 2, trailing: 2))
       .accessibilityElement(children: .contain)
       .accessibilityIdentifier("workroom.pane")
       .accessibilityLabel(Text("Workroom \(target.title)"))

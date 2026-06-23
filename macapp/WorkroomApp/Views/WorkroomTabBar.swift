@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// The workroom tab bar shown above the terminal (issue #23): a chip per active target (a workroom or
+/// The workroom tab bar shown in the title bar (issue #23): a chip per active target (a workroom or
 /// project root with ≥1 terminal), drag-to-reorder (reusing the shared `TabReorder` math). A tab
 /// appears when its workroom gains a terminal and disappears when it loses its last. The "selected"
 /// chip **is** `store.selectedTargetID` — tapping one selects that target (like the sidebar), so every
@@ -77,7 +77,11 @@ struct WorkroomTabBar: View {
               .onChanged { value in
                 if draggingID == nil { draggingID = tab.sid }
                 guard draggingID == tab.sid else { return }
-                dragTranslation = value.translation.width
+                // Clamp the reorder so the dragged chip stops at the leading and trailing ends of the
+                // tab run — it can't be pulled left into the leading controls or right across the empty
+                // fill (the bar spans the full title-bar width). Vertical drag-into-a-split is
+                // unaffected (that reads `value.location`, below).
+                dragTranslation = clampReorder(value.translation.width, draggedIndex: index)
                 // Dragged into the detail content → preview a drop-into-pane split (the strip stops
                 // gapping); otherwise it's a plain reorder.
                 chipPaneDrag = localize(value.location).map {
@@ -100,6 +104,8 @@ struct WorkroomTabBar: View {
           .animation(
             isDragging || reduceMotion ? nil : .easeInOut(duration: 0.18), value: offsetX)
         }
+        // A divider sets the "new workroom" (+) button apart from the last tab.
+        TitlebarDivider()
         // The "new workroom" (+) button, immediately after the last chip (scrolls with them) — mirrors
         // the terminal strip's `addTerminalButton`.
         addWorkroomButton
@@ -108,12 +114,12 @@ struct WorkroomTabBar: View {
       .padding(.horizontal, 8)
       .onPreferenceChange(WorkroomTabWidthKey.self) { widths = $0 }
     }
-    // Hug the chips' height so the horizontal ScrollView doesn't grab vertical slack.
+    // The bar fills the gap between the leading and trailing title-bar controls
+    // (`frame(maxWidth: .infinity)`), chips left-aligned; it scrolls horizontally when the chips
+    // overflow that gap — the chips are never resized (issue #23). `fixedSize` (vertical) hugs the chip
+    // height so the parent title-bar HStack centres the bar on the traffic-light line.
     .fixedSize(horizontal: false, vertical: true)
     .frame(maxWidth: .infinity, alignment: .leading)
-    // Breathing room above (under the window toolbar); a little below, before the rule + terminal.
-    .padding(.top, 5)
-    .padding(.bottom, 4)
   }
 
   /// Whether to draw a hairline on the leading edge of tab `index`, separating it from its left
@@ -169,6 +175,22 @@ struct WorkroomTabBar: View {
     for i in first...last { width += widths[tabs[i].sid] ?? 0 }
     width += tabSpacing * CGFloat(last - first)
     return (x, width)
+  }
+
+  /// Clamp a reorder translation so the dragged chip stays within the tab run: its leading edge can't
+  /// pass the run's leading end (x = 0, just right of the leading-controls divider) and its trailing
+  /// edge can't pass the last chip's trailing end. `runWidth` is the chips' contiguous run (the trailing
+  /// `+` button isn't a reorder slot). Keeps a dragged chip from being pulled into the leading controls
+  /// or across the empty fill now that the bar spans the full title-bar width.
+  private func clampReorder(_ translation: CGFloat, draggedIndex index: Int) -> CGFloat {
+    guard let id = draggingID, let chipW = widths[id] else { return translation }
+    let startX = (0..<index).reduce(CGFloat(0)) { $0 + (widths[tabs[$1].sid] ?? 0) + tabSpacing }
+    let runWidth =
+      tabs.reduce(CGFloat(0)) { $0 + (widths[$1.sid] ?? 0) }
+      + tabSpacing * CGFloat(max(0, tabs.count - 1))
+    let minT = -startX
+    let maxT = max(minT, (runWidth - chipW) - startX)
+    return min(max(translation, minT), maxT)
   }
 
   /// Commit the reorder on drop: rewrite `store.workroomTabOrder` (a `@Published`, so the parent view
@@ -285,23 +307,19 @@ private struct WorkroomTabChip: View {
           .foregroundStyle(.orange)
           .help("Directory not found")
       }
-      // The project name, and (for a workroom) its own name — baseline-aligned so the smaller
-      // secondary name sits on the project name's text baseline, not its vertical center.
-      // Unread activity is marked by the accent title color alone (no dot here) — distinct from the
-      // selected tab's neutral fill.
-      HStack(alignment: .firstTextBaseline, spacing: 6) {
+      // The project name and (for a workroom) its own name, separated by a slash — one shared, smaller
+      // size for all the chip text (`.subheadline`). Unread activity is marked by the accent colour on
+      // the project name alone (no dot here) — distinct from the selected tab's neutral fill.
+      HStack(alignment: .firstTextBaseline, spacing: 4) {
         Text(primaryLabel)
-          .font(.body)
-          .lineLimit(1)
           .foregroundStyle(hasActivity ? theme.tokens.accent : Color.primary)
-        // The workroom's own name, secondary — replaces the old "/ name" suffix in the primary text.
         if let workroomName {
-          Text(workroomName)
-            .font(.caption)
-            .lineLimit(1)
-            .foregroundStyle(.secondary)
+          Text("/").foregroundStyle(.tertiary)
+          Text(workroomName).foregroundStyle(.secondary)
         }
       }
+      .font(.subheadline)
+      .lineLimit(1)
       // VCS dirty status is carried by the leading house/cube tint above (no separate dot here).
       // Run-command dot (issue #7), trailing-most: green play while running; a red octagon if the
       // last run FAILED (#79 — distinct glyph, not just a red tint, for colourblind safety); hidden

@@ -13,18 +13,49 @@ import SwiftUI
 /// Layout, never a `setFrameOrigin` in a layout pass, which re-enters the accessory's frame-change
 /// handler and crashes.
 final class FillingTitlebarAccessoryViewController: NSTitlebarAccessoryViewController {
+  /// When true, the hosted view is stretched to span the title bar from its (AppKit-placed) leading
+  /// edge — just right of the traffic lights — to the window's trailing edge, so a single full-width bar
+  /// (leading controls + workroom tabs + trailing controls) fills the whole row. Width is recomputed
+  /// every layout pass, so it tracks live window resizes.
+  var fillsWidth = false
   private var didPin = false
+  private var widthConstraint: NSLayoutConstraint?
 
   override func viewDidLayout() {
     super.viewDidLayout()
-    guard !didPin, let container = view.superview else { return }
-    didPin = true
-    view.translatesAutoresizingMaskIntoConstraints = false
-    NSLayoutConstraint.activate([
-      view.topAnchor.constraint(equalTo: container.topAnchor),
-      view.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-    ])
+    guard let container = view.superview else { return }
+    if !didPin {
+      didPin = true
+      view.translatesAutoresizingMaskIntoConstraints = false
+      NSLayoutConstraint.activate([
+        view.topAnchor.constraint(equalTo: container.topAnchor),
+        view.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+      ])
+      if fillsWidth {
+        let c = view.widthAnchor.constraint(equalToConstant: 0)
+        c.isActive = true
+        widthConstraint = c
+      }
+    }
+    // `container.frame.minX` is where AppKit placed the accessory (just right of the traffic lights);
+    // the rest of the window width, less a small trailing inset, is ours to fill. Recomputed each pass
+    // so a window resize re-stretches the bar.
+    if fillsWidth, let window = view.window, let widthConstraint {
+      let target = max(0, window.frame.width - container.frame.minX - 8)
+      if abs(widthConstraint.constant - target) > 0.5 { widthConstraint.constant = target }
+    }
   }
+}
+
+/// An `NSHostingView` that refuses to let a mouse-down move the window. A title bar is window-draggable
+/// by default, and that drag begins on mouse-down — *before* a SwiftUI `DragGesture`'s minimum distance
+/// is met — so without this an interactive control hosted in the bar (notably the workroom tab chips,
+/// which tap-to-select and drag-to-reorder / drag-into-a-split) would just move the window instead.
+/// Returning `false` makes the view claim the mouse-down, so the event reaches SwiftUI. The window stays
+/// draggable by its empty regions (the gap between the leading and trailing accessories isn't covered by
+/// any hosting view).
+final class NonMovableHostingView<Content: View>: NSHostingView<Content> {
+  override var mouseDownCanMoveWindow: Bool { false }
 }
 
 /// Hosts arbitrary SwiftUI content as an `NSTitlebarAccessoryViewController` pinned to one edge of
@@ -49,13 +80,17 @@ struct TitlebarAccessory<Content: View>: NSViewRepresentable {
   var edge: NSLayoutConstraint.Attribute
   /// Stable id so the accessory is installed exactly once even if SwiftUI re-creates the probe.
   var identifier: NSUserInterfaceItemIdentifier
+  /// Stretch the accessory to span the title bar to the window's trailing edge (see
+  /// `FillingTitlebarAccessoryViewController.fillsWidth`). Use for the single full-width bar.
+  var fillsWidth: Bool = false
   @ViewBuilder var content: () -> Content
 
   func makeNSView(context: Context) -> NSView {
     context.coordinator.content = content
     let probe = NSView(frame: .zero)
     DispatchQueue.main.async { [weak probe] in
-      context.coordinator.install(in: probe?.window, edge: edge, identifier: identifier)
+      context.coordinator.install(
+        in: probe?.window, edge: edge, identifier: identifier, fillsWidth: fillsWidth)
     }
     return probe
   }
@@ -77,11 +112,11 @@ struct TitlebarAccessory<Content: View>: NSViewRepresentable {
     var content: (() -> Content)?
     private weak var window: NSWindow?
     private var accessory: NSTitlebarAccessoryViewController?
-    private var hosting: NSHostingView<AnyView>?
+    private var hosting: NonMovableHostingView<AnyView>?
 
     func install(
       in window: NSWindow?, edge: NSLayoutConstraint.Attribute,
-      identifier: NSUserInterfaceItemIdentifier
+      identifier: NSUserInterfaceItemIdentifier, fillsWidth: Bool
     ) {
       guard let window, let content else { return }
       self.window = window
@@ -92,12 +127,12 @@ struct TitlebarAccessory<Content: View>: NSViewRepresentable {
         $0.identifier == identifier
       }) {
         accessory = existing
-        hosting = existing.view as? NSHostingView<AnyView>
+        hosting = existing.view as? NonMovableHostingView<AnyView>
         refresh()
         return
       }
 
-      let host = NSHostingView(rootView: AnyView(content()))
+      let host = NonMovableHostingView(rootView: AnyView(content()))
       host.translatesAutoresizingMaskIntoConstraints = false
       // Size to the SwiftUI content; AppKit pins it to `edge`. Without a concrete frame the accessory
       // can collapse to zero width on first layout.
@@ -106,6 +141,7 @@ struct TitlebarAccessory<Content: View>: NSViewRepresentable {
       let controller = FillingTitlebarAccessoryViewController()
       controller.identifier = identifier
       controller.layoutAttribute = edge
+      controller.fillsWidth = fillsWidth
       controller.view = host
 
       window.addTitlebarAccessoryViewController(controller)

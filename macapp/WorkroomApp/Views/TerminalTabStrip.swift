@@ -159,7 +159,9 @@ struct TerminalTabStrip: View {
         CloseWorkroomPaneButton(action: onCloseWorkroomPane)
       }
     }
-    .padding(.top, 4)
+    // No top padding: the strip sits flush at the top of the detail pane so the terminal tabs align
+    // with the top of the sidebar (the pane's own top inset is dropped too — see `WorkroomPaneLeaf`).
+    .padding(.top, 0)
     // Flush with the content below — the active tab's `bg` fill bridges the panel→bg colour step so
     // the strip reads as part of the terminal panel (Chrome-style). No bottom gap.
     .padding(.bottom, 0)
