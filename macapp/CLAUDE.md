@@ -84,8 +84,9 @@ never shows.
 `WorkroomApp/Views/` — `NavigationSplitView` tree sidebar + terminal detail.
 `Scripts/` — `run.sh` (local), `build-helper.sh` (embeds+signs the Go binary), `release.sh`
 (build → notarize → staple → DMG → EdDSA-sign for Sparkle), `appcast.sh` (publishes the Sparkle
-appcast to the fixed `appcast` release), `make-icon.swift` (regenerates the `AppIcon` PNGs in
-`Assets.xcassets` — run `swift Scripts/make-icon.swift`).
+appcast to the fixed `appcast` release), `appcast-notes.sh` (re-renders a published item's
+`<description>` from the current release body — see "Auto-update" below), `make-icon.swift`
+(regenerates the `AppIcon` PNGs in `Assets.xcassets` — run `swift Scripts/make-icon.swift`).
 
 ## Auto-update (Sparkle)
 
@@ -97,3 +98,13 @@ menu item + the Settings toggle bind to it). The `SU*` keys in `project.yml` (`S
 commit count, so it only ever increases — Sparkle compares it). The appcast feed is an asset
 on the fixed `appcast` GitHub release. See `README.md` ("Auto-update") for the one-time keypair
 setup and the `SPARKLE_PRIVATE_KEY` secret.
+
+**Release-notes in the update dialog.** Sparkle's dialog renders the appcast item's
+`<description>`. `appcast.sh` (run during the release) embeds the GitHub release body as that
+description — but at release time the body is still goreleaser's raw commit list, since the
+curated notes are written afterwards. So a second path keeps them in sync: the
+`.github/workflows/appcast-notes.yml` workflow fires on every `release: edited` event and runs
+`Scripts/appcast-notes.sh`, which re-renders the matching item's `<description>` from the
+release's *current* body. Curating a release's notes therefore auto-refreshes what the update
+dialog shows; no rebuild needed. To fix an already-published feed by hand, run it directly:
+`TAG=vX.Y.Z REPO=owner/repo GH_TOKEN=$(gh auth token) macapp/Scripts/appcast-notes.sh`.
