@@ -274,13 +274,23 @@ private struct WorkroomTabChip: View {
         }
       }
       // VCS dirty status is carried by the leading house/cube tint above (no separate dot here).
-      // Run-command dot (issue #7), trailing-most — only shown while the run command is actually
-      // running (green); hidden once it has a run tab but isn't running.
-      if hasRunTab, runRunning {
-        Image(systemName: "play.circle.fill")
-          .font(.system(size: 10))
-          .foregroundStyle(Color.green)
-          .help("Run command running")
+      // Run-command dot (issue #7), trailing-most: green play while running; a red octagon if the
+      // last run FAILED (#79 — distinct glyph, not just a red tint, for colourblind safety); hidden
+      // once it has a run tab but is cleanly stopped.
+      if hasRunTab {
+        if runRunning {
+          Image(systemName: "play.circle.fill")
+            .font(.system(size: 10))
+            .foregroundStyle(Color.green)
+            .help("Run command running")
+            .accessibilityLabel("run running")
+        } else if store.runFailed(for: target.id) {
+          Image(systemName: "xmark.octagon.fill")
+            .font(.system(size: 10))
+            .foregroundStyle(theme.tokens.failure)
+            .help("Run command failed")
+            .accessibilityLabel("run failed")
+        }
       }
     }
     .padding(.horizontal, 14)

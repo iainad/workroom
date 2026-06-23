@@ -37,6 +37,8 @@ struct ThemeTokens {
   let accentSoft: Color  // accent @ 0.10 — selection wash
   let accentForeground: Color  // black/white for legibility on the accent
   let warning: Color  // palette[3] (yellow)
+  // palette[1] (red) — run-command failure (icon + toast); a distinct token from `warning`.
+  let failure: Color
 
   // Diff / VCS semantics (palette green/red/cyan).
   let diffAddFg: Color
@@ -104,6 +106,9 @@ struct ThemeTokens {
     accentSoft = Color(nsColor: accentColor.withAlphaComponent(0.10))
     accentForeground = Color(nsColor: Self.contrastingForeground(for: accentColor))
     warning = Color(nsColor: p(3) ?? .systemYellow)
+    // ANSI colour 1 is red — the run-failure signal (chip + workroom dot + toast all share it). Same
+    // palette slot as `diffRemoveFg`'s red, but a distinct semantic token so the two can't drift.
+    failure = Color(nsColor: p(1) ?? .systemRed)
 
     let addColor = p(2) ?? .systemGreen
     let removeColor = p(1) ?? .systemRed

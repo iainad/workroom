@@ -375,6 +375,7 @@ final class AppStore: ObservableObject {
       // later unexpected respawn or first-press hard kill (review #1).
       if let runTab = self.runStates[targetID]?.tab, ids.contains(runTab) {
         self.runStates[targetID] = nil
+        self.runOutcomes[targetID] = nil  // reset the red run icon (issue #79)
         self.clearRunPidFile(for: targetID)  // forget the captured pid (issue #7)
         self.resetRunToast(for: targetID)  // run gone → drop its toast state (issue #67)
       }
@@ -673,6 +674,17 @@ final class AppStore: ObservableObject {
     case exited(code: Int32)  // process exited on its own; code 0 = clean, != 0 = failure
     case stoppedByUser  // a Stop/Restart Ctrl-C drove the exit
     case failedToStart  // the surface never spawned (ghostty_surface_new returned nil)
+
+    /// Whether this outcome is a failure — the single source of truth that drives the red run icon
+    /// (issue #79), the native banner, and the toast's failed glyph. A non-zero self-exit or a
+    /// failed start; never a clean exit or a user-initiated Stop/Restart/Ctrl-C.
+    var isFailure: Bool {
+      switch self {
+      case .exited(let code): return code != 0
+      case .failedToStart: return true
+      case .stoppedByUser: return false
+      }
+    }
   }
 
   /// Run-STATE is owned here (not on `TerminalSessions`) so the toolbar, sidebar, menu, and RootView
@@ -700,12 +712,13 @@ final class AppStore: ObservableObject {
       case restarting  // spinner, graceful restart in flight
       case exited  // clean exit, code 0
       case failed(code: Int32)  // non-zero exit (a crash)
-      case stopped  // user hit Stop/Restart — not an error
       case failedToStart  // the surface never spawned
+      // Note: a user-initiated stop (Stop/Restart/Ctrl-C) produces NO toast (issue #79), so there's
+      // deliberately no `.stopped` case — `runToastItems` returns nil for `.stoppedByUser`.
       var isTerminal: Bool {
         switch self {
         case .running, .restarting: return false
-        case .exited, .failed, .stopped, .failedToStart: return true
+        case .exited, .failed, .failedToStart: return true
         }
       }
     }
@@ -734,11 +747,14 @@ final class AppStore: ObservableObject {
   /// policy is unit-testable without `NSApp`/`SystemNotifier`; the app-active gate is the (already
   /// tested) `NotificationGate`.
   static func runOutcomeIsBannerWorthy(_ outcome: RunOutcome?) -> Bool {
-    switch outcome {
-    case .exited(let code): return code != 0
-    case .failedToStart: return true
-    case .stoppedByUser, .none: return false
-    }
+    outcome?.isFailure ?? false
+  }
+
+  /// Whether this target's last run ended in failure — drives the red run icon on the tab chip and
+  /// the workroom tab-bar dot (issue #79). Derived from `RunOutcome.isFailure`, the same predicate
+  /// the banner uses, so "is a failure" has one definition. Cleared on a fresh start and on close.
+  func runFailed(for targetID: TerminalTarget.ID) -> Bool {
+    runOutcomes[targetID]?.isFailure ?? false
   }
 
   /// The run toasts to show right now. Derived each access: a target contributes a toast when it has a
@@ -748,11 +764,9 @@ final class AppStore: ObservableObject {
     runStates.compactMap { targetID, state -> RunToastItem? in
       guard let tabID = state.tab else { return nil }  // .armed has no tab → no toast
       guard !dismissedRunToasts.contains(targetID) else { return nil }
-      if let target = selectedTarget, target.id == targetID,
-        terminals.visibleTabIDs(for: target).contains(tabID)
-      {
-        return nil  // the run tab is on screen — hide; it reappears when you navigate away
-      }
+      // Map state → toast status. A user-initiated stop (Stop/Restart/Ctrl-C → `.stoppedByUser`, or
+      // a stop with no recorded outcome) shows NO toast at all (issue #79): the toast only ever marks
+      // a self-exit (success or failure) or a failed start.
       let status: RunToastItem.Status
       switch state {
       case .armed: return nil
@@ -761,10 +775,18 @@ final class AppStore: ObservableObject {
       case .stopped:
         switch runOutcomes[targetID] {
         case .exited(let code): status = code == 0 ? .exited : .failed(code: code)
-        case .stoppedByUser: status = .stopped
         case .failedToStart: status = .failedToStart
-        case .none: status = .stopped  // stopped without a recorded outcome → neutral
+        case .stoppedByUser, .none: return nil  // user-initiated stop/restart/Ctrl-C → no toast
         }
+      }
+      // Live status (running/restarting) hides while the run tab is on screen — you don't need a
+      // toast for the tab you're watching (split-aware via `visibleTabIDs`). Terminal statuses
+      // (a success or failure exit) ALWAYS show, even on the focused run tab (issue #79: "show a
+      // success/failure toast"); they linger then auto-dismiss.
+      if !status.isTerminal, let target = selectedTarget, target.id == targetID,
+        terminals.visibleTabIDs(for: target).contains(tabID)
+      {
+        return nil
       }
       let command =
         project(forTargetID: targetID).map {
@@ -914,7 +936,21 @@ final class AppStore: ObservableObject {
     let script = "echo $$ > \"$1\"; exec \"$3\" -c \"$2\""
     let quotedScript = CommandLineInstaller.shellQuoted(script)
     let quotedPid = CommandLineInstaller.shellQuoted(pidPath)
-    let quotedCommand = CommandLineInstaller.shellQuoted(raw)
+    // Record the command's REAL exit status to a file (issue #79). libghostty's child-exit code is
+    // unreliable in this embedding (GhosttyKit 1.2.3 always reports 0), so the run-failure signal
+    // reads this file instead. This runs inside the exec'd runner shell, so `$?` is the command's own
+    // status; it's written just before the shell exits, so it's on disk by the time the child-exit
+    // callback fires. A signalled command (Ctrl-C / Stop) may not reach this line — that path is a
+    // user stop, not a failure, and is keyed off the `interrupted` flag instead.
+    let exitPath = Self.runExitPath(forPidPath: pidPath)
+    // An EXIT trap records the code however the shell ends — a normal finish, OR an explicit
+    // `exit N` in the user's command (which would otherwise skip a trailing capture line). The path
+    // is held in a var so the trap body needs no nested path-quoting. A signal (Ctrl-C / Stop) kills
+    // the shell without running the EXIT trap, so no file is written — that's the user-stop path,
+    // handled by the `interrupted` flag, not this code.
+    let exitVar = "__wr_f=\(CommandLineInstaller.shellQuoted(exitPath))"
+    let captured = "\(exitVar); trap 'printf %s \"$?\" > \"$__wr_f\"' EXIT\n\(raw)"
+    let quotedCommand = CommandLineInstaller.shellQuoted(captured)
     let quotedRunner = CommandLineInstaller.shellQuoted(runner)
     let outer = isPOSIX ? "\(CommandLineInstaller.shellQuoted(shell)) -lic" : "/bin/sh -lc"
     return "\(outer) \(quotedScript) workroom-run \(quotedPid) \(quotedCommand) \(quotedRunner)"
@@ -923,7 +959,7 @@ final class AppStore: ObservableObject {
   /// Per-target temp file holding the run command's pid (written by the run wrapper, read to resolve
   /// + signal its process group). Generated fresh per start/respawn; cleared when the run exits or
   /// its tab is removed so a reused pid can never be signalled.
-  private var runPidFiles: [TerminalTarget.ID: String] = [:]
+  private(set) var runPidFiles: [TerminalTarget.ID: String] = [:]
 
   /// A fresh per-run pid-file path. Does NOT store it — the caller assigns `runPidFiles[target]`
   /// AFTER the tab is (re)created, because `respawnRunTab` closes the old tab first and that fires
@@ -932,6 +968,22 @@ final class AppStore: ObservableObject {
   private func makeRunPidPath() -> String {
     (NSTemporaryDirectory() as NSString)
       .appendingPathComponent("workroom-run-\(UUID().uuidString).pid")
+  }
+
+  /// The file the run wrapper writes the command's real exit code to (issue #79) — derived from the
+  /// pid path so it shares the per-run lifecycle and cleanup. libghostty's own child-exit code is
+  /// unreliable in this embedding (GhosttyKit 1.2.3 always reports 0).
+  static func runExitPath(forPidPath pidPath: String) -> String {
+    (pidPath as NSString).deletingPathExtension + ".exit"
+  }
+
+  /// The command's real exit code as recorded by the wrapper (issue #79), or nil if it hasn't been
+  /// written — the command was signalled before it could record, or the file is missing/garbled.
+  private func capturedRunExitCode(for targetID: TerminalTarget.ID) -> Int32? {
+    guard let pidPath = runPidFiles[targetID],
+      let raw = try? String(contentsOfFile: Self.runExitPath(forPidPath: pidPath), encoding: .utf8)
+    else { return nil }
+    return Int32(raw.trimmingCharacters(in: .whitespacesAndNewlines))
   }
 
   /// The pid the run wrapper captured for a target (its `echo $$`).
@@ -1017,6 +1069,7 @@ final class AppStore: ObservableObject {
     runSessions[targetID] = nil
     if let path = runPidFiles.removeValue(forKey: targetID) {
       try? FileManager.default.removeItem(atPath: path)
+      try? FileManager.default.removeItem(atPath: Self.runExitPath(forPidPath: path))  // issue #79
     }
   }
 
@@ -1062,6 +1115,11 @@ final class AppStore: ObservableObject {
     tab.surface?.onChildExited = { [weak self] code in
       self?.markRunExited(for: target, exitCode: code)
     }
+    // ⌃C typed into the run terminal marks the run interrupted, so its exit reads as a user stop —
+    // no failure toast/icon regardless of exit code (issue #79).
+    tab.surface?.onInterrupt = { [weak self] in
+      self?.markRunInterruptedByKey(for: target)
+    }
   }
 
   /// Respawn the run command in place of `oldTab` (issue #40): the replacement takes the old run tab's
@@ -1103,6 +1161,11 @@ final class AppStore: ObservableObject {
     captureRunSession(for: target.id, pidPath: pidPath)  // record the session for reliable stop
     tab.surface?.onChildExited = { [weak self] code in
       self?.markRunExited(for: target, exitCode: code)
+    }
+    // ⌃C typed into the run terminal marks the run interrupted, so its exit reads as a user stop —
+    // no failure toast/icon regardless of exit code (issue #79).
+    tab.surface?.onInterrupt = { [weak self] in
+      self?.markRunInterruptedByKey(for: target)
     }
   }
 
@@ -1182,6 +1245,17 @@ final class AppStore: ObservableObject {
     terminals.focus(runTab, for: target)
   }
 
+  /// ⌃C was typed directly into the run terminal (issue #79). The keystroke already sends SIGINT to
+  /// the PTY (the surface forwards it); we only flip `interrupted` so the resulting child-exit reads
+  /// as a user stop — no failure toast/icon, whatever the exit code. Only meaningful while the
+  /// process is live and not already interrupted; a no-op otherwise (stopped/restarting/armed), and
+  /// it never sends a signal itself (so it can't escalate or double-fire like the Stop button does).
+  func markRunInterruptedByKey(for target: TerminalTarget) {
+    if case .running(let tab, false) = runStates[target.id] {
+      runStates[target.id] = .running(tab: tab, interrupted: true)
+    }
+  }
+
   /// Stop the run command. 1st press: Ctrl-C (graceful SIGINT to the foreground group), recorded on the
   /// state. 2nd press: hard kill by closing the run tab — freeing the surface hangs up the PTY (SIGHUP),
   /// the only reliable kill libghostty exposes (no child PID). For a process that ignores SIGINT (OV-D).
@@ -1241,11 +1315,16 @@ final class AppStore: ObservableObject {
       // issue #7). SIGINT the whole session, then wait it out and SIGKILL any straggler, so a forked
       // server can't linger and trip "A server is already running" on the next start.
       let sid = runSessions[target.id] ?? -1
+      // The wrapper records the command's REAL exit code to a file; read it BEFORE clearing the pid
+      // file (issue #79). libghostty's `exitCode` is unreliable here (GhosttyKit 1.2.3 reports 0), so
+      // prefer the recorded value and fall back to libghostty's only when the file is absent (e.g. a
+      // signalled command never reached the record step — that's the user-stop path anyway).
+      let recorded = capturedRunExitCode(for: target.id)
       interruptRun(for: target.id)
       clearRunPidFile(for: target.id)
       // Record how the run ended for the toast (issue #67): a Stop/Restart Ctrl-C (`interrupted`) is a
       // user action, not a failure; otherwise it exited on its own — code 0 is clean, non-zero a crash.
-      let code = Int32(truncatingIfNeeded: exitCode)
+      let code = recorded ?? Int32(truncatingIfNeeded: exitCode)
       runOutcomes[target.id] = interrupted ? .stoppedByUser : .exited(code: code)
       runStates[target.id] = .stopped(tab: tab)
       scheduleRunToastAutoDismiss(for: target.id)  // terminal state → linger then auto-dismiss
@@ -1512,8 +1591,11 @@ final class AppStore: ObservableObject {
     // projects' Defaults are untouched. Prints a marker (proves the command parsed + launched) then
     // sleeps (stays "running" long enough to assert the Stop/Restart state deterministically).
     if let project = fixtures.first {
+      // A test can override the seeded command (`-WorkroomUITestRunCommand`) to drive a deterministic
+      // failure / success / long-running run for the run-status XCUITests (issue #79).
       setRunConfig(
-        RunConfig(command: "echo PROBE_OK; sleep 30", autoRun: false), forProject: project.path)
+        RunConfig(command: UITestFixture.runCommand ?? "echo PROBE_OK; sleep 30", autoRun: false),
+        forProject: project.path)
     }
     // The real persisted selection won't resolve against the fixture paths; don't try to restore it.
     pendingRestoreSelection = nil

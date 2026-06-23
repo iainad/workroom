@@ -62,6 +62,11 @@ final class GhosttySurfaceView: NSView {
   /// them without a confirm, since the process is gone); ordinary tabs leave it nil and keep
   /// forwarding keys / staying in place after the shell exits (issue #7).
   var onCloseRequested: (() -> Void)?
+  /// The user pressed ⌃C in this (run) surface. The host marks the run interrupted so the imminent
+  /// child-exit reads as a user-initiated stop (no failure toast/icon) regardless of exit code
+  /// (issue #79). Fired from `keyDown` BEFORE the keystroke is forwarded — the surface still sends
+  /// SIGINT to the PTY. Only run tabs wire this; ordinary tabs leave it nil. Value-type capture only.
+  var onInterrupt: (() -> Void)?
   /// This pane became first responder (mouse click or programmatic focus) — the host makes it the
   /// selection (issue #3, splits). `becomeFirstResponder` is the single chokepoint for every focus
   /// path, so one hook covers them all. Value-type captures only.
@@ -668,6 +673,13 @@ final class GhosttySurfaceView: NSView {
     if flags.contains(.control), !flags.contains(.command), !flags.contains(.option),
       !hasMarkedText()
     {
+      // ⌃C in a run surface: tell the host this is a user interrupt (issue #79) BEFORE forwarding,
+      // so the run's imminent child-exit reads as a user stop (no failure toast/icon) regardless of
+      // exit code. We still forward the keystroke below, so SIGINT reaches the PTY as normal. The
+      // `processHasExited` early-return above already excludes the "press any key to close" prompt.
+      if onInterrupt != nil, event.charactersIgnoringModifiers == "c" {
+        onInterrupt?()
+      }
       var keyEvent = buildKeyEvent(from: event, action: action)
       let text = Self.filterSpecialCharacters(event.characters ?? "")
       if text.isEmpty {

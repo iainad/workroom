@@ -257,16 +257,17 @@ private struct RunToastView: View {
     .accessibilityAction(named: "Dismiss") { onDismiss() }
   }
 
-  // Spinner while alive; a neutral check for a clean/stopped end (not triumphant — a launcher exiting 0
-  // isn't necessarily a clean "success" given session reaping); the warning glyph for a real failure.
+  // Spinner while alive; a neutral check for a clean exit (not triumphant — a launcher exiting 0
+  // isn't necessarily a "success" given session reaping); the failure-token octagon for a real
+  // failure. A user-initiated stop produces no toast, so there's no neutral "stopped" glyph.
   @ViewBuilder private var statusIcon: some View {
     switch item.status {
     case .running, .restarting:
       ProgressView().controlSize(.small)
-    case .exited, .stopped:
+    case .exited:
       Image(systemName: "checkmark.circle").foregroundStyle(.secondary)
     case .failed, .failedToStart:
-      Image(systemName: "xmark.octagon.fill").foregroundStyle(theme.tokens.warning)
+      Image(systemName: "xmark.octagon.fill").foregroundStyle(theme.tokens.failure)
     }
   }
 
@@ -276,7 +277,6 @@ private struct RunToastView: View {
     case .restarting: return "Restarting…"
     case .exited: return "Exited"
     case .failed(let code): return "Failed (exit \(code))"
-    case .stopped: return "Stopped"
     case .failedToStart: return "Failed to start"
     }
   }

@@ -28,6 +28,15 @@ enum UITestFixture {
     UserDefaults.standard.bool(forKey: "WorkroomUITestManyChanges")
   }
 
+  /// When set (`-WorkroomUITestRunCommand "<cmd>"`), the fixture seeds this as the workroom's run
+  /// command instead of the default probe — so the run-status XCUITests (issue #79) can drive a
+  /// deterministic failure (`exit 7`), success (`exit 0`), or long-running (`sleep 30`) command and
+  /// assert the run icon / Ctrl-C behaviour end-to-end against a real libghostty surface.
+  static var runCommand: String? {
+    let cmd = UserDefaults.standard.string(forKey: "WorkroomUITestRunCommand")
+    return (cmd?.isEmpty == false) ? cmd : nil
+  }
+
   /// When set (`-WorkroomUITestGitWorkroom 1`), the fixture workroom reports a **git** working tree
   /// (a flat changed-file list, no jj groups) instead of the default jj change — so the diff-viewer
   /// UI tests can exercise the `.gitWorktree` diff source. Default (unset) keeps the jj scenario the

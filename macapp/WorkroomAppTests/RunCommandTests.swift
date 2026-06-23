@@ -86,13 +86,18 @@ final class RunCommandTests: XCTestCase {
     // Wrapped in an interactive login shell so it gets the user's environment (A3). Assert `-lic`
     // specifically — `-l` alone would also match the degraded `/bin/sh -lc` fallback (review #15).
     let cmd = try! XCTUnwrap(captured.last as? String)
-    XCTAssertTrue(cmd.contains("'echo hi'"), "command not single-quoted: \(cmd)")
+    XCTAssertTrue(cmd.contains("echo hi"), "command not present: \(cmd)")
     XCTAssertTrue(cmd.contains("-lic"), "not an interactive login shell: \(cmd)")
     // Captures the run command's pid so Stop/Restart can resolve its process group (getpgid) and
     // SIGINT it like a typed Ctrl-C (issue #7): the wrapper writes $$ to a per-run file, then exec's
     // a child shell to run the command (so compound commands work + everything stays in the group).
     XCTAssertTrue(cmd.contains("echo $$ >"), "wrapper doesn't capture the pid: \(cmd)")
     XCTAssertTrue(cmd.contains("workroom-run-"), "no per-run pid file path: \(cmd)")
+    // Records the command's real exit code to a file via an EXIT trap (issue #79) — libghostty's
+    // child-exit code is unreliable, so the failure signal reads this instead.
+    XCTAssertTrue(cmd.contains("trap "), "wrapper doesn't install an exit-code trap: \(cmd)")
+    XCTAssertTrue(cmd.contains("EXIT"), "exit-code capture not on the EXIT trap: \(cmd)")
+    XCTAssertTrue(cmd.contains(".exit"), "no per-run exit-code file path: \(cmd)")
   }
 
   func testStartIsNoOpWithoutCommand() {
@@ -770,5 +775,172 @@ final class RunCommandTests: XCTestCase {
     XCTAssertEqual(store.terminals.activeTab(for: t)?.id, runID, "the tap opens the run terminal")
     XCTAssertTrue(store.dismissedRunToasts.contains(t.id), "the tap dismisses the toast for good")
     XCTAssertTrue(store.runToastItems.isEmpty)
+  }
+
+  // MARK: Success/failure detection (issue #79)
+
+  func testRunOutcomeIsFailure() {
+    XCTAssertFalse(AppStore.RunOutcome.exited(code: 0).isFailure, "a clean exit is not a failure")
+    XCTAssertTrue(AppStore.RunOutcome.exited(code: 1).isFailure)
+    XCTAssertTrue(AppStore.RunOutcome.exited(code: 137).isFailure)
+    XCTAssertTrue(AppStore.RunOutcome.failedToStart.isFailure)
+    XCTAssertFalse(AppStore.RunOutcome.stoppedByUser.isFailure, "a user stop is not a failure")
+  }
+
+  func testRunFailedTracksOutcome() {
+    let store = makeStore([project("/a", workrooms: ["main"])])
+    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    let t = target(store, "/a", "main")
+    XCTAssertFalse(store.runFailed(for: t.id), "no run yet → not failed")
+    store.startRunCommand(for: t)
+    XCTAssertFalse(store.runFailed(for: t.id), "running → not failed")
+    runView(store, t)?.handleChildExited(exitCode: 1)
+    XCTAssertTrue(store.runFailed(for: t.id), "a non-zero self-exit → failed (drives the red icon)")
+  }
+
+  func testCleanExitIsNotFailed() {
+    let store = makeStore([project("/a", workrooms: ["main"])])
+    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    let t = target(store, "/a", "main")
+    store.startRunCommand(for: t)
+    runView(store, t)?.handleChildExited(exitCode: 0)
+    XCTAssertFalse(store.runFailed(for: t.id), "a clean exit shows no red icon")
+  }
+
+  func testFailureToastShowsEvenWhenViewingRunTab() {
+    // #79: terminal-state toasts bypass the hide-when-visible rule (live toasts keep it).
+    let store = makeStore([project("/a", workrooms: ["main"])])
+    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    let t = target(store, "/a", "main")
+    store.selectedTargetID = .workroom(project: "/a", name: "main")
+    store.startRunCommand(for: t)
+    let runID = try! XCTUnwrap(store.runTabID(for: t.id))
+    store.terminals.focus(runID, for: t)  // viewing the run tab
+    XCTAssertTrue(store.runToastItems.isEmpty, "no LIVE toast for the tab you're watching")
+
+    runView(store, t)?.handleChildExited(exitCode: 1)
+    XCTAssertEqual(
+      store.runToastItems.first?.status, .failed(code: 1),
+      "a failure toast shows even on the focused run tab (#79 always-show)")
+  }
+
+  func testSuccessToastShowsEvenWhenViewingRunTab() {
+    let store = makeStore([project("/a", workrooms: ["main"])])
+    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    let t = target(store, "/a", "main")
+    store.selectedTargetID = .workroom(project: "/a", name: "main")
+    store.startRunCommand(for: t)
+    let runID = try! XCTUnwrap(store.runTabID(for: t.id))
+    store.terminals.focus(runID, for: t)
+
+    runView(store, t)?.handleChildExited(exitCode: 0)
+    XCTAssertEqual(
+      store.runToastItems.first?.status, .exited,
+      "a success toast shows even on the focused run tab")
+  }
+
+  func testUserStopShowsNoToast() {
+    let store = makeStore([project("/a", workrooms: ["main"])])
+    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    let t = target(store, "/a", "main")
+    store.startRunCommand(for: t)
+
+    store.stopRunCommand(for: t)  // 1st press → interrupted
+    runView(store, t)?.handleChildExited(exitCode: 0)
+
+    XCTAssertEqual(store.runOutcomes[t.id], .stoppedByUser)
+    XCTAssertTrue(store.runToastItems.isEmpty, "a user-initiated stop shows no toast (#79)")
+    XCTAssertFalse(store.runFailed(for: t.id), "and no red icon")
+  }
+
+  func testRestartShowsNoTerminalToast() {
+    let store = makeStore([project("/a", workrooms: ["main"])])
+    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    let t = target(store, "/a", "main")
+    store.startRunCommand(for: t)
+
+    store.restartRunCommand(for: t)  // running → Ctrl-C → .restarting
+
+    XCTAssertFalse(
+      store.runToastItems.contains { $0.status.isTerminal },
+      "a restart never surfaces a success/failure toast (#79)")
+  }
+
+  func testInPaneCtrlCMarksInterruptedThenNoToast() {
+    // ⌃C typed into the run terminal (not the Stop button): the surface forwards SIGINT; the host's
+    // onInterrupt → markRunInterruptedByKey flips `interrupted`, so the exit reads as a user stop
+    // regardless of code (#79).
+    let store = makeStore([project("/a", workrooms: ["main"])])
+    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    let t = target(store, "/a", "main")
+    store.startRunCommand(for: t)
+
+    store.markRunInterruptedByKey(for: t)
+    runView(store, t)?.handleChildExited(exitCode: 130)  // non-zero, from SIGINT
+
+    XCTAssertEqual(store.runOutcomes[t.id], .stoppedByUser, "in-pane ⌃C is a stop, not a failure")
+    XCTAssertFalse(store.runFailed(for: t.id), "so no red icon, whatever the exit code")
+    XCTAssertTrue(store.runToastItems.isEmpty, "and no toast")
+  }
+
+  func testMarkInterruptedByKeyIsNoOpWhenNotRunning() {
+    let store = makeStore([project("/a", workrooms: ["main"])])
+    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    let t = target(store, "/a", "main")
+    store.markRunInterruptedByKey(for: t)  // armed/none → no crash, no state created
+    XCTAssertNil(store.runStates[t.id])
+
+    store.startRunCommand(for: t)
+    runView(store, t)?.handleChildExited(exitCode: 1)  // already .stopped
+    store.markRunInterruptedByKey(for: t)  // must not rewrite a finished run
+    XCTAssertTrue(
+      store.runFailed(for: t.id), "a key event after the run ended doesn't erase failure")
+  }
+
+  func testRunExitCodePrefersWrapperFileOverLibghostty() {
+    // libghostty's child-exit code is unreliable (GhosttyKit 1.2.3 reports 0), so markRunExited reads
+    // the code the wrapper recorded to a file. Simulate that file; libghostty reports a bogus 0.
+    let store = makeStore([project("/a", workrooms: ["main"])])
+    store.setRunConfig(RunConfig(command: "exit 7", autoRun: false), forProject: "/a")
+    let t = target(store, "/a", "main")
+    store.startRunCommand(for: t)
+    let pidPath = try! XCTUnwrap(store.runPidFiles[t.id])
+    try! "7".write(
+      toFile: AppStore.runExitPath(forPidPath: pidPath), atomically: true, encoding: .utf8)
+
+    runView(store, t)?.handleChildExited(exitCode: 0)  // libghostty's bogus 0
+
+    XCTAssertEqual(
+      store.runOutcomes[t.id], .exited(code: 7),
+      "the wrapper-recorded code wins over libghostty's 0")
+    XCTAssertTrue(store.runFailed(for: t.id), "so the failure indicators light up (#79)")
+  }
+
+  func testRunExitCodeFallsBackToLibghosttyWhenNoFile() {
+    // No recorded file (e.g. the command was signalled before it could write one) → use libghostty's.
+    let store = makeStore([project("/a", workrooms: ["main"])])
+    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    let t = target(store, "/a", "main")
+    store.startRunCommand(for: t)
+
+    runView(store, t)?.handleChildExited(exitCode: 0)  // no exit file written in tests
+
+    XCTAssertEqual(store.runOutcomes[t.id], .exited(code: 0), "falls back to libghostty's code")
+    XCTAssertFalse(store.runFailed(for: t.id))
+  }
+
+  func testClosingRunTabClearsFailureOutcome() {
+    let store = makeStore([project("/a", workrooms: ["main"])])
+    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    let t = target(store, "/a", "main")
+    store.startRunCommand(for: t)
+    let runID = try! XCTUnwrap(store.runTabID(for: t.id))
+    runView(store, t)?.handleChildExited(exitCode: 1)
+    XCTAssertTrue(store.runFailed(for: t.id))
+
+    store.terminals.closeTab(runID, for: t)
+
+    XCTAssertNil(store.runOutcomes[t.id], "closing the run tab clears the outcome (#79)")
+    XCTAssertFalse(store.runFailed(for: t.id), "so the red icon resets")
   }
 }

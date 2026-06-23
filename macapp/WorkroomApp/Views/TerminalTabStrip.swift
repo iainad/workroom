@@ -68,11 +68,13 @@ struct TerminalTabStrip: View {
             // fill) instead of a count — a tab is too narrow for a number.
             let hasActivity = notifications.count(tab: tab.id) > 0
             // Run-command state for this tab's chip icon (issue #7): only the dedicated run tab
-            // carries one — running (green) vs stopped/exited (dim). Process-based, distinct from the
-            // OSC-9;4 RunningUnderline below.
+            // carries one — running (green) vs failed (red octagon, #79) vs stopped/exited (dim).
+            // Process-based, distinct from the OSC-9;4 RunningUnderline below.
             let runState: TerminalTabChip.RunState? =
               store.runTabID(for: target.id) == tab.id
-              ? (store.isRunCommandRunning(for: target.id) ? .running : .stopped) : nil
+              ? (store.isRunCommandRunning(for: target.id)
+                ? .running : (store.runFailed(for: target.id) ? .failed : .stopped))
+              : nil
             // Dragged chip tracks the cursor; the rest shift to open the gap.
             let offsetX =
               isDragging
@@ -328,7 +330,9 @@ struct TerminalTabStrip: View {
 /// drag gestures, since those drive (and read) the strip's shared drag state.
 private struct TerminalTabChip: View {
   /// The run-command state shown as a leading chip icon — only the dedicated run tab has one (#7).
-  enum RunState { case running, stopped }
+  /// `failed` (issue #79) renders a distinct glyph + colour, not just a red tint, so it stays legible
+  /// for red/green colourblind users (the running/stopped play glyph vs the failed octagon).
+  enum RunState { case running, stopped, failed }
 
   let tab: TerminalTab
   let isActive: Bool
@@ -344,6 +348,16 @@ private struct TerminalTabChip: View {
   let onClose: () -> Void
   private let theme = ThemeService.shared
 
+  /// Glyph + colour + a11y/help word for the run-state chip icon. Failure is carried by BOTH the
+  /// glyph (octagon vs play) and the colour, so it survives red/green colourblindness (#79).
+  private func runIconSpec(_ state: RunState) -> (glyph: String, color: Color, label: String) {
+    switch state {
+    case .running: return ("play.circle.fill", .green, "running")
+    case .stopped: return ("play.circle.fill", theme.tokens.fgMuted, "stopped")
+    case .failed: return ("xmark.octagon.fill", theme.tokens.failure, "failed")
+    }
+  }
+
   var body: some View {
     // The ✕ reveals on hover or when the tab is active — matching the sidebar's terminal rows, and
     // sparing the strip a close glyph on every idle tab. It stays *laid out* (opacity, not removed)
@@ -352,14 +366,18 @@ private struct TerminalTabChip: View {
     // Title and close button laid out side by side: a compact gap keeps the ✕ visibly tied to its
     // tab (a wide gap reads as detached) while still clearing the title so they never crowd.
     HStack(spacing: 6) {
-      // Leading state dot for the run tab (#7): green while the command runs, dim once it has exited.
-      // Same glyph as the sidebar run dot, so the two read as one signal.
+      // Leading state dot for the run tab (#7): green play while the command runs, dim play once it
+      // has cleanly exited, a red octagon if it failed (#79). The fixed 10pt size keeps the chip
+      // width stable across the glyph swap. Mirrors the sidebar/workroom run dot — one signal.
       if let runState {
-        Image(systemName: "play.circle.fill")
+        let spec = runIconSpec(runState)
+        Image(systemName: spec.glyph)
           .font(.system(size: 10))
-          .foregroundStyle(runState == .running ? Color.green : theme.tokens.fgMuted)
-          .help(runState == .running ? "Run command running" : "Run command stopped")
-          .accessibilityLabel(runState == .running ? "running" : "stopped")
+          .foregroundStyle(spec.color)
+          .help("Run command \(spec.label)")
+          // The state word is the a11y label (and the XCUITest query handle for the failed icon, #79);
+          // the chip's own `terminal.tab.<title>` identifier overrides any identifier set here.
+          .accessibilityLabel(spec.label)
       }
       // A diff (content) tab gets a leading glyph so it reads as not-a-terminal at a glance (#66).
       if case .diff = tab.content {
