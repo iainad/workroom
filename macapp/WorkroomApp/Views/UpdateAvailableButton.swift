@@ -29,8 +29,13 @@ struct UpdateAvailableButton: View {
       }
       // Override the title bar's shared ToolbarIconButtonStyle — this is a filled pill, not an icon.
       .buttonStyle(.plain)
-      .onHover { hovering = $0 }
-      .animation(.easeOut(duration: 0.12), value: hovering)
+      // Animate the hover dim imperatively, NOT via a `.animation(value: hovering)` modifier wrapping
+      // the label. The modifier would also interpolate any 1pt re-round of the label's pixel-snapped
+      // origin on hover-in into a visible slide (the icon-button "jumps on hover" bug, issue #78);
+      // `withAnimation` confines the easing to the opacity change and leaves layout to snap.
+      .onHover { isHovering in
+        withAnimation(.easeOut(duration: 0.12)) { hovering = isHovering }
+      }
       .help("Update to \(version) — click to install")
       .accessibilityLabel("Update available")
       .accessibilityIdentifier("toolbar.update")

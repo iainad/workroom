@@ -27,8 +27,18 @@ struct ToolbarIconButtonStyle: ButtonStyle {
         .frame(minWidth: 22, minHeight: 22)
         .padding(.horizontal, 3)
         .background(
+          // Animate ONLY the hover fill's opacity — never the whole button. A view-tree
+          // `.animation(.easeOut, value: hovering)` at the end of this chain would also animate the
+          // *label's* layout: on hover-in the glyph's pixel-snapped origin can re-round by one device
+          // pixel (release/optimized builds and fractional display scaling snap differently than a
+          // Debug build on an integer-scale display), and the implicit animation interpolates that 1pt
+          // re-round into a visible "slide then settle" of the icon (issue #78). Scoping the animation
+          // to the fill keeps the glyph out of every animation transaction, so any re-round snaps
+          // instantly and imperceptibly while the well still fades in.
           RoundedRectangle(cornerRadius: 6, style: .continuous)
-            .fill(theme.tokens.hover.opacity(hovering && isEnabled ? 1 : 0))
+            .fill(theme.tokens.hover)
+            .opacity(hovering && isEnabled ? 1 : 0)
+            .animation(.easeOut(duration: 0.12), value: hovering)
         )
         .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
         // Dim on press; dim further when disabled — restoring what `.borderless` gave. Without the
@@ -37,7 +47,6 @@ struct ToolbarIconButtonStyle: ButtonStyle {
         // dim makes "disabled, so no hover" legible; enabled buttons keep the hover fill.
         .opacity(configuration.isPressed ? 0.6 : (isEnabled ? 1 : 0.4))
         .onHover { hovering = $0 }
-        .animation(.easeOut(duration: 0.12), value: hovering)
     }
   }
 }
