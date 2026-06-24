@@ -10,7 +10,7 @@ Workroom manages development workrooms (isolated project copies) using Git workt
 - **The macOS app** (`macapp/` — see [`macapp/CLAUDE.md`](macapp/CLAUDE.md)) is the primary,
   recommended product: a native SwiftUI app (macOS 14+) with a project/workroom sidebar and
   embedded terminals. It **bundles the CLI** and drives it over the machine-readable `--json` API
-  (`list`/`create`/`delete`/`add-project --json`).
+  (`create`/`list`/`delete`/`add-project`/`delete-project --json`).
 - **The Go CLI** (repo root, documented below) is the engine that does the VCS work. It's also a
   fully **standalone** tool — terminal-first, and the only option on Linux/Windows — so app users
   never need to install it separately. It auto-detects VCS type, generates friendly workroom
@@ -52,12 +52,14 @@ the git log is for.
 Go project using Cobra for CLI, with clean internal package separation:
 
 - `main.go` — Entry point, sets version via ldflags
-- `cmd/` — Cobra command definitions (root, create, list, delete, version)
+- `cmd/` — Cobra command definitions (create, list, delete, add-project, delete-project, update,
+  version) plus the `--json` envelope/NDJSON-log plumbing (`json.go`, `jsonlog.go`, `helpers.go`)
 - `internal/config/` — JSON config CRUD at `~/.config/workroom/config.json`
 - `internal/namegen/` — Adjective-noun name generation (120 adjectives, 210 nouns)
 - `internal/vcs/` — VCS interface + JJ/Git implementations with `CommandExecutor` for testability
 - `internal/workroom/` — Core orchestration: create/delete/list flows
 - `internal/script/` — Setup/teardown script runner with env vars
+- `internal/updater/` — Self-update from GitHub Releases (backs the `update` command)
 - `internal/ui/` — Colored output, table printing, interactive prompts (huh library)
 - `internal/errs/` — Shared error sentinels
 
@@ -66,10 +68,16 @@ Go project using Cobra for CLI, with clean internal package separation:
 - `workroom create` (alias: `c`) — Auto-generate name, create VCS workspace, update config, run setup script
 - `workroom list` (aliases: `ls`, `l`) — List workrooms for current project or all projects
 - `workroom delete [NAME]` (alias: `d`) — Delete by name with `--confirm`, or interactive multi-select
+- `workroom update` (alias: `u`) — Self-update from GitHub Releases (`--check` to only check)
 - `workroom version` — Print version
+- `workroom add-project [PATH]` / `delete-project [PATH]` — Hidden, app-only: register/remove a
+  project in config so the macOS app's sidebar can show empty projects. Both error outside `--json`
+  mode. `delete-project` is config-only unless `--with-workrooms` cascades the per-workroom teardown.
 
 ### Flags
 
 - `-v`/`--verbose` — Detailed output
 - `-p`/`--pretend` — Dry run
+- `--json` — Emit one machine-readable JSON envelope on stdout (errors included); non-interactive.
+  How the macOS app drives the CLI; streams setup/teardown as NDJSON log events on stderr.
 - `--confirm NAME` — Skip delete confirmation (delete subcommand only)

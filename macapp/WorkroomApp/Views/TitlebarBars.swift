@@ -30,7 +30,6 @@ struct TitlebarDivider: View {
 /// hidden outright in `WindowBackgroundThemer` to kill its "more toolbar items" overflow chevron.
 struct LeadingTitlebarBar: View {
   @EnvironmentObject var store: AppStore
-  @EnvironmentObject var updater: Updater
 
   var body: some View {
     HStack(spacing: 6) {
@@ -69,13 +68,6 @@ struct LeadingTitlebarBar: View {
       .help("Forward")
       .accessibilityLabel("Forward")
       .disabled(!store.canGoForward)
-
-      // A newer version is waiting (Sparkle gentle reminder) — a highlighted pill, right of the
-      // history nav. Self-hides when no update is pending; the divider matches.
-      if updater.availableVersionString != nil {
-        TitlebarDivider()
-        UpdateAvailableButton()
-      }
     }
     .buttonStyle(ToolbarIconButtonStyle())
     .padding(.horizontal, 10)
@@ -93,11 +85,22 @@ struct LeadingTitlebarBar: View {
 struct TrailingTitlebarBar: View {
   @EnvironmentObject var store: AppStore
   @EnvironmentObject var notifications: NotificationCenterStore
+  @EnvironmentObject var updater: Updater
 
   var body: some View {
     HStack(spacing: 6) {
-      // Quick Terminal (⌥§) — a ~/ shell in its own window. Leftmost in the trailing group, just left
-      // of the run controls. Always present (independent of the selection), so it leads the group.
+      // A newer version is waiting (Sparkle gentle reminder) — the accent pill leads the trailing
+      // controls. Self-hides when no update is pending; the divider matches. It lives here, not in the
+      // leading bar, because there it overran the sidebar and sat on the NavigationSplitView's
+      // sidebar/detail divider, whose full-height resize grab zone stole the cursor (and a drag
+      // resized the sidebar). At the window's trailing edge it's nowhere near that divider.
+      if updater.availableVersionString != nil {
+        UpdateAvailableButton()
+        TitlebarDivider()
+      }
+
+      // Quick Terminal (⌥§) — a ~/ shell in its own window. First of the always-present controls (the
+      // update pill precedes it only while an update is pending), just left of the run controls.
       Button {
         NotificationCenter.default.post(name: .showQuickTerminal, object: nil)
       } label: {

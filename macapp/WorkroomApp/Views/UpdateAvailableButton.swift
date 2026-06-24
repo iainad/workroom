@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// The accent "Update" pill in the leading title bar, shown when Sparkle has found a newer version in
+/// The accent "Update" pill in the trailing title bar, shown when Sparkle has found a newer version in
 /// the background (a gentle reminder — see `Updater`). Tapping it runs Sparkle's standard check, which
 /// presents the already-found update's install prompt. Filled with the theme accent (like
 /// `UnreadBadge`) so it reads as a call to action beside the plain icon buttons. Renders nothing when
