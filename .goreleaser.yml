@@ -19,8 +19,9 @@ builds:
 
 archives:
   - formats: [tar.gz]
-    # `-cli` distinguishes these from the macOS app DMG (workroom-macos-app_<version>.dmg).
-    name_template: "workroom-cli_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    # Already distinct from the macOS app DMG (workroom-macos-app_<version>.dmg) by suffix;
+    # `install.sh` and `internal/updater/updater.go` download this exact name, so keep them in sync.
+    name_template: "workroom_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     format_overrides:
       - goos: windows
         formats: [zip]
