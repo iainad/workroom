@@ -94,4 +94,56 @@ final class PaneDimDecisionTests: XCTestCase {
     XCTAssertFalse(
       AppStore.shouldPulse(isOnScreen: false, isSelectedMember: true, isCursorTab: false))
   }
+
+  // MARK: AppStore.isSeen — appFrontmost && isSelectedTarget && isCursorTab
+
+  /// Only the cursor tab of the selected workroom, while the app is frontmost (this window key), is
+  /// "seen" (suppressed). The issue #89 regression guard: every other pane is unseen → it notifies.
+  func testIsSeenOnlyTrueForFrontmostSelectedCursor() {
+    XCTAssertTrue(AppStore.isSeen(appFrontmost: true, isSelectedTarget: true, isCursorTab: true))
+    XCTAssertFalse(AppStore.isSeen(appFrontmost: false, isSelectedTarget: true, isCursorTab: true))
+    XCTAssertFalse(AppStore.isSeen(appFrontmost: true, isSelectedTarget: false, isCursorTab: true))
+    XCTAssertFalse(AppStore.isSeen(appFrontmost: true, isSelectedTarget: true, isCursorTab: false))
+  }
+
+  // MARK: AppStore.activityOutcome — the full (frontmost × onScreen × selected × cursor) matrix
+
+  /// Exhaustive truth table over all 16 input combinations. `record == false` only for the one pane
+  /// the user is looking at (frontmost + on-screen + selected + cursor); everything else records
+  /// (issue #89). `pulse` fires only for a frontmost, on-screen, non-cursor pane (issue #82). The
+  /// frontmost+off-screen rows pin the totality guard: an off-screen tab records even when it's
+  /// (impossibly, for the real gather) flagged selected + cursor.
+  func testActivityOutcomeMatrix() {
+    // (appFrontmost, isOnScreen, isSelectedMember, isCursorTab, expectedPulse, expectedRecord)
+    let cases: [(Bool, Bool, Bool, Bool, Bool, Bool)] = [
+      // Backgrounded / another window key: never pulse, always record (banner via NotificationGate).
+      (false, false, false, false, false, true),
+      (false, false, false, true, false, true),
+      (false, false, true, false, false, true),
+      (false, false, true, true, false, true),
+      (false, true, false, false, false, true),
+      (false, true, false, true, false, true),
+      (false, true, true, false, false, true),
+      (false, true, true, true, false, true),
+      // Frontmost, off-screen: never pulse, always record — incl. selected + cursor (totality guard).
+      (true, false, false, false, false, true),
+      (true, false, false, true, false, true),
+      (true, false, true, false, false, true),
+      (true, false, true, true, false, true),
+      // Frontmost, on-screen:
+      (true, true, false, false, true, true),  // co-displayed member, not cursor → pulse + notify
+      (true, true, false, true, true, true),  // co-displayed member, cursor → pulse + notify
+      (true, true, true, false, true, true),  // selected non-cursor split-mate → pulse + notify
+      (true, true, true, true, false, false),  // the focused cursor pane → SEEN: suppress, no pulse
+    ]
+    for (frontmost, onScreen, selected, cursor, pulse, record) in cases {
+      let out = AppStore.activityOutcome(
+        appFrontmost: frontmost, isOnScreen: onScreen, isSelectedMember: selected,
+        isCursorTab: cursor)
+      let label =
+        "(frontmost:\(frontmost), onScreen:\(onScreen), selected:\(selected), cursor:\(cursor))"
+      XCTAssertEqual(out.pulse, pulse, "pulse for \(label)")
+      XCTAssertEqual(out.record, record, "record for \(label)")
+    }
+  }
 }

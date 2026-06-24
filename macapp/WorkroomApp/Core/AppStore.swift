@@ -2431,6 +2431,36 @@ final class AppStore: ObservableObject {
     isOnScreen && (isSelectedMember ? !isCursorTab : true)
   }
 
+  /// Whether the user is actively looking at this pane: the app is frontmost (this window is key)
+  /// AND it's the cursor tab of the selected workroom. Only this one pane is "seen" — every other
+  /// pane (off-screen, a non-cursor split-mate, or a co-displayed non-selected workroom) is unseen
+  /// and notifies (issue #89). Pure + unit-tested (mirrors `shouldPulse` / `NotificationGate`).
+  nonisolated static func isSeen(appFrontmost: Bool, isSelectedTarget: Bool, isCursorTab: Bool)
+    -> Bool
+  {
+    appFrontmost && isSelectedTarget && isCursorTab
+  }
+
+  /// The full per-activity decision, composed from the pure parts so the whole matrix is unit-
+  /// testable without `NSApp` (issue #89). Total over all four inputs. `record == false` ⇒ the
+  /// event is suppressed (you're looking at that exact pane). `pulse` border-flashes an on-screen
+  /// non-cursor pane to locate it (issue #82) — never the cursor pane (`shouldPulse` handles that),
+  /// never while backgrounded (those get a banner, not a pulse). The `isOnScreen` guard on `seen`
+  /// keeps it total: an off-screen tab always records, even if flagged selected + cursor.
+  nonisolated static func activityOutcome(
+    appFrontmost: Bool, isOnScreen: Bool, isSelectedMember: Bool, isCursorTab: Bool
+  ) -> (pulse: Bool, record: Bool) {
+    let seen =
+      isOnScreen
+      && isSeen(
+        appFrontmost: appFrontmost, isSelectedTarget: isSelectedMember, isCursorTab: isCursorTab)
+    let pulse =
+      appFrontmost && isOnScreen
+      && shouldPulse(
+        isOnScreen: isOnScreen, isSelectedMember: isSelectedMember, isCursorTab: isCursorTab)
+    return (pulse: pulse, record: !seen)
+  }
+
   /// Record a terminal's activity, then surface it: backgrounded ⇒ a native banner; foregrounded ⇒
   /// an in-app toast (inspector closed) or a sidebar row flash (inspector open), plus the arrival
   /// sound (issue #31). `record` drops the event entirely when the user is already looking at that
@@ -2438,25 +2468,30 @@ final class AppStore: ObservableObject {
   private func handleActivity(
     targetID: TerminalTarget.ID, tabID: TerminalTab.ID, activity: TerminalActivity
   ) {
-    // "Seen" = on screen (the focused solo tab or any pane of the visible split) — those are
-    // suppressed (D3). A visible pane that isn't the cursor pane gets a border flash instead of a
-    // badge, so split-mates still signal activity without nagging. A co-displayed NON-selected
-    // workroom is backgrounded, so any of its on-screen panes flashes too (issue #82); `seen`
-    // implies `onScreenTarget` is non-nil.
-    let seen = isFocused(targetID: targetID, tabID: tabID)
-    if seen, let onScreen = onScreenTarget(forID: targetID) {
-      let isSelectedMember = onScreen.id == selectedTarget?.id
-      let isCursorTab = terminals.focusedTab(for: onScreen)?.id == tabID
-      if Self.shouldPulse(
-        isOnScreen: true, isSelectedMember: isSelectedMember, isCursorTab: isCursorTab)
-      {
-        terminals.pulsePaneActivity(tabID)
-      }
-    }
-    guard
+    // pane state (frontmost = THIS window is key)  → outcome
+    //   selected + cursor                          → SEEN: suppress (you're looking at it)
+    //   on-screen, not cursor (split-mate)         → pulse (locator) + notify
+    //   off-screen                                 → notify (no pulse)
+    //   backgrounded / another window key          → banner (no pulse)
+    //
+    // `seen` (suppress?) keys on `hostWindow?.isKeyWindow` — is THIS pane the one focused. The
+    // banner-vs-in-app routing below keys on `NSApp.isActive` — is the APP frontmost at all. Two
+    // different questions, deliberately different vocabulary: a frontmost-but-not-key window still
+    // shows an in-app toast, never a banner. (`isKeyWindow` already implies the app is active.)
+    // Per-window so a *non-key* window's selected cursor tab still notifies (issue #89, multi-window)
+    // instead of being suppressed because some other window holds key.
+    let appFrontmost = hostWindow?.isKeyWindow == true
+    let onScreen = onScreenTarget(forID: targetID)
+    let isSelectedMember = onScreen?.id == selectedTarget?.id
+    let isCursorTab = onScreen.map { terminals.focusedTab(for: $0)?.id == tabID } ?? false
+    let outcome = Self.activityOutcome(
+      appFrontmost: appFrontmost, isOnScreen: onScreen != nil,
+      isSelectedMember: isSelectedMember, isCursorTab: isCursorTab)
+    if outcome.pulse { terminals.pulsePaneActivity(tabID) }
+    guard outcome.record,
       let note = notifications.record(
         targetID: targetID, tabID: tabID, source: notificationSource(forTargetID: targetID),
-        activity: activity, focused: seen)
+        activity: activity, focused: false)
     else { return }
     if NotificationGate.shouldPresentInApp(recorded: true, appActive: NSApp.isActive) {
       // App is focused: sound on every arrival, then either flash the row (inspector visible) or pop
@@ -2501,23 +2536,12 @@ final class AppStore: ObservableObject {
     }
   }
 
-  /// Whether the user is currently looking at this terminal: the app is frontmost, one of its windows
-  /// is key, and the tab is **visible** in the selected target — the focused solo tab, or any pane of
-  /// the on-screen split (issue #3, decision D3). A notification's job is to surface the unseen, and an
-  /// on-screen pane is seen — so visible panes are suppressed; a visible non-focused pane gets a
-  /// per-pane border flash instead (see `handleActivity`). Window-aware so a sheet, a background
-  /// window, or a non-frontmost app don't count as focused (issue #10, tension 2).
-  func isFocused(targetID: TerminalTarget.ID, tabID: TerminalTab.ID) -> Bool {
-    guard NSApp.isActive, NSApp.keyWindow != nil else { return false }
-    guard let target = onScreenTarget(forID: targetID) else { return false }
-    return terminals.visibleTabIDs(for: target).contains(tabID)
-  }
-
   /// The on-screen target for `targetID`, ignoring app/window activation (so it's unit-testable): the
   /// selected target, or — when a workroom split is shown — any co-displayed split member. The focused
   /// member is `selectedTarget`, but the *other* members render beside it (issue #23), so their
-  /// terminals are equally on screen; without this `isFocused` would treat a visible non-selected
-  /// member's activity as unseen and post a banner for a pane the user is looking at. nil if not shown.
+  /// terminals are equally on screen. `handleActivity` uses this to drive the on-screen border pulse
+  /// (issue #82) for a visible non-cursor pane, and to tell an on-screen pane from an off-screen one
+  /// when deciding whether the activity is "seen". nil if not shown.
   func onScreenTarget(forID targetID: TerminalTarget.ID) -> TerminalTarget? {
     if let selected = selectedTarget, selected.id == targetID { return selected }
     guard isWorkroomSplitVisible, let leaves = resolvedSplitLeaves() else { return nil }

@@ -106,14 +106,22 @@ struct WorkroomTerminalsView: View {
       store.ensureInitialTerminal(for: target)
       sessions.reconcileOcclusion(for: target)
     }
-    // Focusing a terminal dismisses its notifications. This view only ever renders the selected
-    // target's active terminal, so `active.id` changing *is* a focus change — whether from a chip
-    // tap, ⌘1–9, the sidebar switching targets, or a close revealing a neighbour. One hook covers
-    // them all; `initial` handles the target's first appearance (e.g. arriving from the empty state
-    // with notifications already waiting). Returning to the app with the same tab still focused is
-    // handled separately by RootView's didBecomeActive → dismissFocusedTerminalNotifications.
+    // Focusing a terminal dismisses its notifications — but ONLY while this view is the focused one
+    // (`surfaceActive`). In a workroom split EVERY member renders through this view, including
+    // co-displayed NON-focused members (`surfaceActive: false`, issue #23); without the gate, such a
+    // member would wipe its OWN notifications on mount/remount via the `initial: true` fire — a pane
+    // you're explicitly not looking at (issue #89). With the gate: for the focused member, `active.id`
+    // changing *is* a focus change (chip tap, ⌘1–9, sidebar switch, close revealing a neighbour) and
+    // `initial` handles its first appearance. The sibling `surfaceActive` hook covers selection
+    // MOVING to a member — `selectedTargetID` changes but the member's `active.id` does not, so the
+    // hook above wouldn't fire. In the single-workroom path `surfaceActive` is always true, so this
+    // behaves exactly as before. Returning to the app with the same tab focused is handled separately
+    // by RootView's didBecomeActive → dismissFocusedTerminalNotifications.
     .onChange(of: active?.id, initial: true) { _, id in
-      if let id { notifications.dismiss(tab: id) }
+      if surfaceActive, let id { notifications.dismiss(tab: id) }
+    }
+    .onChange(of: surfaceActive) { _, nowFocused in
+      if nowFocused, let id = active?.id { notifications.dismiss(tab: id) }
     }
     // Drive the "Close Terminal" menu command's enabled state.
     .focusedSceneValue(\.hasTerminal, !tabs.isEmpty)

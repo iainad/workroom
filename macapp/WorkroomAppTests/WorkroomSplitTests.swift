@@ -403,8 +403,9 @@ final class WorkroomSplitTests: XCTestCase {
 
   func testOnScreenTargetIncludesCoDisplayedSplitMember() {
     // With the split shown, the focused member is `selectedTarget` AND the other members render beside
-    // it — so a co-displayed non-selected member must read as on screen, else `isFocused` posts a
-    // banner for a workroom the user is looking at.
+    // it — so a co-displayed non-selected member must read as on screen, so `handleActivity` can
+    // border-pulse its visible panes (issue #82) and tell on-screen activity from off-screen when
+    // deciding whether the event is "seen" (issue #89).
     let store = store3()
     let a = wr("main")
     let b = wr("feature")
