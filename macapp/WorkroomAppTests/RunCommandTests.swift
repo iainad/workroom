@@ -744,7 +744,8 @@ final class RunCommandTests: XCTestCase {
       pending.append(work)
       return work
     }
-    store.startRunCommand(for: t)  // background (no selection → no live toast; terminal toast below)
+    // background (no selection → no live toast; terminal toast below)
+    store.startRunCommand(for: t)
 
     runView(store, t)?.handleChildExited(exitCode: 0)  // terminal → schedules the auto-dismiss
     XCTAssertEqual(pending.count, 1)
