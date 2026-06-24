@@ -104,8 +104,19 @@ struct WorkroomTabBar: View {
           .animation(
             isDragging || reduceMotion ? nil : .easeInOut(duration: 0.18), value: offsetX)
         }
-        // A divider sets the "new workroom" (+) button apart from the last tab.
-        TitlebarDivider()
+        // A divider sets the "new workroom" (+) button apart from the last tab. Hidden when the last
+        // tab is set apart on its own — selected or hovered — to match the "no divider beside the
+        // focused/hovered tab" rule for the inter-chip separators. Toggled via OPACITY (not removed) so
+        // the "+" never shifts as the selection/hover comes and goes. Negative leading trims the gap to
+        // the last tab to ~2pt (HStack `tabSpacing` 4 − 2), matching the inter-chip dividers. Mirrors
+        // the terminal strip.
+        Rectangle()
+          .fill(ThemeService.shared.tokens.border)
+          .frame(width: 1, height: 16)
+          .padding(.leading, -2)
+          .padding(.trailing, 4)
+          .opacity(
+            tabs.last.map { $0.sid != selectedID && $0.sid != hoveredID } ?? true ? 1 : 0)
         // The "new workroom" (+) button, immediately after the last chip (scrolls with them) — mirrors
         // the terminal strip's `addTerminalButton`.
         addWorkroomButton
@@ -234,6 +245,9 @@ struct WorkroomTabBar: View {
           RoundedRectangle(cornerRadius: 5)
             .fill(ThemeService.shared.tokens.hover.opacity(addHovering ? 1 : 0))
         )
+        // The whole padded glyph (the hover well's area) is clickable/hoverable, not just the "+" —
+        // the transparent padding wouldn't hit-test on its own.
+        .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
     .onHover { addHovering = $0 }
@@ -261,6 +275,7 @@ private struct WorkroomTabChip: View {
   @EnvironmentObject var store: AppStore
   @EnvironmentObject var notifications: NotificationCenterStore
   @EnvironmentObject var terminals: TerminalSessions
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
   private let theme = ThemeService.shared
 
   private var isRoot: Bool {
@@ -347,6 +362,8 @@ private struct WorkroomTabChip: View {
     .background {
       RoundedRectangle(cornerRadius: 6)
         .fill(isActive ? theme.tokens.tabActive : (isHovered ? theme.tokens.hover : Color.clear))
+        // Fade the hover wash in/out instead of snapping it on.
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.12), value: isHovered)
     }
     .background {
       RoundedRectangle(cornerRadius: 6)

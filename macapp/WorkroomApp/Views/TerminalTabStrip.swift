@@ -139,6 +139,21 @@ struct TerminalTabStrip: View {
             .animation(
               isDragging || reduceMotion ? nil : .easeInOut(duration: 0.18), value: offsetX)
           }
+          // A divider sets the new-terminal (+) button apart from the last tab (mirrors the workroom
+          // tab bar). Hidden when the last tab is set apart on its own — focused or hovered — to match
+          // the "no divider beside the focused/hovered tab" rule above. Toggled via OPACITY (not
+          // removed) so it stays laid out and the "+" never shifts as the hover/focus comes and goes.
+          // Only present at all with ≥1 tab (a split member's empty strip is just the "+" and close ✕).
+          // Negative leading trims the gap to the last tab to ~2pt (HStack `tabSpacing` 4 − 2), matching
+          // the inter-tab dividers.
+          if !tabs.isEmpty {
+            Rectangle()
+              .fill(ThemeService.shared.tokens.border)
+              .frame(width: 1, height: 14)
+              .padding(.leading, -2)
+              .padding(.trailing, 4)
+              .opacity(tabs.last?.id != activeID && tabs.last?.id != hoveredTab ? 1 : 0)
+          }
           addTerminalButton
         }
         .background(alignment: .leading) { splitWell(tabs) }
@@ -182,6 +197,9 @@ struct TerminalTabStrip: View {
           RoundedRectangle(cornerRadius: 5)
             .fill(ThemeService.shared.tokens.hover.opacity(addHovering ? 1 : 0))
         )
+        // The whole padded glyph (the hover well's area) is clickable/hoverable, not just the "+" —
+        // the transparent padding wouldn't hit-test on its own.
+        .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
     .onHover { addHovering = $0 }
@@ -283,23 +301,19 @@ struct TerminalTabStrip: View {
   }
 
   /// Whether to draw a hairline on the leading edge of tab `index`, separating it from its left
-  /// neighbour. Shown only between two adjacent tabs that are **both** idle — not active, not hovered —
-  /// and never during a drag (reorder or drop-into-pane), so the divider quietly vanishes around the
-  /// tab you're pointing at or have focused. Drawn between split-grouped members too (inside the
-  /// `splitWell` bracket), but dropped at the group's **outer** boundary (exactly one neighbour is a
-  /// member) where the bracket already separates it — a hairline there doubles up against its rounded
-  /// border. Mirrors `WorkroomTabBar`.
+  /// neighbour. A divider sits between every adjacent pair of tabs, dropped around any tab that's set
+  /// apart on its own: the **focused** tab (its border frames it) and the **hovered** tab (its wash
+  /// frames it) — no divider immediately before or after either, so they don't double up. Also dropped
+  /// at a split group's **outer** boundary (the `splitWell` bracket already separates the members
+  /// there) and while dragging (reorder / drop-into-pane). Mirrors `WorkroomTabBar`.
   private func showsLeadingSeparator(at index: Int) -> Bool {
     guard index > 0, draggingID == nil, chipPaneDrag == nil else { return false }
     let here = tabs[index].id
     let prev = tabs[index - 1].id
     if here == activeID || prev == activeID { return false }
-    if hoveredTab == here || hoveredTab == prev { return false }
+    if here == hoveredTab || prev == hoveredTab { return false }
     let members = splitMemberSet
     if members.contains(here) != members.contains(prev) { return false }
-    // Non-grouped tabs now each carry their own border, which separates them — a hairline would just
-    // double up. The separator survives only between two split-grouped members (inside the bracket).
-    if !members.contains(here) { return false }
     return true
   }
 
@@ -348,6 +362,7 @@ private struct TerminalTabChip: View {
   /// overrunning it (the bracket hugs the chip run, so a full-bleed pill would cover the border).
   let isGrouped: Bool
   let onClose: () -> Void
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
   private let theme = ThemeService.shared
 
   /// Glyph + colour + a11y/help word for the run-state chip icon. Failure is carried by BOTH the
@@ -361,10 +376,6 @@ private struct TerminalTabChip: View {
   }
 
   var body: some View {
-    // The ✕ reveals on hover or when the tab is active — matching the sidebar's terminal rows, and
-    // sparing the strip a close glyph on every idle tab. It stays *laid out* (opacity, not removed)
-    // so the chip's measured width — which the drag-gap math reads — is stable whether or not it shows.
-    let showClose = isActive || isHovered
     // Title and close button laid out side by side: a compact gap keeps the ✕ visibly tied to its
     // tab (a wide gap reads as detached) while still clearing the title so they never crowd.
     HStack(spacing: 6) {
@@ -398,15 +409,19 @@ private struct TerminalTabChip: View {
       }
       Text(tab.title)
         .font(.callout)
+        // The focused tab's title is brighter (full primary) so it reads as selected; unfocused titles
+        // dim to muted. Brightness only — NOT weight: a bold↔regular swap on switch re-measures the
+        // title and nudges the chips sideways. Unread activity (accent) overrides either, on any tab.
+        .foregroundStyle(
+          hasActivity ? theme.tokens.accent : (isActive ? Color.primary : theme.tokens.fgMuted)
+        )
         // A preview tab's name is italic until it's persisted (VS-Code semantics, #66).
         .italic(tab.isPreview)
         .lineLimit(1)
-        .foregroundStyle(hasActivity ? theme.tokens.accent : Color.primary)
+      // The ✕ is always shown (every tab is closable at a glance), so the chip width is constant.
       TabCloseButton(action: onClose)
         .help("Close \(tab.title)")
         .accessibilityLabel("Close \(tab.title)")
-        .opacity(showClose ? 1 : 0)
-        .allowsHitTesting(showClose)
     }
     .padding(.leading, 10)
     .padding(.trailing, 4)  // tighter than the leading inset — the ✕ sits near the chip's edge
@@ -420,6 +435,8 @@ private struct TerminalTabChip: View {
       RoundedRectangle(cornerRadius: 6, style: .continuous)
         .fill(isActive ? theme.tokens.bg : (isHovered ? theme.tokens.hover : Color.clear))
         .padding(isGrouped ? EdgeInsets(top: 2, leading: 3, bottom: 2, trailing: 3) : EdgeInsets())
+        // Fade the hover wash in/out instead of snapping it on.
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.12), value: isHovered)
     }
     .background {
       RoundedRectangle(cornerRadius: 6)
@@ -436,28 +453,27 @@ private struct TerminalTabChip: View {
         Color.clear.preference(key: TabWidthKey.self, value: [tab.id: geo.size.width])
       }
     }
-    // A non-grouped tab carries its own rounded border so it reads as a framed chip; grouped tabs are
-    // framed by the shared `splitWell` bracket instead, so they skip it.
+    // Only the focused tab is outlined: unfocused tabs have a transparent border so they recede into
+    // the strip, and the focused tab's outline is a stronger stroke (`fgDim`, not the old `border`
+    // hairline) so it reads as clearly selected rather than washed out. Grouped tabs are framed by the
+    // shared `splitWell` bracket instead, so they skip it.
     .overlay {
-      if !isGrouped {
+      if !isGrouped && isActive {
         RoundedRectangle(cornerRadius: 6, style: .continuous)
-          .strokeBorder(theme.tokens.border, lineWidth: 1)
+          .strokeBorder(theme.tokens.fgDim, lineWidth: 1)
       }
     }
-    // Hairline between two idle neighbours, centred in the *visible* whitespace between the two
-    // titles. An overlay (not an HStack element) so it never enters the width the drag math measures.
-    // Unlike WorkroomTabBar's symmetric chips, a terminal chip always reserves its trailing close
-    // button even when hidden, so the title sits well left of the chip's right edge — centring on the
-    // geometric chip gap would jam the line against the right tab. The midpoint of [previous title's
-    // trailing edge … this title's leading edge] is ≈ (−(tabSpacing 4 + spacing 6 + closeButton ~15 +
-    // trailing 4) + leading 10) / 2 = −9.5; the leading-anchored 1pt rect centres at +0.5, so offset
-    // another −0.5 → −10 to sit on that midpoint.
+    // Hairline centred in the gap between this chip and its left neighbour, so it sits cleanly between
+    // the tabs and never overlaps either pill. The gap is the HStack's `tabSpacing` (4pt); the overlay
+    // is anchored to this chip's leading edge, so the 1pt rect's centre lands at −tabSpacing/2 = −2 →
+    // offset −2.5 (the leading-anchored rect's own centre is at +0.5). An overlay (not an HStack
+    // element) so it never enters the width the drag-gap math measures.
     .overlay(alignment: .leading) {
       if showLeadingSeparator {
         Rectangle()
           .fill(theme.tokens.border)
           .frame(width: 1, height: 14)
-          .offset(x: -10)
+          .offset(x: -2.5)
       }
     }
     // A flowing underline along the chip's base while a command runs in this tab (issue #28).
@@ -531,6 +547,7 @@ struct RunningUnderline: View {
 private struct TabCloseButton: View {
   let action: () -> Void
   @State private var hovering = false
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
   private let theme = ThemeService.shared
 
   var body: some View {
@@ -539,13 +556,15 @@ private struct TabCloseButton: View {
         .font(.system(size: 9, weight: .semibold))
         .foregroundStyle(hovering ? .primary : .secondary)
         .padding(3)
+        // A circular hover well behind the ✕ (matches a round close affordance), faded in/out.
         .background(
-          RoundedRectangle(cornerRadius: 4)
+          Circle()
             .fill(theme.tokens.hover.opacity(hovering ? 1 : 0))
         )
     }
     .buttonStyle(.plain)
     .onHover { hovering = $0 }
+    .animation(reduceMotion ? nil : .easeInOut(duration: 0.12), value: hovering)
   }
 }
 
