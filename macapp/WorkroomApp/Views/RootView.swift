@@ -325,9 +325,10 @@ struct RootView: View {
       // after each SwiftUI pass) — the title never shows in the bar (issue #70).
       .navigationTitle(store.windowTitle)
       // Drop NavigationSplitView's auto sidebar toggle — `LeadingTitlebarBar` carries its own, leftmost
-      // after the traffic lights. The now-itemless window toolbar is hidden in WindowBackgroundThemer
-      // (its overflow chevron would otherwise linger); the traffic lights + accessories aren't part of
-      // the toolbar, so they stay.
+      // after the traffic lights. This removal doesn't fully take (the live toolbar still carries the
+      // toggle + a flexible space + the split tracking-separator), so the whole window toolbar is hidden
+      // in WindowBackgroundThemer to kill its overflow chevron; the traffic lights + accessories aren't
+      // part of the toolbar, so they stay.
       .toolbar(removing: .sidebarToggle)
       .background(WindowBackgroundThemer())
       // The single, full-width unified title-bar bar sharing the native title-bar row with the traffic

@@ -26,8 +26,8 @@ struct TitlebarDivider: View {
 
 /// Leading title-bar controls: sidebar toggle + history nav (issue #26). Our
 /// own sidebar toggle (leftmost, right after the traffic lights) replaces NavigationSplitView's auto
-/// one — removed via `.toolbar(removing:)`, with the now-itemless window toolbar hidden in
-/// `WindowBackgroundThemer` so it doesn't leave an overflow chevron.
+/// one. `.toolbar(removing:)` is meant to drop it, but doesn't fully take, so the window toolbar is
+/// hidden outright in `WindowBackgroundThemer` to kill its "more toolbar items" overflow chevron.
 struct LeadingTitlebarBar: View {
   @EnvironmentObject var store: AppStore
   @EnvironmentObject var updater: Updater

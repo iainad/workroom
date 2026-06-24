@@ -40,13 +40,20 @@ struct WindowBackgroundThemer: NSViewRepresentable {
     // No title text in the bar — the leading/trailing title-bar accessories (the unified toolbar) and
     // the workroom tabs carry the chrome; an app-name title would just clutter the row.
     window.titleVisibility = .hidden
-    // A taller (unified-compact) title-bar row, so the controls + workroom tabs get a little breathing
-    // room above and below — a `.leading`/`.trailing` accessory can't grow the bar on its own, but a
-    // unified toolbar does. Keep NavigationSplitView's own toolbar (its only item, the sidebar toggle,
-    // is removed via `.toolbar(removing:)`, so it's itemless and draws no overflow chevron at this
-    // style) but make it visible and unified-compact. (Replacing the toolbar outright crashes — SwiftUI
-    // owns it.) `.none` separator so no hairline rule appears under the bar when the terminal scrolls.
-    window.toolbar?.isVisible = true
+    // Hide NavigationSplitView's own toolbar. It looks itemless — `.toolbar(removing: .sidebarToggle)`
+    // is meant to clear it (our `LeadingTitlebarBar` carries the real sidebar toggle) — but that removal
+    // does NOT take: the live toolbar still carries SwiftUI's `navigationSplitView.toggleSidebar`, a
+    // `NSToolbarFlexibleSpaceItem`, and the `splitViewSeparator` tracking item. Our single full-width
+    // `.leading` titlebar accessory (TitlebarAccessory, `fillsWidth`) starves the toolbar's content
+    // region to ~0pt, so all three items clip into AppKit's "more toolbar items" (») overflow popup —
+    // which surfaces centred in the bar whenever nothing opaque (a selected workroom's tab bar /
+    // trailing controls) happens to paint over it, e.g. the "Nothing selected" state on a wide/zoomed
+    // window. Hiding the toolbar removes the overflow entirely; we use none of its items (the accessory
+    // replicates them), and the `.unifiedCompact` style still applies so the taller title-bar row — the
+    // breathing room above/below the controls + workroom tabs — is preserved. (Replacing the toolbar
+    // outright crashes — SwiftUI owns it — so hide, don't replace.) `.none` separator so no hairline
+    // rule appears under the bar when the terminal scrolls.
+    window.toolbar?.isVisible = false
     window.toolbarStyle = .unifiedCompact
     window.titlebarSeparatorStyle = .none
     // The title bar belongs to the chrome panel, so it takes the panel colour (a subtle step off
