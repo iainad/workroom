@@ -91,6 +91,15 @@ struct RootView: View {
   }
 
   var body: some View {
+    rootWindowChrome(rootLifecycle(rootReveals(rootModals(splitView))))
+  }
+
+  /// The two-column `NavigationSplitView` core (sidebar + detail/inspector). The window chrome, modal
+  /// presentations, and lifecycle hooks layer on in `body` via the `root*` helpers below — each its own
+  /// function so the modifier chain type-checks within the compiler's budget. The fully-inline chain
+  /// timed out the type-checker on CI ("unable to type-check this expression in reasonable time"); this
+  /// is the same split-it-up reason `EdgeRevealSidebars`/`MenuStateValues`/`NewWorkroomPresenter` exist.
+  private var splitView: some View {
     NavigationSplitView(
       columnVisibility: Binding(
         // Own the column visibility so the View ▸ Projects menu item can show a tick (the bar's
@@ -139,203 +148,226 @@ struct RootView: View {
       }
       .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: showNotifications)
     }
-    .alert(
-      store.errorTitle ?? "Something went wrong",
-      isPresented: Binding(
-        get: { store.errorMessage != nil },
-        set: {
-          if !$0 {
-            store.errorMessage = nil
-            store.errorTitle = nil
+  }
+
+  /// Error alert, add-project importer, and the new-workroom / workroom-delete / project-delete
+  /// presenters — all driven by store flags plus the `showImporter` state.
+  private func rootModals<V: View>(_ content: V) -> some View {
+    content
+      .alert(
+        store.errorTitle ?? "Something went wrong",
+        isPresented: Binding(
+          get: { store.errorMessage != nil },
+          set: {
+            if !$0 {
+              store.errorMessage = nil
+              store.errorTitle = nil
+            }
+          }
+        )
+      ) {
+        Button("OK", role: .cancel) {
+          store.errorMessage = nil
+          store.errorTitle = nil
+        }
+      } message: {
+        Text(store.errorMessage ?? "")
+      }
+      // Add-project importer + delete confirmation, re-homed here from ProjectSidebar (issue #23 OV1) so
+      // the ⌘O / ⌘⌫ menu commands present reliably even when the sidebar is collapsed in Workrooms View.
+      // The triggers stay on the store (`requestAddProject` / `pendingDeletion`), set by both the menu
+      // commands and the sidebar's own buttons.
+      .onChange(of: store.requestAddProject) { _, request in
+        if request {
+          showImporter = true
+          store.requestAddProject = false
+        }
+      }
+      .fileImporter(isPresented: $showImporter, allowedContentTypes: [.folder]) { result in
+        if case .success(let url) = result {
+          Task { await store.addProject(url) }
+        }
+      }
+      // New Workroom picker (⌘N, issue #81): same store-flag bridge as the importer above, packaged as
+      // a modifier so this large `body` stays within the type-checker's budget (like EdgeRevealSidebars).
+      // The menu command gates on `hasProjects`, so it only fires with ≥1 project; the dialog itself
+      // still handles a filter that matches nothing.
+      .modifier(NewWorkroomPresenter(store: store))
+      .confirmationDialog(
+        store.pendingDeletion.map { "Delete '\($0.workroom.name)'?" } ?? "Delete workroom?",
+        isPresented: Binding(
+          get: { store.pendingDeletion != nil }, set: { if !$0 { store.pendingDeletion = nil } }),
+        titleVisibility: .visible
+      ) {
+        Button("Delete", role: .destructive) {
+          if let target = store.pendingDeletion {
+            store.deleteWorkroom(target.workroom, in: target.project)
+          }
+          store.pendingDeletion = nil
+        }
+        Button("Cancel", role: .cancel) { store.pendingDeletion = nil }
+      } message: {
+        Text(
+          "This removes the workroom's directory and runs its teardown script. For Git, the branch is left in place."
+        )
+      }
+      // Tab bar "Close": tear down all of the workroom's terminal tabs (its chip leaves the bar),
+      // leaving the workroom itself in place. Same store-flag → confirmationDialog bridge as delete.
+      .confirmationDialog(
+        store.pendingWorkroomClose.map { "Close ‘\($0.name)’?" } ?? "Close workroom?",
+        isPresented: Binding(
+          get: { store.pendingWorkroomClose != nil },
+          set: { if !$0 { store.pendingWorkroomClose = nil } }),
+        titleVisibility: .visible
+      ) {
+        Button("Close", role: .destructive) {
+          if let pending = store.pendingWorkroomClose { store.closeWorkroom(for: pending.target) }
+          store.pendingWorkroomClose = nil
+        }
+        Button("Cancel", role: .cancel) { store.pendingWorkroomClose = nil }
+      } message: {
+        Text(
+          "This closes all of the workroom's terminal tabs and stops anything running in them. The workroom itself is kept."
+        )
+      }
+      // Project deletion uses a type-to-confirm sheet (not a one-tap dialog): it's a bigger,
+      // optionally-cascading action, so it demands typing the project name. `.sheet(item:)`
+      // rebuilds per pending identity, resetting the sheet's typed/toggle state.
+      .sheet(item: $store.pendingProjectDeletion) { pending in
+        DeleteProjectSheet(
+          project: pending.project,
+          onDelete: { withWorkrooms in
+            store.pendingProjectDeletion = nil
+            store.deleteProject(pending.project, deleteWorkrooms: withWorkrooms)
+          },
+          onCancel: { store.pendingProjectDeletion = nil })
+      }
+  }
+
+  /// The edge-reveal sidebars and the foreground toast overlay — the layers drawn over the split.
+  private func rootReveals<V: View>(_ content: V) -> some View {
+    content
+      // Edge-hover reveal of a collapsed sidebar (issue #56): each layer is active only while its
+      // sidebar is closed, slides the same content in OVER the detail, and is inert otherwise. Applied
+      // before the toast overlay so toasts keep z-order above a revealed panel. Packaged as a modifier
+      // so this large `body` stays within the type-checker's budget.
+      .modifier(
+        EdgeRevealSidebars(
+          sidebarVisible: store.sidebarVisible, inspectorVisible: showNotifications)
+      )
+      // Foreground toasts (issue #31): pinned bottom-right of the window, over the split + inspector.
+      // Only ever populated while the inspector is closed, so it never overlaps the open inspector.
+      .overlay(alignment: .bottomTrailing) { ToastStack() }
+  }
+
+  /// Window lifecycle + the notification-raised sheets (theme picker, keyboard shortcuts, What's New):
+  /// terminal theme registration, appearance application, and the key-window-guarded sheet presenters.
+  private func rootLifecycle<V: View>(_ content: V) -> some View {
+    content
+      .onAppear {
+        // Register this window's terminals for theme sweeps — every window stays themed when the theme
+        // changes (issue #70/#36; ThemeService owns application, the surface iteration stays in
+        // TerminalSessions). Weakly held, so a closed window drops out on its own.
+        ThemeService.shared.registerTerminals(store.terminals)
+        applyAppearance()
+      }
+      .onDisappear { ThemeService.shared.unregisterTerminals(store.terminals) }
+      .onChange(of: theme) { _ in applyAppearance() }
+      // Present only in the key window — the notification is broadcast to every window's RootView, so
+      // without this guard the sheet would pop in all of them (issue #70, OV #6).
+      .onReceive(NotificationCenter.default.publisher(for: .showThemePicker)) { _ in
+        guard store.hostWindow?.isKeyWindow ?? false else { return }
+        showThemePicker = true
+      }
+      .sheet(isPresented: $showThemePicker) {
+        ThemePicker(presentedAsSheet: true)
+      }
+      .onReceive(NotificationCenter.default.publisher(for: .showKeyboardShortcuts)) { _ in
+        guard store.hostWindow?.isKeyWindow ?? false else { return }
+        showKeyboardShortcuts = true
+      }
+      .sheet(isPresented: $showKeyboardShortcuts) {
+        KeyboardShortcutsView()
+      }
+      // "What's New" auto-check: only the launch/restore window runs it, so restored ⌘N windows don't
+      // each pop the dialog. Silent — opens straight to the notes when there are any to show.
+      .task {
+        guard store.isRestoreWindow else { return }
+        if let notes = await whatsNew.checkOnLaunch() {
+          whatsNewContent = .notes(notes)
+        }
+      }
+      // Help ▸ What's New… (user-invoked): key window only (the notification reaches every window's
+      // RootView). Opens to a loading state, then fills in / shows an empty/error message.
+      .onReceive(NotificationCenter.default.publisher(for: .showWhatsNew)) { _ in
+        guard store.hostWindow?.isKeyWindow ?? false else { return }
+        whatsNewContent = .loading
+        Task {
+          switch await whatsNew.showCurrent() {
+          case .notes(let n): whatsNewContent = .notes(n)
+          case .empty: whatsNewContent = .empty
+          case .error: whatsNewContent = .error
           }
         }
-      )
-    ) {
-      Button("OK", role: .cancel) {
-        store.errorMessage = nil
-        store.errorTitle = nil
       }
-    } message: {
-      Text(store.errorMessage ?? "")
-    }
-    // Add-project importer + delete confirmation, re-homed here from ProjectSidebar (issue #23 OV1) so
-    // the ⌘O / ⌘⌫ menu commands present reliably even when the sidebar is collapsed in Workrooms View.
-    // The triggers stay on the store (`requestAddProject` / `pendingDeletion`), set by both the menu
-    // commands and the sidebar's own buttons.
-    .onChange(of: store.requestAddProject) { _, request in
-      if request {
-        showImporter = true
-        store.requestAddProject = false
+      .sheet(item: $whatsNewContent) { content in
+        WhatsNewSheet(content: content) { whatsNewContent = nil }
       }
-    }
-    .fileImporter(isPresented: $showImporter, allowedContentTypes: [.folder]) { result in
-      if case .success(let url) = result {
-        Task { await store.addProject(url) }
+  }
+
+  /// Window-level chrome (title, toolbar trimming, background themer + the unified title-bar bar), the
+  /// regain-focus refresh, and the menu-command state values published for `WorkroomCommands`.
+  private func rootWindowChrome<V: View>(_ content: V) -> some View {
+    content
+      // Title the window with the selected project/workroom for the Window menu + Mission Control. A
+      // non-empty `navigationTitle` re-asserts `titleVisibility = .visible` every render, so the bar is
+      // kept clear by a hard lock in `AppStore.attachWindow` (a `didUpdate` observer that re-hides it
+      // after each SwiftUI pass) — the title never shows in the bar (issue #70).
+      .navigationTitle(store.windowTitle)
+      // Drop NavigationSplitView's auto sidebar toggle — `LeadingTitlebarBar` carries its own, leftmost
+      // after the traffic lights. The now-itemless window toolbar is hidden in WindowBackgroundThemer
+      // (its overflow chevron would otherwise linger); the traffic lights + accessories aren't part of
+      // the toolbar, so they stay.
+      .toolbar(removing: .sidebarToggle)
+      .background(WindowBackgroundThemer())
+      // The single, full-width unified title-bar bar sharing the native title-bar row with the traffic
+      // lights (see `titlebar` / `TitlebarBars`). Hosted outside the WindowGroup's environment, so it
+      // injects its env objects inside the closure.
+      .background(titlebar)
+      // Keep the root branch labels reasonably current: refresh when the app regains
+      // focus (throttled, so rapid alt-tabbing doesn't fork a git/jj process per project).
+      // Regaining focus also dismisses the now-visible terminal's notifications (you're looking at it).
+      .onReceive(
+        NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)
+      ) { _ in
+        store.dismissFocusedTerminalNotifications()
+        Task { await store.reloadIfStale() }
       }
-    }
-    // New Workroom picker (⌘N, issue #81): same store-flag bridge as the importer above, packaged as
-    // a modifier so this large `body` stays within the type-checker's budget (like EdgeRevealSidebars).
-    // The menu command gates on `hasProjects`, so it only fires with ≥1 project; the dialog itself
-    // still handles a filter that matches nothing.
-    .modifier(NewWorkroomPresenter(store: store))
-    .confirmationDialog(
-      store.pendingDeletion.map { "Delete '\($0.workroom.name)'?" } ?? "Delete workroom?",
-      isPresented: Binding(
-        get: { store.pendingDeletion != nil }, set: { if !$0 { store.pendingDeletion = nil } }),
-      titleVisibility: .visible
-    ) {
-      Button("Delete", role: .destructive) {
-        if let target = store.pendingDeletion {
-          store.deleteWorkroom(target.workroom, in: target.project)
-        }
-        store.pendingDeletion = nil
-      }
-      Button("Cancel", role: .cancel) { store.pendingDeletion = nil }
-    } message: {
-      Text(
-        "This removes the workroom's directory and runs its teardown script. For Git, the branch is left in place."
-      )
-    }
-    // Tab bar "Close": tear down all of the workroom's terminal tabs (its chip leaves the bar),
-    // leaving the workroom itself in place. Same store-flag → confirmationDialog bridge as delete.
-    .confirmationDialog(
-      store.pendingWorkroomClose.map { "Close ‘\($0.name)’?" } ?? "Close workroom?",
-      isPresented: Binding(
-        get: { store.pendingWorkroomClose != nil },
-        set: { if !$0 { store.pendingWorkroomClose = nil } }),
-      titleVisibility: .visible
-    ) {
-      Button("Close", role: .destructive) {
-        if let pending = store.pendingWorkroomClose { store.closeWorkroom(for: pending.target) }
-        store.pendingWorkroomClose = nil
-      }
-      Button("Cancel", role: .cancel) { store.pendingWorkroomClose = nil }
-    } message: {
-      Text(
-        "This closes all of the workroom's terminal tabs and stops anything running in them. The workroom itself is kept."
-      )
-    }
-    // Project deletion uses a type-to-confirm sheet (not a one-tap dialog): it's a bigger,
-    // optionally-cascading action, so it demands typing the project name. `.sheet(item:)`
-    // rebuilds per pending identity, resetting the sheet's typed/toggle state.
-    .sheet(item: $store.pendingProjectDeletion) { pending in
-      DeleteProjectSheet(
-        project: pending.project,
-        onDelete: { withWorkrooms in
-          store.pendingProjectDeletion = nil
-          store.deleteProject(pending.project, deleteWorkrooms: withWorkrooms)
-        },
-        onCancel: { store.pendingProjectDeletion = nil })
-    }
-    // Edge-hover reveal of a collapsed sidebar (issue #56): each layer is active only while its
-    // sidebar is closed, slides the same content in OVER the detail, and is inert otherwise. Applied
-    // before the toast overlay so toasts keep z-order above a revealed panel. Packaged as a modifier
-    // so this large `body` stays within the type-checker's budget.
-    .modifier(
-      EdgeRevealSidebars(
-        sidebarVisible: store.sidebarVisible, inspectorVisible: showNotifications)
-    )
-    // Foreground toasts (issue #31): pinned bottom-right of the window, over the split + inspector.
-    // Only ever populated while the inspector is closed, so it never overlaps the open inspector.
-    .overlay(alignment: .bottomTrailing) { ToastStack() }
-    .onAppear {
-      // Register this window's terminals for theme sweeps — every window stays themed when the theme
-      // changes (issue #70/#36; ThemeService owns application, the surface iteration stays in
-      // TerminalSessions). Weakly held, so a closed window drops out on its own.
-      ThemeService.shared.registerTerminals(store.terminals)
-      applyAppearance()
-    }
-    .onDisappear { ThemeService.shared.unregisterTerminals(store.terminals) }
-    .onChange(of: theme) { _ in applyAppearance() }
-    // Present only in the key window — the notification is broadcast to every window's RootView, so
-    // without this guard the sheet would pop in all of them (issue #70, OV #6).
-    .onReceive(NotificationCenter.default.publisher(for: .showThemePicker)) { _ in
-      guard store.hostWindow?.isKeyWindow ?? false else { return }
-      showThemePicker = true
-    }
-    .sheet(isPresented: $showThemePicker) {
-      ThemePicker(presentedAsSheet: true)
-    }
-    .onReceive(NotificationCenter.default.publisher(for: .showKeyboardShortcuts)) { _ in
-      guard store.hostWindow?.isKeyWindow ?? false else { return }
-      showKeyboardShortcuts = true
-    }
-    .sheet(isPresented: $showKeyboardShortcuts) {
-      KeyboardShortcutsView()
-    }
-    // "What's New" auto-check: only the launch/restore window runs it, so restored ⌘N windows don't
-    // each pop the dialog. Silent — opens straight to the notes when there are any to show.
-    .task {
-      guard store.isRestoreWindow else { return }
-      if let notes = await whatsNew.checkOnLaunch() {
-        whatsNewContent = .notes(notes)
-      }
-    }
-    // Help ▸ What's New… (user-invoked): key window only (the notification reaches every window's
-    // RootView). Opens to a loading state, then fills in / shows an empty/error message.
-    .onReceive(NotificationCenter.default.publisher(for: .showWhatsNew)) { _ in
-      guard store.hostWindow?.isKeyWindow ?? false else { return }
-      whatsNewContent = .loading
-      Task {
-        switch await whatsNew.showCurrent() {
-        case .notes(let n): whatsNewContent = .notes(n)
-        case .empty: whatsNewContent = .empty
-        case .error: whatsNewContent = .error
-        }
-      }
-    }
-    .sheet(item: $whatsNewContent) { content in
-      WhatsNewSheet(content: content) { whatsNewContent = nil }
-    }
-    // Title the window with the selected project/workroom for the Window menu + Mission Control. A
-    // non-empty `navigationTitle` re-asserts `titleVisibility = .visible` every render, so the bar is
-    // kept clear by a hard lock in `AppStore.attachWindow` (a `didUpdate` observer that re-hides it
-    // after each SwiftUI pass) — the title never shows in the bar (issue #70).
-    .navigationTitle(store.windowTitle)
-    // Drop NavigationSplitView's auto sidebar toggle — `LeadingTitlebarBar` carries its own, leftmost
-    // after the traffic lights. The now-itemless window toolbar is hidden in WindowBackgroundThemer
-    // (its overflow chevron would otherwise linger); the traffic lights + accessories aren't part of
-    // the toolbar, so they stay.
-    .toolbar(removing: .sidebarToggle)
-    .background(WindowBackgroundThemer())
-    // The single, full-width unified title-bar bar sharing the native title-bar row with the traffic
-    // lights (see `titlebar` / `TitlebarBars`). Hosted outside the WindowGroup's environment, so it
-    // injects its env objects inside the closure.
-    .background(titlebar)
-    // Keep the root branch labels reasonably current: refresh when the app regains
-    // focus (throttled, so rapid alt-tabbing doesn't fork a git/jj process per project).
-    // Regaining focus also dismisses the now-visible terminal's notifications (you're looking at it).
-    .onReceive(
-      NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)
-    ) { _ in
-      store.dismissFocusedTerminalNotifications()
-      Task { await store.reloadIfStale() }
-    }
-    // Publish selection state for menu-command enablement (see WorkroomCommands). Grouped into one
-    // modifier so the long publisher chain stays a single, fast-to-type-check expression (SwiftUI
-    // chokes on ~12 `.focusedSceneValue` calls inline).
-    .modifier(
-      MenuStateValues(
-        // `workroomSelected`: while a setup script blocks the selected workroom's terminal, report
-        // false so ⌘T can't open a (hidden) terminal behind the setup pane (Open/Reveal still work).
-        workroomSelected: terminalInteractionAvailable,
-        hasNotifications: !notifications.items.isEmpty,
-        // `hasProjects`: "New Workroom" (⌘N) disabled with no projects (#81).
-        hasProjects: !store.projects.isEmpty,
-        // Go-menu Back/Forward (issue #26).
-        canNavigateBack: store.canGoBack,
-        canNavigateForward: store.canGoForward,
-        // Run/Stop/Restart (issue #7) — run-state lives on the store, so these stay live.
-        hasRunCommand: selectedHasRunCommand,
-        runCommandActive: selectedRunCommandActive,
-        hasRunTerminal: store.hasAnyRunTerminal,
-        // Go-menu Previous/Next Workroom Tab (issue #29) — only meaningful with ≥2 tabs.
-        multipleWorkroomTabs: store.orderedWorkroomTargets().count > 1,
-        // Go-menu "Open in…" + ⌘O — enabled only with an editor and a valid selection.
-        canOpenInEditor: store.canOpenInEditor,
-        // View ▸ "Resize Workroom Splits Evenly" (#83) — only when the selected workroom is a live
-        // member of a workroom-into-workroom split.
-        workroomSplitVisible: store.isWorkroomSplitVisible))
+      // Publish selection state for menu-command enablement (see WorkroomCommands). Grouped into one
+      // modifier so the long publisher chain stays a single, fast-to-type-check expression (SwiftUI
+      // chokes on ~12 `.focusedSceneValue` calls inline).
+      .modifier(
+        MenuStateValues(
+          // `workroomSelected`: while a setup script blocks the selected workroom's terminal, report
+          // false so ⌘T can't open a (hidden) terminal behind the setup pane (Open/Reveal still work).
+          workroomSelected: terminalInteractionAvailable,
+          hasNotifications: !notifications.items.isEmpty,
+          // `hasProjects`: "New Workroom" (⌘N) disabled with no projects (#81).
+          hasProjects: !store.projects.isEmpty,
+          // Go-menu Back/Forward (issue #26).
+          canNavigateBack: store.canGoBack,
+          canNavigateForward: store.canGoForward,
+          // Run/Stop/Restart (issue #7) — run-state lives on the store, so these stay live.
+          hasRunCommand: selectedHasRunCommand,
+          runCommandActive: selectedRunCommandActive,
+          hasRunTerminal: store.hasAnyRunTerminal,
+          // Go-menu Previous/Next Workroom Tab (issue #29) — only meaningful with ≥2 tabs.
+          multipleWorkroomTabs: store.orderedWorkroomTargets().count > 1,
+          // Go-menu "Open in…" + ⌘O — enabled only with an editor and a valid selection.
+          canOpenInEditor: store.canOpenInEditor,
+          // View ▸ "Resize Workroom Splits Evenly" (#83) — only when the selected workroom is a live
+          // member of a workroom-into-workroom split.
+          workroomSplitVisible: store.isWorkroomSplitVisible))
   }
 
   /// The project path of the selected root or workroom (nil for no selection) — the run command is
