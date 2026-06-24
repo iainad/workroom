@@ -125,6 +125,10 @@ struct WorkroomTabBar: View {
       }
       .background(alignment: .leading) { splitWell }
       .padding(.horizontal, 8)
+      // Mark just the chip run (chips + the "+" button) as interactive, not the bar's full-width
+      // flexible frame — so a double-click on the empty fill beside the chips still zooms the window,
+      // while a double-click on a chip does not (issue #85).
+      .titlebarInteractive()
       .onPreferenceChange(WorkroomTabWidthKey.self) { widths = $0 }
     }
     // The bar fills the gap between the leading and trailing title-bar controls

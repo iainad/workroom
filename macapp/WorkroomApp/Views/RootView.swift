@@ -64,7 +64,7 @@ struct RootView: View {
     ) {
       let tabs = store.displayedWorkroomTargets()
       HStack(spacing: 6) {
-        LeadingTitlebarBar()
+        LeadingTitlebarBar().titlebarInteractive()
         if !tabs.isEmpty {
           TitlebarDivider()
           WorkroomTabBar(
@@ -77,7 +77,7 @@ struct RootView: View {
         } else {
           Spacer(minLength: 0)
         }
-        TrailingTitlebarBar()
+        TrailingTitlebarBar().titlebarInteractive()
       }
       .environmentObject(store)
       .environmentObject(updater)

@@ -55,7 +55,77 @@ final class FillingTitlebarAccessoryViewController: NSTitlebarAccessoryViewContr
 /// draggable by its empty regions (the gap between the leading and trailing accessories isn't covered by
 /// any hosting view).
 final class NonMovableHostingView<Content: View>: NSHostingView<Content> {
+  /// Interactive (non-draggable) sub-regions of the bar — the leading controls, the workroom-tab run,
+  /// and the trailing controls — in this view's own (flipped, top-left) coordinate space. Published
+  /// from a SwiftUI preference by the hosting `Coordinator` (see `titlebarInteractive()`); used to keep
+  /// a double-click on a control from being read as an empty-title-bar zoom.
+  var interactiveRegions: TitlebarInteractiveRegions?
+
   override var mouseDownCanMoveWindow: Bool { false }
+
+  /// Claiming the mouse-down (above) also swallows AppKit's native double-click-to-zoom: a
+  /// double-click on the title bar normally reaches the window's frame view, which performs the
+  /// system "double-click a window's title bar to…" action — but this view now covers the whole
+  /// title-bar row, so that click lands here instead and nothing happens (issue #85). Re-implement it
+  /// for the *empty* part of the bar only: a double-click that misses every interactive region runs
+  /// the user's configured action (`AppleActionOnDoubleClick`: Minimize / Maximize / None —
+  /// Maximize/zoom is the macOS default). A double-click on a control, and every single click and
+  /// drag, falls through to SwiftUI untouched, so tab tap-to-select and drag-to-reorder keep working;
+  /// genuinely empty bar regions also still hit-test nil and get AppKit's native handling.
+  override func mouseDown(with event: NSEvent) {
+    if event.clickCount == 2, let window, !hitsInteractiveRegion(event) {
+      switch UserDefaults.standard.string(forKey: "AppleActionOnDoubleClick") {
+      case "Minimize": window.performMiniaturize(nil)
+      case "None": break
+      default: window.performZoom(nil)
+      }
+      return
+    }
+    super.mouseDown(with: event)
+  }
+
+  private func hitsInteractiveRegion(_ event: NSEvent) -> Bool {
+    guard let rects = interactiveRegions?.rects, !rects.isEmpty else { return false }
+    let point = convert(event.locationInWindow, from: nil)
+    return rects.contains { $0.contains(point) }
+  }
+}
+
+/// A box the SwiftUI bar fills with the frames of its interactive controls (in the hosting view's
+/// coordinate space) so `NonMovableHostingView` can tell a control double-click from an
+/// empty-title-bar one. A reference type so the hosting view and the preference sink share one
+/// mutable list without re-creating the view on every layout.
+final class TitlebarInteractiveRegions {
+  var rects: [CGRect] = []
+}
+
+/// The named coordinate space the interactive-region frames are measured in — rooted on the bar's
+/// content by the hosting `Coordinator`, so the frames line up with the hosting view's bounds.
+let titlebarInteractiveSpace = "workroom.titlebar.interactive"
+
+/// Collects every `titlebarInteractive()` frame into one list for the hosting view.
+struct TitlebarInteractiveRectsKey: PreferenceKey {
+  static var defaultValue: [CGRect] = []
+  static func reduce(value: inout [CGRect], nextValue: () -> [CGRect]) {
+    value.append(contentsOf: nextValue())
+  }
+}
+
+extension View {
+  /// Marks this view as an interactive region of the title bar (issue #85): a double-click here is a
+  /// control interaction, not an empty-title-bar zoom. Publishes the view's frame — in
+  /// `titlebarInteractiveSpace` — up to `NonMovableHostingView`, which excludes it from
+  /// double-click-to-zoom. Apply to each control cluster (leading controls, the tab run, trailing
+  /// controls), not the full-width bar.
+  func titlebarInteractive() -> some View {
+    background(
+      GeometryReader { geo in
+        Color.clear.preference(
+          key: TitlebarInteractiveRectsKey.self,
+          value: [geo.frame(in: .named(titlebarInteractiveSpace))])
+      }
+    )
+  }
 }
 
 /// Hosts arbitrary SwiftUI content as an `NSTitlebarAccessoryViewController` pinned to one edge of
@@ -113,6 +183,22 @@ struct TitlebarAccessory<Content: View>: NSViewRepresentable {
     private weak var window: NSWindow?
     private var accessory: NSTitlebarAccessoryViewController?
     private var hosting: NonMovableHostingView<AnyView>?
+    /// Shared with the hosting view; the SwiftUI sink below keeps it filled with the live frames of
+    /// the bar's interactive controls so a double-click on one isn't read as an empty-bar zoom.
+    private let regions = TitlebarInteractiveRegions()
+
+    /// Wrap the bar content so (1) interactive-region frames are measured in `titlebarInteractiveSpace`
+    /// — rooted here on the content, which fills the hosting view — and (2) their collected frames flow
+    /// into the shared `regions` box the hosting view reads in `mouseDown`.
+    private func wrapped(_ inner: AnyView) -> AnyView {
+      AnyView(
+        inner
+          .coordinateSpace(name: titlebarInteractiveSpace)
+          .onPreferenceChange(TitlebarInteractiveRectsKey.self) { [regions] rects in
+            regions.rects = rects
+          }
+      )
+    }
 
     func install(
       in window: NSWindow?, edge: NSLayoutConstraint.Attribute,
@@ -128,11 +214,13 @@ struct TitlebarAccessory<Content: View>: NSViewRepresentable {
       }) {
         accessory = existing
         hosting = existing.view as? NonMovableHostingView<AnyView>
+        hosting?.interactiveRegions = regions
         refresh()
         return
       }
 
-      let host = NonMovableHostingView(rootView: AnyView(content()))
+      let host = NonMovableHostingView(rootView: wrapped(AnyView(content())))
+      host.interactiveRegions = regions
       host.translatesAutoresizingMaskIntoConstraints = false
       // Size to the SwiftUI content; AppKit pins it to `edge`. Without a concrete frame the accessory
       // can collapse to zero width on first layout.
@@ -151,7 +239,7 @@ struct TitlebarAccessory<Content: View>: NSViewRepresentable {
 
     func refresh() {
       guard let content, let hosting else { return }
-      hosting.rootView = AnyView(content())
+      hosting.rootView = wrapped(AnyView(content()))
       // Only size the host before Auto Layout owns it. Once the accessory's view is placed in the
       // window's clip view (`superview != nil`), `FillingTitlebarAccessoryViewController` pins it
       // top/bottom + full width, so re-setting the frame here fights those constraints — and, since
