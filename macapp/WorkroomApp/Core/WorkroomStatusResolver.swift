@@ -427,7 +427,7 @@ struct WorkroomStatusResolver: Sendable {
   }
 
   /// Probe whether `gh` is installed and authenticated (machine-global, not per-workroom). Runs
-  /// `gh auth status --active` in a neutral dir; a network/keyring blip (timeout) reports
+  /// `gh auth status --active --json hosts` in a neutral dir; a network/keyring blip reports
   /// `available` so a flaky connection doesn't raise a false "not signed in" warning.
   ///
   /// `--active` (gh ≥ 2.57.0) scopes the check to the *active* account on each host — the one
@@ -435,9 +435,17 @@ struct WorkroomStatusResolver: Sendable {
   /// when *any* account on *any* host has an issue, so a single broken secondary / GitHub-App
   /// account would flip the whole app to "not signed in" and gate off the CI/PR sweep even though
   /// the active account works fine (issue #50).
+  ///
+  /// `--json hosts` (issue #86) is the fix for the *flapping* warning. `gh auth status` validates
+  /// the token over the network; when api.github.com is briefly unreachable it can't tell "couldn't
+  /// reach the API" from "token is bad", so the plain-text form misreports the blip as "token
+  /// invalid" and exits non-zero — a false "not signed in". The `--json` form instead always exits
+  /// zero (barring a fatal error) and emits a per-account `state`/`error`, so we can tell a
+  /// transport failure (transient → don't cry wolf) from a genuine 401 (really logged out).
   func resolveGitHubCLI() async -> GitHubCLIStatus {
     let r = await runner.run(
-      "gh", ["auth", "status", "--active"], in: NSTemporaryDirectory(), timeout: ciTimeout)
+      "gh", ["auth", "status", "--active", "--json", "hosts"], in: NSTemporaryDirectory(),
+      timeout: ciTimeout)
     return Self.classifyGitHubCLI(r)
   }
 
@@ -446,9 +454,51 @@ struct WorkroomStatusResolver: Sendable {
   static func classifyGitHubCLI(_ r: CommandResult) -> GitHubCLIStatus {
     if r.exitCode == CommandResult.commandNotFound { return .notInstalled }
     if r.timedOut { return .available }  // network/keyring blip — don't cry wolf
-    // With `--active`, a non-zero exit means the *active* account specifically isn't authenticated.
-    // (Plain `gh auth status` would also fail on a broken *secondary* account — the cause of #50.)
+    // `--json hosts` exits 0 even when the active token fails to validate, emitting structured
+    // per-account state. Parse that to tell a transient network failure from a real logout (#86).
+    if let status = classifyGitHubCLIJSON(r.stdout) { return status }
+    // Fallback for an unparseable payload (pre-2.57 gh without `--json`, or a fatal gh error): the
+    // old exit-code heuristic. A non-zero exit here is rare and ambiguous, so keep the prior
+    // behaviour of treating it as not-authenticated rather than silently masking a real problem.
     return r.ok ? .available : .notAuthenticated
+  }
+
+  /// Classify `gh auth status --active --json hosts` output, or `nil` if it isn't the expected JSON
+  /// (so the caller can fall back). Shape: `{"hosts":{"github.com":[{"state":"success"|"error",
+  /// "error":"…","active":true,…}]}}`. With `--active` gh emits only each host's active account.
+  ///
+  /// - No accounts at all ⇒ genuinely logged out (`.notAuthenticated`).
+  /// - Any active account validated (`state == "success"`) ⇒ `.available`. A success on the default
+  ///   host means the PR/CI probes work even if a *secondary* host's account errors (issue #50).
+  /// - Every active account errored ⇒ distinguish the cause: a genuine auth failure (the token was
+  ///   rejected — HTTP 401 / "bad credentials") is `.notAuthenticated`; anything else (a transport
+  ///   error from an unreachable API, a keyring blip) is a transient failure we don't cry wolf over.
+  static func classifyGitHubCLIJSON(_ stdout: String) -> GitHubCLIStatus? {
+    guard let data = stdout.data(using: .utf8),
+      let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+      let hosts = root["hosts"] as? [String: Any]
+    else { return nil }
+    let accounts = hosts.values.compactMap { $0 as? [[String: Any]] }.flatMap { $0 }
+    guard !accounts.isEmpty else { return .notAuthenticated }  // no accounts → logged out
+    if accounts.contains(where: { ($0["state"] as? String) == "success" }) { return .available }
+    let genuineFailure = accounts.contains { isGitHubAuthFailure($0["error"] as? String) }
+    return genuineFailure ? .notAuthenticated : .available
+  }
+
+  /// Whether a `gh auth status` per-account `error` string reflects the token being *rejected* (a
+  /// real logout) rather than the API being *unreachable* (a transient blip). A rejected/expired
+  /// token gets an HTTP 401 from the API, which gh formats as `HTTP 401: Bad credentials (…)`; a
+  /// connectivity failure is a transport error (`Get "https://api.github.com/": …`) with no HTTP
+  /// status, so it falls through to "transient".
+  ///
+  /// Match the 401 shape specifically (`HTTP 401` / "bad credentials") rather than a bare `401` or
+  /// `unauthorized` substring: those appear in unrelated text (a port, a repo name, an SSO/scope
+  /// 403) and would mis-gate a logged-in user back to the false warning #86 fixes. A 403 (SSO /
+  /// missing scope) is deliberately NOT treated as a logout — it's not a sign-in problem, and "not
+  /// signed in" would misdiagnose it; it falls through to transient like any other non-401 error.
+  static func isGitHubAuthFailure(_ error: String?) -> Bool {
+    guard let e = error?.lowercased() else { return false }
+    return e.contains("http 401") || e.contains("bad credentials")
   }
 
   struct GitParse: Equatable {
