@@ -152,7 +152,7 @@ struct TerminalTabStrip: View {
               .frame(width: 1, height: 14)
               .padding(.leading, -2)
               .padding(.trailing, 4)
-              .opacity(tabs.last?.id != activeID && tabs.last?.id != hoveredTab ? 1 : 0)
+              .opacity(showsTrailingDivider ? 1 : 0)
           }
           addTerminalButton
         }
@@ -314,6 +314,19 @@ struct TerminalTabStrip: View {
     if here == hoveredTab || prev == hoveredTab { return false }
     let members = splitMemberSet
     if members.contains(here) != members.contains(prev) { return false }
+    return true
+  }
+
+  /// Whether the divider between the last tab and the "+" button shows. Dropped when the last tab is
+  /// set apart on its own — focused or hovered — and, mirroring `showsLeadingSeparator`'s outer-edge
+  /// rule, when the last tab is a split-group member: the `splitWell` bracket's right side already
+  /// separates the group from the "+", so a divider there doubles up. Without the split-member case a
+  /// group pinned to the far right kept this divider whenever an *inner* member was focused (the last
+  /// tab wasn't the active one), so it showed alongside the bracket edge.
+  private var showsTrailingDivider: Bool {
+    guard let last = tabs.last?.id else { return false }
+    if last == activeID || last == hoveredTab { return false }
+    if splitMemberSet.contains(last) { return false }
     return true
   }
 
