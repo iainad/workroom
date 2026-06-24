@@ -152,7 +152,15 @@ struct TitlebarAccessory<Content: View>: NSViewRepresentable {
     func refresh() {
       guard let content, let hosting else { return }
       hosting.rootView = AnyView(content())
-      hosting.frame.size = hosting.fittingSize
+      // Only size the host before Auto Layout owns it. Once the accessory's view is placed in the
+      // window's clip view (`superview != nil`), `FillingTitlebarAccessoryViewController` pins it
+      // top/bottom + full width, so re-setting the frame here fights those constraints — and, since
+      // the hosted `HStack { … }.frame(maxHeight: .infinity)` reports its compact natural height as
+      // `fittingSize`, collapses the host before the next layout pass springs it back. That makes the
+      // title bar visibly jump on every content update while a command streams output (issue #90).
+      if hosting.superview == nil {
+        hosting.frame.size = hosting.fittingSize
+      }
     }
 
     func remove() {
