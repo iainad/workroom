@@ -105,12 +105,11 @@ struct WorkroomTabBar: View {
             isDragging || reduceMotion ? nil : .easeInOut(duration: 0.18), value: offsetX)
         }
         // A divider sets the "new workroom" (+) button apart from the last tab. Hidden when the last
-        // tab is set apart on its own — selected or hovered — to match the "no divider beside the
-        // focused/hovered tab" rule for the inter-chip separators, and when the last tab is in a split
-        // group (the `splitWell` bracket already frames it, so a divider would double against its
-        // rounded edge). Toggled via OPACITY (not removed) so the "+" never shifts as the
-        // selection/hover comes and goes. Negative leading trims the gap to the last tab to ~2pt
-        // (HStack `tabSpacing` 4 − 2), matching the inter-chip dividers. Mirrors the terminal strip.
+        // tab is framed on its own — hovered (its wash) — or in a split group (the `splitWell` bracket
+        // already frames it, so a divider would double against its rounded edge). The focused tab is
+        // just underlined now, so it keeps this divider. Toggled via OPACITY (not removed) so the "+"
+        // never shifts as the hover comes and goes. Negative leading trims the gap to the last tab to
+        // ~2pt (HStack `tabSpacing` 4 − 2), matching the inter-chip dividers. Mirrors the terminal strip.
         Rectangle()
           .fill(ThemeService.shared.tokens.border)
           .frame(width: 1, height: 16)
@@ -118,7 +117,7 @@ struct WorkroomTabBar: View {
           .padding(.trailing, 4)
           .opacity(
             tabs.last.map {
-              $0.sid != selectedID && $0.sid != hoveredID && !splitMemberSet.contains($0.sid)
+              $0.sid != hoveredID && !splitMemberSet.contains($0.sid)
             } ?? true ? 1 : 0)
         // The "new workroom" (+) button, immediately after the last chip (scrolls with them) — mirrors
         // the terminal strip's `addTerminalButton`.
@@ -137,17 +136,15 @@ struct WorkroomTabBar: View {
   }
 
   /// Whether to draw a hairline on the leading edge of tab `index`, separating it from its left
-  /// neighbour. Shown only between two adjacent tabs that are **both** idle — not selected, not
-  /// hovered — and never mid-drag, so the divider quietly vanishes around the tab you're pointing at or
-  /// have focused (the highlight already sets those apart). Like a segmented control dropping the
-  /// divider next to its active segment. Also dropped at a split group's **outer** boundary (exactly
-  /// one neighbour is a member): the `splitWell` bracket already separates the group there, so a
-  /// hairline would double up against its rounded border. Interior member↔member boundaries keep theirs.
+  /// neighbour. A divider sits between every adjacent pair, dropped only beside a tab that's already
+  /// framed on its own: the **hovered** tab (its wash) — the focused tab is just underlined now, so it
+  /// keeps its dividers. Also dropped at a split group's **outer** boundary (exactly one neighbour is a
+  /// member): the `splitWell` bracket already separates the group there, so a hairline would double up
+  /// against its rounded border. Interior member↔member boundaries keep theirs. Never mid-drag.
   private func showsLeadingSeparator(at index: Int) -> Bool {
     guard index > 0, draggingID == nil else { return false }
     let here = tabs[index].sid
     let prev = tabs[index - 1].sid
-    if here == selectedID || prev == selectedID { return false }
     if hoveredID == here || hoveredID == prev { return false }
     let members = splitMemberSet
     if members.contains(here) != members.contains(prev) { return false }
