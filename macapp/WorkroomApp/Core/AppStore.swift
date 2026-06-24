@@ -340,6 +340,15 @@ final class AppStore: ObservableObject {
   /// The watcher's local-refresh task (cancel-and-replace so the latest change wins and at most one
   /// jj probe runs at a time — concurrent jj snapshots would contend on the working-copy lock).
   var watchRefreshTask: Task<Void, Never>?
+  /// Live root branch/bookmark labels: one filesystem watcher per project, pointed at its VCS
+  /// metadata dir (`.git` / `.jj`). A branch switch or bookmark move in the root terminal updates
+  /// the sidebar label immediately, instead of waiting for the throttled on-focus reload. Keyed per
+  /// project (unlike the single `workroomFileWatcher`) because root labels are global, not
+  /// selection-scoped. The watch is naturally quiet — working-tree edits don't touch `.git`/`.jj`,
+  /// only VCS operations do — and resolution is read-only + deduped, so it can't loop or churn.
+  private var rootBranchWatchers: [Project.ID: WorkroomFileWatcher] = [:]
+  /// Per-project re-resolve task (cancel-and-replace) so a burst of metadata writes resolves once.
+  private var rootBranchRefreshTasks: [Project.ID: Task<Void, Never>] = [:]
   /// When the project list was last loaded — used to throttle the on-focus refresh.
   private var lastLoadAt: Date = .distantPast
   /// The selection persisted from a previous launch (issue #14), applied once on the first
@@ -1698,6 +1707,8 @@ final class AppStore: ObservableObject {
     // Forget VCS/CI status for sidebar ids that went away (mirrors rootRefs pruning, issue #24).
     let liveSidebarIDs = Self.liveSidebarIDs(in: fresh)
     workroomStatuses = workroomStatuses.filter { liveSidebarIDs.contains($0.key) }
+    // Keep the live root-branch watchers in sync with the project set (start new, drop departed).
+    updateRootBranchWatches()
   }
 
   /// Every `.root`/`.workroom` `SidebarID` present in `projects` — used to prune
@@ -1752,6 +1763,66 @@ final class AppStore: ObservableObject {
           self.rootRefs[id] = ref
         }
       }
+    }
+  }
+
+  /// Reconcile the per-project root-branch watchers with the current project list: ensure a watcher
+  /// for each project (pointed at its `.git`/`.jj` metadata dir) and tear down watchers for projects
+  /// that went away. Called from `apply` so the watch set tracks the live projects. No-op in fixture
+  /// mode (the temp-dir paths aren't real repos — match `resolveBranches`, which skips them too).
+  func updateRootBranchWatches() {
+    guard !UITestFixture.isActive else {
+      for w in rootBranchWatchers.values { w.stop() }
+      rootBranchWatchers.removeAll()
+      for t in rootBranchRefreshTasks.values { t.cancel() }
+      rootBranchRefreshTasks.removeAll()
+      return
+    }
+    let live = Set(projects.map(\.id))
+    for id in rootBranchWatchers.keys where !live.contains(id) {
+      rootBranchWatchers[id]?.stop()
+      rootBranchWatchers[id] = nil
+      rootBranchRefreshTasks[id]?.cancel()
+      rootBranchRefreshTasks[id] = nil
+    }
+    for p in projects {
+      guard let dir = Self.vcsMetadataDir(path: p.path, vcs: p.vcs) else { continue }
+      let id = p.id
+      let watcher =
+        rootBranchWatchers[id]
+        ?? WorkroomFileWatcher { [weak self] _ in self?.handleRootBranchChange(projectID: id) }
+      rootBranchWatchers[id] = watcher
+      watcher.start(path: dir)
+    }
+  }
+
+  /// The VCS metadata directory whose changes signal a root branch/bookmark move: `.git` for git,
+  /// `.jj` for jj. Watching this — not the project root — keeps the watch quiet (working-tree edits
+  /// don't touch it; only VCS operations do). nil for an unknown vcs. `nonisolated` (pure) so it's
+  /// directly unit-testable.
+  nonisolated static func vcsMetadataDir(path: String, vcs: String) -> String? {
+    switch vcs {
+    case "git": return (path as NSString).appendingPathComponent(".git")
+    case "jj": return (path as NSString).appendingPathComponent(".jj")
+    default: return nil
+    }
+  }
+
+  /// Re-resolve one project's root branch/bookmark after a change under its VCS metadata dir, writing
+  /// the label only if it actually changed (so VCS-internal churn that leaves the branch unchanged
+  /// doesn't invalidate the sidebar). Cancel-and-replace per project so a write burst resolves once;
+  /// `.none` never clobbers a prior label (matches `resolveBranches`).
+  func handleRootBranchChange(projectID: Project.ID) {
+    guard !UITestFixture.isActive, let p = projects.first(where: { $0.id == projectID })
+    else { return }
+    let resolver = self.resolver
+    rootBranchRefreshTasks[projectID]?.cancel()
+    rootBranchRefreshTasks[projectID] = Task { [weak self] in
+      let ref = await resolver.resolve(path: p.path, vcs: p.vcs)
+      guard let self, !Task.isCancelled else { return }
+      if ref.kind == .none, self.rootRefs[projectID] != nil { return }  // keep prior label
+      if self.rootRefs[projectID] == ref { return }  // unchanged — don't churn the @Published store
+      self.rootRefs[projectID] = ref
     }
   }
 

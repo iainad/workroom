@@ -46,9 +46,14 @@ struct BranchResolver {
   }
 
   private func resolveJJ(_ dir: String) async -> RootRef {
+    // `--ignore-working-copy` keeps resolution read-only: jj would otherwise snapshot the working
+    // copy (writing under `.jj/`) on every `log`, which both mutates the repo for a mere label read
+    // and self-triggers the root-branch filesystem watcher into a refresh loop (see
+    // `AppStore.handleRootBranchChange`). The bookmark we want is already recorded, so the snapshot
+    // is unnecessary. Mirrors `WorkroomStatusResolver`'s jj reads.
     // Bookmarks pointing exactly at the working copy.
     if let out = await run(
-      dir, "jj", "log", "-r", "@", "--no-graph", "--color", "never",
+      dir, "jj", "log", "-r", "@", "--ignore-working-copy", "--no-graph", "--color", "never",
       "-T", "bookmarks"),
       let name = Self.firstBookmark(out)
     {
@@ -57,7 +62,7 @@ struct BranchResolver {
     // Otherwise the nearest ancestor bookmark (the jj norm — the working copy is an
     // anonymous change ahead of, say, `master`).
     if let out = await run(
-      dir, "jj", "log", "-r", "heads(::@ & bookmarks())", "--no-graph",
+      dir, "jj", "log", "-r", "heads(::@ & bookmarks())", "--ignore-working-copy", "--no-graph",
       "--color", "never", "-T", #"bookmarks ++ "\n""#),
       let name = Self.firstBookmark(out)
     {

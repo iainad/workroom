@@ -1,12 +1,14 @@
 # TODOs
 
 > Status note (2026-06-24): re-audited against the codebase. **Done & removed:** workroom tab-chip
-> management actions (#23 follow-up — context menu + "+" button shipped in `8eee2b0`) and harden-`gh`-auth
+> management actions (#23 follow-up — context menu + "+" button shipped in `8eee2b0`), harden-`gh`-auth
 > (#50 follow-up — `#86`/`60af731` added the `--json hosts` + transient-vs-real classification the item
-> asked for). **Narrowed (partial):** live branch-label refresh (FSEvents infra now exists, just not on the
-> root label), at-a-glance review status (the `reviewDecision` label + PR-state badge shipped; only the
-> sidebar glyph + PR sweep stage remain), and the workroom-split per-pane activity flash. Items are ordered
-> roughly by priority: the before-GA work (CMT-2, CMT-3) first, then the P3 niceties.
+> asked for), and **live branch-label refresh** (per-project FSEvents watchers on each root's
+> `.git`/`.jj` now update the sidebar label live; `BranchResolver` resolves jj read-only via
+> `--ignore-working-copy`). **Narrowed (partial):** at-a-glance review status (the `reviewDecision`
+> label + PR-state badge shipped; only the sidebar glyph + PR sweep stage remain), and the
+> workroom-split per-pane activity flash. Items are ordered roughly by priority: the before-GA work
+> (CMT-2, CMT-3) first, then the P3 niceties.
 >
 > Earlier (2026-06-09): the **splits** feature (A5) and the **UI-test fixture seam** shipped, and the
 > **terminal notifications** feature (#10) landed — unblocking auto-emit OSC and notification preferences.
@@ -113,34 +115,6 @@ target "announce output + selection, navigable text", not a perfect document mod
 best done after CMT-2 to use ghostty's `selection_changed` hook.
 
 **Priority:** P2 (accessibility regression — address before GA, not blocking the beta).
-
-## Live branch-label refresh (macapp)
-
-**What:** Update each sidebar root row's branch/bookmark the moment it changes, rather
-than on the throttled app-reactivate refresh.
-
-**Why:** Today the root label resolves on load and refreshes (throttled, ~3s min interval) when the
-app regains focus. If you switch branches in the root terminal and stay in the app, the label is
-stale until you alt-tab away and back.
-
-**Current state (2026-06-24 — narrowed):** the FSEvents machinery now exists —
-`Core/WorkroomFileWatcher.swift` (landed `52f6e81`) watches the **selected workroom** and drives
-`handleWorkroomFileChange` → live VCS-status refresh (`AppStore+WorkroomStatus.swift`
-`updateSelectedWorkroomWatch`). But it's scoped to the selected workroom's *VCS status*, not the
-**root branch labels** (`rootRefs`/`BranchResolver`), which still refresh only on the throttled focus
-reload. So the remaining work is small: extend the same watcher pattern to the root HEADs.
-
-**How to start:** Per-project watcher — FSEvents on `<repo>/.git/HEAD` (git) and a `jj op
-log` / `.jj/` watch (jj), debounced, re-running `BranchResolver` for that one project and
-writing `AppStore.rootRefs[project.id]`. Tie the watchers' lifecycle to the project list. Model it on
-`WorkroomFileWatcher` rather than building from scratch.
-
-**Depends on:** the `BranchResolver` + `rootRefs` machinery (`macapp/WorkroomApp/Core/BranchResolver.swift`,
-`Core/AppStore.swift`) and the now-landed `WorkroomFileWatcher` — but no watcher targets `rootRefs` yet;
-root resolution is still only triggered by the throttled focus refresh.
-
-**Priority:** P3 (nicety — the throttled focus refresh covers the common case; cheaper now that the
-watcher infra exists).
 
 ## Auto-emit OSC notifications on command completion (macapp)
 
