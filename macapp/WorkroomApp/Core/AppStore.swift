@@ -800,14 +800,16 @@ final class AppStore: ObservableObject {
         case .stoppedByUser, .none: return nil  // user-initiated stop/restart/Ctrl-C → no toast
         }
       }
-      // Live status (running/restarting) hides while the run tab is on screen — you don't need a
-      // toast for the tab you're watching (split-aware via `visibleTabIDs`). Terminal statuses
-      // (a success or failure exit) ALWAYS show, even on the focused run tab (issue #79: "show a
-      // success/failure toast"); they linger then auto-dismiss.
-      if !status.isTerminal, let target = selectedTarget, target.id == targetID,
-        terminals.visibleTabIDs(for: target).contains(tabID)
-      {
-        return nil
+      // Live status (running/restarting) shows ONLY for the SELECTED workroom's backgrounded run:
+      // you don't need a "still running" reminder for workrooms you aren't even looking at (issue
+      // #73 — one live toast for the run you're in, not one per open workroom with a run), nor for
+      // the run tab you're currently watching (split-aware via `visibleTabIDs`). Terminal statuses
+      // (a success or failure exit) ALWAYS show — even for a background workroom, so you learn it
+      // finished/crashed (issue #79: "show a success/failure toast"); they linger then auto-dismiss.
+      if !status.isTerminal {
+        guard let target = selectedTarget, target.id == targetID,
+          !terminals.visibleTabIDs(for: target).contains(tabID)
+        else { return nil }
       }
       let command =
         project(forTargetID: targetID).map {

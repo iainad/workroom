@@ -596,6 +596,32 @@ final class RunCommandTests: XCTestCase {
     XCTAssertTrue(store.runToastItems.isEmpty, "no toast for the run you're looking at")
   }
 
+  func testLiveRunToastOnlyForSelectedWorkroom() {
+    // issue #73: two workrooms running in the background must not pop a live toast each — only the
+    // selected workroom's backgrounded run shows a "running" toast; the other's stays silent.
+    let store = makeStore([project("/a", workrooms: ["main", "two"])])
+    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    let t1 = target(store, "/a", "main")
+    let t2 = target(store, "/a", "two")
+
+    // main selected, both runs backgrounded (a focused shell on each, so neither run is visible).
+    store.selectedTargetID = .workroom(project: "/a", name: "main")
+    _ = store.terminals.addTab(for: t1)
+    _ = store.terminals.addTab(for: t2)
+    store.startRunCommand(for: t2)  // the other workroom's run, started first
+    store.startRunCommand(for: t1)  // the selected workroom's run
+
+    XCTAssertEqual(
+      store.runToastItems.map(\.targetID), [t1.id],
+      "only the selected workroom's live run toasts — not every open workroom (issue #73)")
+
+    // Switch selection → the toast follows the selected workroom, still just one.
+    store.selectedTargetID = .workroom(project: "/a", name: "two")
+    XCTAssertEqual(
+      store.runToastItems.map(\.targetID), [t2.id],
+      "the live toast tracks the selected workroom, never both at once")
+  }
+
   func testDismissRunToastHidesItWithoutStoppingTheRun() {
     let store = makeStore([project("/a", workrooms: ["main"])])
     store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
@@ -718,7 +744,7 @@ final class RunCommandTests: XCTestCase {
       pending.append(work)
       return work
     }
-    store.startRunCommand(for: t)  // background (no selection → toast shown)
+    store.startRunCommand(for: t)  // background (no selection → no live toast; terminal toast below)
 
     runView(store, t)?.handleChildExited(exitCode: 0)  // terminal → schedules the auto-dismiss
     XCTAssertEqual(pending.count, 1)
