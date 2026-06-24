@@ -114,6 +114,30 @@ final class MultiWindowTests: XCTestCase {
       registry.aggregateUnread, 3, "the badge/menu-bar count sums every window's unread")
   }
 
+  // MARK: Window cycling (issue #87)
+
+  func testCyclePlanForwardSurfacesSecondAndSendsFrontBack() {
+    // Front-to-back [A, B, C]; ⌘` brings B (just behind the front) forward and pushes A to the
+    // back, so repeated presses rotate A→B→C→A rather than bouncing between the front two.
+    let plan = WindowRegistry.cyclePlan(ordered: ["A", "B", "C"], forward: true)
+    XCTAssertEqual(plan?.front, "B")
+    XCTAssertEqual(plan?.sendBack, "A")
+  }
+
+  func testCyclePlanBackwardSurfacesBackmostWithNoSendBack() {
+    // ⇧⌘` brings the backmost window forward; doing so rotates the rest back one on its own, so
+    // there's no separate window to push to the back.
+    let plan = WindowRegistry.cyclePlan(ordered: ["A", "B", "C"], forward: false)
+    XCTAssertEqual(plan?.front, "C")
+    XCTAssertNil(plan?.sendBack)
+  }
+
+  func testCyclePlanNeedsAtLeastTwoWindows() {
+    XCTAssertNil(WindowRegistry.cyclePlan(ordered: ["only"], forward: true), "nothing to cycle to")
+    XCTAssertNil(WindowRegistry.cyclePlan(ordered: ["only"], forward: false))
+    XCTAssertNil(WindowRegistry.cyclePlan(ordered: [String](), forward: true))
+  }
+
   // MARK: Window-close guard (A3)
 
   func testCloseGuardAllowsCloseWithoutRunCommand() {

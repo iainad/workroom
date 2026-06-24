@@ -129,6 +129,39 @@ final class WindowRegistry: ObservableObject {
     allStores.first { $0.terminals.containsTab(tabID) }
   }
 
+  // MARK: Window cycling (issue #87)
+
+  /// Cycle key focus to the next/previous app window — the "Move focus to next window" shortcut
+  /// (⌘` forward, ⇧⌘` backward), driven by the `AppDelegate` key monitor because the focused
+  /// terminal surface otherwise swallows the backtick as input. Cycles every workroom window plus
+  /// the quick terminal (issue #39), the windows the user actually works in — deliberately not the
+  /// Settings / About panels. Works in front-to-back z-order: forward surfaces the window just
+  /// behind the front and sends the old front to the back; backward surfaces the backmost — so
+  /// repeated presses rotate through *all* windows instead of bouncing between the front two.
+  func cycleWindows(forward: Bool) {
+    let cycleable = NSApp.orderedWindows.filter(isCycleableWindow)
+    guard let plan = Self.cyclePlan(ordered: cycleable, forward: forward) else { return }
+    plan.front.makeKeyAndOrderFront(nil)
+    plan.sendBack?.orderBack(nil)
+  }
+
+  /// A window ⌘`/⇧⌘` should cycle through: a visible, focusable workroom window (one we registered)
+  /// or the quick terminal. Excludes panels, the menu-bar status item's window, and anything that
+  /// can't become key.
+  private func isCycleableWindow(_ window: NSWindow) -> Bool {
+    guard window.isVisible, window.canBecomeKey else { return false }
+    return store(for: window) != nil || window is QuickTerminalWindow
+  }
+
+  /// Pure rotation math for `cycleWindows`, extracted so it's unit-testable without live z-ordering.
+  /// `ordered` is the cycleable windows front-to-back. Returns the window to bring forward and, for
+  /// the forward direction, the old front window to push to the back (so the rotation visits every
+  /// window rather than ping-ponging between the front two). nil when there's nothing to cycle to.
+  nonisolated static func cyclePlan<W>(ordered: [W], forward: Bool) -> (front: W, sendBack: W?)? {
+    guard ordered.count > 1 else { return nil }
+    return forward ? (ordered[1], ordered[0]) : (ordered[ordered.count - 1], nil)
+  }
+
   // MARK: Aggregation
 
   /// Mirror the *combined* unread count across all windows onto the menu-bar label + Dock badge

@@ -150,6 +150,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         quickTerminalWindow.performClose(nil)
         return nil
       }
+      // ⌘` / ⇧⌘`: cycle key focus through the app's windows incl. the quick terminal (issue #87) —
+      // the standard "Move focus to next window" shortcut. Caught here, like ⌘1–9, so the focused
+      // terminal surface doesn't swallow the backtick as input. keyCode 50 is the grave (`) key,
+      // matched by code (not char) so it's layout-stable and ⇧⌘` reads as backward despite the "~".
+      // Consumed regardless (window cycling has no terminal use we want to preserve).
+      if event.keyCode == 50, flags == .command || flags == [.command, .shift] {
+        let forward = flags == .command
+        MainActor.assumeIsolated { WindowRegistry.shared.cycleWindows(forward: forward) }
+        return nil
+      }
       // ⌘1–9: focus the Nth tab (caught here so it fires before the terminal swallows the digit).
       if flags == .command, let chars = event.charactersIgnoringModifiers,
         let digit = Int(chars), (1...9).contains(digit)
