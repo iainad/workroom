@@ -21,6 +21,7 @@ struct WorkroomTerminalsView: View {
   var surfaceActive: Bool = true
   @EnvironmentObject var notifications: NotificationCenterStore
   @EnvironmentObject var store: AppStore
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   // Drag a tab chip down into a pane to split (issue #3). `chipPaneDrag` is the live drop preview
   // (content-local), shown by `PaneTreeView`; `contentFrame` is the pane area's global rect, used to
@@ -87,6 +88,14 @@ struct WorkroomTerminalsView: View {
           dropTarget: { chipDropTarget(at: $0) },
           onCloseWorkroomPane: onCloseWorkroomPane
         )
+        // A backgrounded workroom (`!surfaceActive` — a non-focused workroom *split* member, or a
+        // backgrounded solo workroom, issue #82) dims its terminals via the per-pane scrim in
+        // `PaneTreeView`. That scrim covers only the Metal surfaces, not this tab strip — it rides on
+        // the safe-area inset, outside the pane tree — so without this the strip stayed bright while
+        // its panes faded. The strip is plain SwiftUI (no Metal layer), so a plain `.opacity` fade is
+        // enough; match the scrim's `surfaceActive` animation so the strip and panes fade together.
+        .opacity(surfaceActive ? 1 : 0.45)
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.07), value: surfaceActive)
       }
     }
     // Create the first terminal once the pane appears (and for each new target), then reconcile
