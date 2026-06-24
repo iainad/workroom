@@ -30,9 +30,8 @@ struct RootView: View {
   /// notification (same menu-can't-anchor-a-sheet pattern as the theme picker).
   @State private var showKeyboardShortcuts = false
 
-  /// The "What's New" dialog's content, or nil when closed. Set by the launch-window auto-check and
-  /// by the Help ▸ What's New… command (key window only). Window-local so multiple windows never
-  /// stack duplicate dialogs.
+  /// The "What's New" dialog's content, or nil when closed. Set by the launch-window auto-check.
+  /// Window-local so multiple windows never stack duplicate dialogs.
   @State private var whatsNewContent: WhatsNewSheetContent?
 
   /// Live preview of a workroom tab being dragged into the detail content to form a split (issue #23
@@ -294,20 +293,7 @@ struct RootView: View {
       .task {
         guard store.isRestoreWindow else { return }
         if let notes = await whatsNew.checkOnLaunch() {
-          whatsNewContent = .notes(notes)
-        }
-      }
-      // Help ▸ What's New… (user-invoked): key window only (the notification reaches every window's
-      // RootView). Opens to a loading state, then fills in / shows an empty/error message.
-      .onReceive(NotificationCenter.default.publisher(for: .showWhatsNew)) { _ in
-        guard store.hostWindow?.isKeyWindow ?? false else { return }
-        whatsNewContent = .loading
-        Task {
-          switch await whatsNew.showCurrent() {
-          case .notes(let n): whatsNewContent = .notes(n)
-          case .empty: whatsNewContent = .empty
-          case .error: whatsNewContent = .error
-          }
+          whatsNewContent = WhatsNewSheetContent(notes: notes)
         }
       }
       .sheet(item: $whatsNewContent) { content in

@@ -58,8 +58,8 @@ enum UITestFixture {
     UserDefaults.standard.bool(forKey: "WorkroomUITestUpdateAvailable") ? "9.9.9" : nil
   }
 
-  /// When set (`-WorkroomUITestWhatsNew 1`), `WhatsNewService` returns `whatsNewNotes` for both the
-  /// auto and menu paths so the What's-New dialog renders for visual QA without hitting GitHub.
+  /// When set (`-WorkroomUITestWhatsNew 1`), `WhatsNewService.checkOnLaunch` returns `whatsNewNotes`
+  /// so the What's-New dialog renders for visual QA without hitting GitHub.
   static var forceWhatsNew: Bool {
     UserDefaults.standard.bool(forKey: "WorkroomUITestWhatsNew")
   }

@@ -155,36 +155,4 @@ final class WhatsNewServiceTests: XCTestCase {
     XCTAssertEqual(Defaults[.whatsNewAttemptVersion], "1.2.0")
   }
 
-  // MARK: - showCurrent (menu path)
-
-  func testShowCurrentReturnsErrorOnFailure() async {
-    let svc = WhatsNewService(
-      fetcher: FakeReleases(error: URLError(.badServerResponse)), currentVersion: "1.0.0")
-    let result = await svc.showCurrent()
-    XCTAssertEqual(result, .error)
-  }
-
-  func testShowCurrentEmptyWhenNoReleases() async {
-    let svc = WhatsNewService(fetcher: FakeReleases(releases: []), currentVersion: "1.0.0")
-    let result = await svc.showCurrent()
-    XCTAssertEqual(result, .empty)
-  }
-
-  func testShowCurrentPrefersExactVersionElseLatest() async {
-    let svc = WhatsNewService(
-      fetcher: FakeReleases(releases: [rel("v1.0.0"), rel("v2.0.0")]), currentVersion: "1.0.0")
-    if case .notes(let n) = await svc.showCurrent() {
-      XCTAssertEqual(n.map(\.version), ["1.0.0"])
-    } else {
-      XCTFail("expected notes")
-    }
-    // Unknown current → fall back to latest.
-    let svc2 = WhatsNewService(
-      fetcher: FakeReleases(releases: [rel("v1.0.0"), rel("v2.0.0")]), currentVersion: "5.0.0")
-    if case .notes(let n) = await svc2.showCurrent() {
-      XCTAssertEqual(n.map(\.version), ["2.0.0"])
-    } else {
-      XCTFail("expected notes")
-    }
-  }
 }

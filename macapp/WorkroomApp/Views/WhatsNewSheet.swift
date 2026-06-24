@@ -1,21 +1,16 @@
 import AppKit
 import SwiftUI
 
-/// What the `WhatsNewSheet` is currently showing. All cases share one stable `id` so the menu path
-/// can swap `.loading` → `.notes`/`.empty`/`.error` in place without dismissing and re-presenting the
-/// sheet. The auto (post-update) path always opens straight to `.notes`.
-enum WhatsNewSheetContent: Identifiable {
-  case loading
-  case notes([ReleaseNote])
-  case empty
-  case error
-
+/// The release notes the `WhatsNewSheet` shows. Wraps them in an `Identifiable` so a single
+/// `.sheet(item:)` drives presentation; the stable `id` keeps it one sheet. The auto
+/// (post-update) launch check is the only producer.
+struct WhatsNewSheetContent: Identifiable {
+  let notes: [ReleaseNote]
   var id: String { "whatsNew" }
 }
 
-/// The "What's New" dialog: a scrollable list of release notes, shown automatically the first launch
-/// after an update and reopenable via Help ▸ What's New…. The menu path shows loading / empty / error
-/// states (it was user-invoked, so it always gives feedback); the auto path only ever opens to notes.
+/// The "What's New" dialog: a scrollable list of release notes, shown automatically on the first
+/// launch after an update.
 struct WhatsNewSheet: View {
   let content: WhatsNewSheetContent
   let onClose: () -> Void
@@ -27,7 +22,7 @@ struct WhatsNewSheet: View {
     VStack(alignment: .leading, spacing: 0) {
       header
       Divider()
-      body(for: content)
+      notesList
         .frame(maxWidth: .infinity, maxHeight: .infinity)
       Divider()
       footer
@@ -50,31 +45,13 @@ struct WhatsNewSheet: View {
     .padding(16)
   }
 
-  @ViewBuilder
-  private func body(for content: WhatsNewSheetContent) -> some View {
-    switch content {
-    case .loading:
-      VStack {
-        Spacer()
-        ProgressView("Loading release notes…")
-        Spacer()
+  private var notesList: some View {
+    ScrollView {
+      VStack(alignment: .leading, spacing: 24) {
+        ForEach(content.notes) { note in releaseSection(note) }
       }
-    case .notes(let notes):
-      ScrollView {
-        VStack(alignment: .leading, spacing: 24) {
-          ForEach(notes) { note in releaseSection(note) }
-        }
-        .padding(16)
-        .frame(maxWidth: .infinity, alignment: .leading)
-      }
-    case .empty:
-      message(
-        "You’re up to date", detail: "No release notes to show for this version.",
-        showReleasesLink: true)
-    case .error:
-      message(
-        "Couldn’t load release notes", detail: "Check your connection and try again.",
-        showReleasesLink: true)
+      .padding(16)
+      .frame(maxWidth: .infinity, alignment: .leading)
     }
   }
 
@@ -94,20 +71,6 @@ struct WhatsNewSheet: View {
           .font(.callout)
       }
     }
-  }
-
-  private func message(_ title: String, detail: String, showReleasesLink: Bool) -> some View {
-    VStack(spacing: 8) {
-      Spacer()
-      Text(title).font(.headline)
-      Text(detail).font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)
-      if showReleasesLink {
-        Button("View on GitHub ↗") { openURL(GitHubReleasesClient.releasesPageURL) }
-          .buttonStyle(.link)
-      }
-      Spacer()
-    }
-    .padding(24)
   }
 
   private var footer: some View {

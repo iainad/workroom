@@ -13,17 +13,9 @@ struct ReleaseNote: Identifiable, Equatable {
   var id: String { version }
 }
 
-/// Result of a user-invoked (Help ▸ What's New) fetch. The menu path is NOT silent (unlike the auto
-/// path), so the sheet distinguishes content / nothing-found / failed and gives feedback either way.
-enum WhatsNewResult: Equatable {
-  case notes([ReleaseNote])
-  case empty
-  case error
-}
-
-/// Drives the "What's New" feature: the silent first-launch-after-update check and the on-demand
-/// menu fetch. It only *fetches and filters* — presentation is owned window-side (`RootView`), gated
-/// to the key window, so multiple windows never stack duplicate dialogs.
+/// Drives the "What's New" feature: the silent first-launch-after-update check. It only *fetches and
+/// filters* — presentation is owned window-side (`RootView`), gated to the launch/restore window so
+/// multiple windows never stack duplicate dialogs.
 @MainActor
 final class WhatsNewService: ObservableObject {
   private let fetcher: ReleasesFetching
@@ -70,21 +62,6 @@ final class WhatsNewService: ObservableObject {
     }
   }
 
-  /// User-invoked (Help ▸ What's New). Shows the current version's notes regardless of
-  /// `lastSeenVersion`; distinguishes empty vs error so the sheet can give feedback.
-  func showCurrent() async -> WhatsNewResult {
-    if UITestFixture.forceWhatsNew { return .notes(UITestFixture.whatsNewNotes) }
-
-    do {
-      let releases = try await fetcher.releases()
-      let current = currentVersion.flatMap(SemanticVersion.init)
-      let notes = Self.notesForCurrent(from: releases, current: current)
-      return notes.isEmpty ? .empty : .notes(notes)
-    } catch {
-      return .error
-    }
-  }
-
   // MARK: - Retry bookkeeping
 
   private func resetAttempts() {
@@ -122,19 +99,6 @@ final class WhatsNewService: ObservableObject {
       .map { note(from: $0.1) }
   }
 
-  /// The current version's notes for the on-demand menu path; falls back to the latest release so the
-  /// menu always shows something useful when the exact version isn't published as a release.
-  static func notesForCurrent(from releases: [GitHubRelease], current: SemanticVersion?)
-    -> [ReleaseNote]
-  {
-    let all = parsed(releases).sorted { $0.0 > $1.0 }
-    if let current, let exact = all.first(where: { $0.0 == current }) {
-      return [note(from: exact.1)]
-    }
-    if let latest = all.first { return [note(from: latest.1)] }
-    return []
-  }
-
   /// Non-draft releases paired with their parsed version; unparseable tags dropped.
   private static func parsed(_ releases: [GitHubRelease]) -> [(SemanticVersion, GitHubRelease)] {
     releases
@@ -149,9 +113,4 @@ final class WhatsNewService: ObservableObject {
       version: version, title: title, bodyMarkdown: rel.body ?? "", date: rel.publishedAt,
       url: rel.htmlURL)
   }
-}
-
-extension Notification.Name {
-  /// Posted by the Help ▸ What's New… menu item; observed by the key window's `RootView`.
-  static let showWhatsNew = Notification.Name("workroom.showWhatsNew")
 }

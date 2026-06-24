@@ -44,10 +44,6 @@ struct GitHubReleasesClient: ReleasesFetching {
   /// accepted limit, not a bug.
   static let perPage = 100
 
-  static var releasesPageURL: URL {
-    URL(string: "https://github.com/\(owner)/\(repo)/releases")!
-  }
-
   private let session: URLSession
   init(session: URLSession = .shared) { self.session = session }
 
