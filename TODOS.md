@@ -7,8 +7,9 @@
 > `.git`/`.jj` now update the sidebar label live; `BranchResolver` resolves jj read-only via
 > `--ignore-working-copy`). **Narrowed (partial):** at-a-glance review status (the `reviewDecision`
 > label + PR-state badge shipped; only the sidebar glyph + PR sweep stage remain), and the
-> workroom-split per-pane activity flash. Items are ordered roughly by priority: the before-GA work
-> (CMT-2, CMT-3) first, then the P3 niceties.
+> workroom-split per-pane activity flash. **Dropped (won't do):** persist per-file diff view-mode — the
+> in-memory per-tab toggle is enough; per-file persistence isn't worth the unbounded-map upkeep. Items
+> are ordered roughly by priority: the before-GA work (CMT-2, CMT-3) first, then the P3 niceties.
 >
 > Earlier (2026-06-09): the **splits** feature (A5) and the **UI-test fixture seam** shipped, and the
 > **terminal notifications** feature (#10) landed — unblocking auto-emit OSC and notification preferences.
@@ -470,26 +471,6 @@ app's core mechanism).
 **Depends on:** the in-app diff viewer plan (in progress).
 
 **Priority:** P3 (conditional — only if the viewer's needs outgrow patch-parsing).
-
-## Persist the per-file diff view-mode choice (macapp)
-
-**What:** Remember a file's unified/side-by-side toggle so reopening that file restores the last
-mode you picked for it — or a global "last used" mode — instead of resetting to the
-`Defaults[.diffViewMode]` default.
-
-**Why:** The tab toolbar now has a per-tab diff-mode toggle (`tab.toolbar.diffUnified` /
-`tab.toolbar.diffSideBySide`, state on `TerminalTab.diffViewModeOverride`), but the override lives on
-the in-memory tab — it's discarded when the tab closes and doesn't persist across relaunch. Some
-users may want a file's chosen mode to stick.
-
-**How to start:** Back the override with a persisted store — a global "last used mode" in `Defaults`,
-or a per-path map keyed like `runCommands` — hydrated into `TerminalTab.diffViewModeOverride` when a
-diff tab opens and written back from `TerminalSessions.setDiffViewMode`.
-
-**Depends on:** the shipped per-tab toggle (`Views/TerminalTabStrip.swift`,
-`Core/TerminalSessions.swift`).
-
-**Priority:** P3 (the per-file toggle works; persistence is an optional nicety).
 
 ## AppKit tracking-handle divider for an even wider resize target (macapp) — #83 follow-up
 
