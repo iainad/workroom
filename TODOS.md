@@ -1,9 +1,15 @@
 # TODOs
 
-> Status note (2026-06-09): the **splits** feature (A5) and the **UI-test fixture seam** have
-> shipped, and the **terminal notifications** feature (#10) has landed — so its dependent items
-> below (auto-emit OSC, notification preferences) are now unblocked. Items are ordered
+> Status note (2026-06-24): re-audited against the codebase. **Done & removed:** workroom tab-chip
+> management actions (#23 follow-up — context menu + "+" button shipped in `8eee2b0`) and harden-`gh`-auth
+> (#50 follow-up — `#86`/`60af731` added the `--json hosts` + transient-vs-real classification the item
+> asked for). **Narrowed (partial):** live branch-label refresh (FSEvents infra now exists, just not on the
+> root label), at-a-glance review status (the `reviewDecision` label + PR-state badge shipped; only the
+> sidebar glyph + PR sweep stage remain), and the workroom-split per-pane activity flash. Items are ordered
 > roughly by priority: the before-GA work (CMT-2, CMT-3) first, then the P3 niceties.
+>
+> Earlier (2026-06-09): the **splits** feature (A5) and the **UI-test fixture seam** shipped, and the
+> **terminal notifications** feature (#10) landed — unblocking auto-emit OSC and notification preferences.
 
 ## Own the GhosttyKit xcframework (macapp) — CMT-2
 
@@ -117,15 +123,24 @@ than on the throttled app-reactivate refresh.
 app regains focus. If you switch branches in the root terminal and stay in the app, the label is
 stale until you alt-tab away and back.
 
+**Current state (2026-06-24 — narrowed):** the FSEvents machinery now exists —
+`Core/WorkroomFileWatcher.swift` (landed `52f6e81`) watches the **selected workroom** and drives
+`handleWorkroomFileChange` → live VCS-status refresh (`AppStore+WorkroomStatus.swift`
+`updateSelectedWorkroomWatch`). But it's scoped to the selected workroom's *VCS status*, not the
+**root branch labels** (`rootRefs`/`BranchResolver`), which still refresh only on the throttled focus
+reload. So the remaining work is small: extend the same watcher pattern to the root HEADs.
+
 **How to start:** Per-project watcher — FSEvents on `<repo>/.git/HEAD` (git) and a `jj op
 log` / `.jj/` watch (jj), debounced, re-running `BranchResolver` for that one project and
-writing `AppStore.rootRefs[project.id]`. Tie the watchers' lifecycle to the project list.
+writing `AppStore.rootRefs[project.id]`. Tie the watchers' lifecycle to the project list. Model it on
+`WorkroomFileWatcher` rather than building from scratch.
 
-**Depends on:** the `BranchResolver` + `rootRefs` machinery already in place
-(`macapp/WorkroomApp/Core/BranchResolver.swift`, `Core/AppStore.swift`) — there's no file watcher
-yet; resolution is only triggered by the throttled focus refresh.
+**Depends on:** the `BranchResolver` + `rootRefs` machinery (`macapp/WorkroomApp/Core/BranchResolver.swift`,
+`Core/AppStore.swift`) and the now-landed `WorkroomFileWatcher` — but no watcher targets `rootRefs` yet;
+root resolution is still only triggered by the throttled focus refresh.
 
-**Priority:** P3 (nicety — the throttled focus refresh covers the common case).
+**Priority:** P3 (nicety — the throttled focus refresh covers the common case; cheaper now that the
+watcher infra exists).
 
 ## Auto-emit OSC notifications on command completion (macapp)
 
@@ -271,8 +286,10 @@ The pieces below were explicitly deferred — each small, none blocking.
   workroom panes.
 - **Cross-relaunch persistence of the split** — `workroomSplit` is session-only (the terminal split
   isn't persisted either). Add a `Defaults` key + restore-on-load if wanted.
-- **Per-pane activity border-flash** — workroom panes don't flash on background activity the way
-  terminal split panes do (`activityPulse`); workroom activity still surfaces via bar-chip tinting.
+- **Per-pane activity border-flash** (partial) — the *terminals hosted inside* a workroom pane flash
+  via `PaneLeafView`'s `activityPulses` handler, but the workroom **pane itself** doesn't flash the way
+  a terminal split pane does; workroom-level activity surfaces via `WorkroomTabChip` tinting instead. A
+  presentation difference, not a missing signal.
 - **Queued first-responder stale-state recheck** (`Views/TerminalContainerView.swift:78`) — `applyFocus`
   enqueues `makeFirstResponder(view)` on `DispatchQueue.main.async` and re-checks only
   `firstResponder !== view`, not a *fresh* focus condition, so a stale enqueue could in theory flip
@@ -281,31 +298,6 @@ The pieces below were explicitly deferred — each small, none blocking.
   Fix would re-read live focus state inside the async block rather than relying on the captured value.
 
 **Priority:** P3 (polish on a shipped feature).
-
-## Workroom tabs: tab-chip management actions (macapp) — #23 follow-up
-
-**What:** Quick workroom management straight from the tab bar — a `WorkroomTabChip` context menu
-("Delete…", and maybe "New Terminal" / "Reveal in Finder"), and optionally a create-workroom
-affordance — so common actions don't require reaching for the sidebar.
-
-**Why:** #23 keeps create/add-project/delete in the Projects sidebar. The tab bar sits above the
-terminal and the sidebar is a ⌃⌘S toggle away, so the original "never toggle back to manage" motivation
-is mostly moot. What remains is a small ergonomic win: right-click a tab to act on that workroom
-without hunting for its sidebar row. The add-project importer (`⌘O`) and the delete confirmation are already re-homed
-to `RootView` (they present regardless of sidebar visibility), which is the prerequisite for any
-in-tab trigger; the run-command config sheet (`ProjectSettingsSheet`) is still sidebar-only.
-
-**How to start:** Add a `.contextMenu` to `WorkroomTabChip` in `Views/WorkroomTabBar.swift`:
-"Delete…" → `store.pendingDeletion = …` (reusing RootView's re-homed confirmation dialog), plus
-optional "New Terminal" / "Reveal in Finder". A create affordance has no obvious home on the bar today
-(the picker and its "+" were removed), so scope it to the context menu first. Guard delete from a tab
-carefully — it reaps the workroom's terminals (destructive).
-
-**Depends on:** the #23 tab bar shipping first (done); the importer/delete presenters already re-homed
-to `RootView` (done).
-
-**Priority:** P3 (deferred from #23 — infrequent vs the monitoring use-case; the sidebar already
-covers management).
 
 ## Theming: auto-pair user `~/.config` themes into families (macapp) — #36 follow-up
 
@@ -327,35 +319,6 @@ collides with a bundled family.
 **Depends on:** the #36 families model shipping first (done).
 
 **Priority:** P3 (bundled families cover the common case; this is for users with custom schemes).
-
-## Harden `gh` auth detection — robust gate (macapp) — #50 follow-up
-
-**What:** Replace the exit-code-based global GitHub-auth gate with a more robust design — either
-parse `gh auth status --json hosts` (always exits 0; classify the active account's `state` in
-Swift) or de-gate so the per-workroom PR/CI probes self-classify their own auth failures (they
-already return `.absent` on `!r.ok`) and the global `githubCLIStatus` becomes advisory.
-
-**Current state:** #50 was fixed by adding `--active` to `gh auth status`
-(`Core/WorkroomStatusResolver.swift` `resolveGitHubCLI`). That is correct for current gh but leans
-on `gh`'s exit-code behavior and carries a **gh ≥ 2.57.0** floor (where `--active` was added).
-
-**Why:** removes the dependency on `gh`'s exit-code quirk and the version floor, and closes the
-residual multi-host case the `--active` fix leaves open — the global probe runs host-agnostic in
-`NSTemporaryDirectory()`, so a broken *active* account on an unrelated host (e.g. a GHE server the
-user still has configured) still trips a false "not signed in". `--json hosts` lets the check be
-host-aware without pinning `--hostname` (which would break GitHub Enterprise users).
-
-**How to start:** prototype `gh auth status --json hosts` parsing in `classifyGitHubCLI` (note the
-`--json` field set + `state`/`active` schema also has a gh version floor — confirm it). Or, for the
-de-gate route, relax `guard self.githubCLIStatus == .available else { return }`
-(`Core/AppStore+WorkroomStatus.swift:74`, `:121`) — but weigh the deliberate "don't spawn a `gh`
-per workroom when logged out" optimization it currently buys (`:70-73`), and rework the
-`PullRequestPanel` "not signed in" warning, which is driven by the global status.
-
-**Depends on:** nothing — pure follow-up to the #50 `--active` fix.
-
-**Priority:** P3 (the `--active` fix covers the reported bug and current gh; revisit only if
-multi-host or old-gh false-negatives get reported).
 
 ## Per-reviewer comment counts in the PR panel (macapp) — #52 follow-up
 
@@ -386,8 +349,11 @@ changes-requested / review-required) on the sidebar workroom row or the collapse
 section header, next to the existing CI glyph — so review state is visible without expanding the
 panel. Directly serves issue #52's framing ("so we can go visit the PR when needed").
 
-**Current state:** #52 shows reviewers (and the kept `reviewDecision` aggregate) only in the
-**expanded** Pull Request inspector panel. The aggregate is the natural feed for a glyph.
+**Current state (2026-06-24):** still expanded-panel only. `#77` added a PR-state badge to the PR
+header (`ChangesPanel.swift` `prNumberLink`) and the `reviewDecision` aggregate label sits above the
+reviewer rows in the inspector (`PullRequestPanel.swift` `PRPresentation.reviewLabel`) — but the
+sidebar workroom row still shows dirty/CI only (`ProjectSidebar.swift` → `VCSStatusCluster`), and the
+background sweep still skips PR resolution. The aggregate is the natural feed for a glyph.
 
 **Why:** a glance from the sidebar beats expanding the panel per workroom; matches how CI status
 already reads at a glance.
