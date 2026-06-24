@@ -106,17 +106,20 @@ struct WorkroomTabBar: View {
         }
         // A divider sets the "new workroom" (+) button apart from the last tab. Hidden when the last
         // tab is set apart on its own — selected or hovered — to match the "no divider beside the
-        // focused/hovered tab" rule for the inter-chip separators. Toggled via OPACITY (not removed) so
-        // the "+" never shifts as the selection/hover comes and goes. Negative leading trims the gap to
-        // the last tab to ~2pt (HStack `tabSpacing` 4 − 2), matching the inter-chip dividers. Mirrors
-        // the terminal strip.
+        // focused/hovered tab" rule for the inter-chip separators, and when the last tab is in a split
+        // group (the `splitWell` bracket already frames it, so a divider would double against its
+        // rounded edge). Toggled via OPACITY (not removed) so the "+" never shifts as the
+        // selection/hover comes and goes. Negative leading trims the gap to the last tab to ~2pt
+        // (HStack `tabSpacing` 4 − 2), matching the inter-chip dividers. Mirrors the terminal strip.
         Rectangle()
           .fill(ThemeService.shared.tokens.border)
           .frame(width: 1, height: 16)
           .padding(.leading, -2)
           .padding(.trailing, 4)
           .opacity(
-            tabs.last.map { $0.sid != selectedID && $0.sid != hoveredID } ?? true ? 1 : 0)
+            tabs.last.map {
+              $0.sid != selectedID && $0.sid != hoveredID && !splitMemberSet.contains($0.sid)
+            } ?? true ? 1 : 0)
         // The "new workroom" (+) button, immediately after the last chip (scrolls with them) — mirrors
         // the terminal strip's `addTerminalButton`.
         addWorkroomButton
@@ -323,14 +326,15 @@ private struct WorkroomTabChip: View {
           .help("Directory not found")
       }
       // The project name and (for a workroom) its own name, separated by a slash — one shared, smaller
-      // size for all the chip text (`.subheadline`). Unread activity is marked by the accent colour on
-      // the project name alone (no dot here) — distinct from the selected tab's neutral fill.
+      // size for all the chip text (`.subheadline`). On the focused tab the workroom name is full
+      // strength (matches the project name) rather than the dimmer secondary it uses when unfocused.
+      // Unread activity is marked by the accent colour on the project name alone (no dot here).
       HStack(alignment: .firstTextBaseline, spacing: 4) {
         Text(primaryLabel)
           .foregroundStyle(hasActivity ? theme.tokens.accent : Color.primary)
         if let workroomName {
           Text("/").foregroundStyle(.tertiary)
-          Text(workroomName).foregroundStyle(.secondary)
+          Text(workroomName).foregroundStyle(isActive ? Color.primary : .secondary)
         }
       }
       .font(.subheadline)
@@ -357,11 +361,12 @@ private struct WorkroomTabChip: View {
     }
     .padding(.horizontal, 14)
     .padding(.vertical, 7)
-    // The active tab gets a distinctly stronger fill (tabActive) than the faint hover wash, so the
-    // selected tab reads at a glance; a solid lifted chip while dragging.
+    // The focused tab is marked by an accent underline (below), not a fill or border — so the chip
+    // background carries only the faint hover wash on a non-active tab; a solid lifted chip while
+    // dragging.
     .background {
       RoundedRectangle(cornerRadius: 6)
-        .fill(isActive ? theme.tokens.tabActive : (isHovered ? theme.tokens.hover : Color.clear))
+        .fill(!isActive && isHovered ? theme.tokens.hover : Color.clear)
         // Fade the hover wash in/out instead of snapping it on.
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.12), value: isHovered)
     }
@@ -388,6 +393,18 @@ private struct WorkroomTabChip: View {
           .fill(theme.tokens.border)
           .frame(width: 1, height: 16)
           .offset(x: -2)
+      }
+    }
+    // Focused indicator: an accent underline along the chip's base — no fill, no border. Placed before
+    // the running underline so a working workroom's flowing bar draws over it. An overlay so it never
+    // enters the width the drag gap math measures.
+    .overlay(alignment: .bottom) {
+      if isActive {
+        RoundedRectangle(cornerRadius: 0.5)
+          .fill(theme.tokens.accent)
+          .frame(height: 1)
+          .padding(.horizontal, 6)
+          .padding(.bottom, 1)
       }
     }
     // A flowing underline along the chip's base while any of this workroom's terminals is working
