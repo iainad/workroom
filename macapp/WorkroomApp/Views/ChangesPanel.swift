@@ -369,8 +369,8 @@ private struct ChangedFileRow: View {
     if file.change != .deleted {
       HStack(spacing: 2) {
         TabToolbarButton(
-          systemImage: "doc.text", help: "Open file in \(openFileEditorName)",
-          accessibilityLabel: "Open file in editor",
+          systemImage: "doc.text", help: "Open File in \(openFileEditorName)",
+          accessibilityLabel: "Open File in \(openFileEditorName)",
           identifier: "changes.file.openFile.\(file.path)"
         ) {
           store.openChangedFileInEditor(file)
