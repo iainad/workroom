@@ -50,12 +50,13 @@ struct WorkroomTerminalsView: View {
             Color.clear.preference(key: ContentFrameKey.self, value: geo.frame(in: .global))
           }
         )
-        // The 6pt panel gutter frames the content the same way whether solo or split — so an ungrouped
-        // terminal keeps the matching left/right/bottom margins, not just a split's rounded panes. Top
-        // is always 0 so the tab strip sits flush on the content (the active tab bridges the panel→bg
-        // colour step) — the Chrome-style merge with the strip above.
+        // 6pt gutter left/right; the bottom uses 4pt so the terminal pane's bottom edge lines up with
+        // the left/right sidebar cards — the detail content carries a little extra bottom inset of its
+        // own, so a 6pt gutter sat ~2pt high vs the sidebars (measured). Top is always 0 so the tab
+        // strip sits flush on the content (the active tab bridges the panel→bg colour step) — the
+        // Chrome-style merge with the strip above.
         .padding(.horizontal, 6)
-        .padding(.bottom, 6)
+        .padding(.bottom, 4)
         .padding(.top, 0)
       } else {
         ContentUnavailableView {

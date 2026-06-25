@@ -1,4 +1,38 @@
+import AppKit
 import SwiftUI
+
+/// Layout constants for the custom title bar. The bar is drawn as the top strip of the window's
+/// (full-size) content rather than in an `NSTitlebarAccessoryViewController` — a leading accessory
+/// is clamped to the native ~32pt title-bar height and can't be made taller (verified), so the
+/// Chrome/Arc approach is used instead: `.fullSizeContentView` + draw the bar in content at any
+/// height. Tune `height` to taste.
+enum WorkroomTitlebar {
+  static let height: CGFloat = 38
+  /// Leading inset so the bar's first control clears the traffic-light cluster.
+  static let trafficLightInset: CGFloat = 80
+}
+
+/// A transparent backing view that lets a click-drag on the empty parts of the custom title bar
+/// move the window — the content area isn't window-draggable by default (only the real title bar
+/// is), so the bar needs this to stay draggable. Interactive controls drawn on top consume their
+/// own clicks; clicks that fall through to this view start a window drag.
+struct WindowDragBackground: NSViewRepresentable {
+  func makeNSView(context: Context) -> NSView { DragView() }
+  func updateNSView(_ nsView: NSView, context: Context) {}
+
+  final class DragView: NSView {
+    override var mouseDownCanMoveWindow: Bool { true }
+    override func mouseDown(with event: NSEvent) {
+      // Double-click on the empty bar runs the system title-bar action (zoom/minimize); a single
+      // click-drag moves the window.
+      if event.clickCount == 2 {
+        window?.performZoom(nil)
+      } else {
+        window?.performDrag(with: event)
+      }
+    }
+  }
+}
 
 /// The single unified title-bar toolbar, split into a leading and a trailing half hosted as
 /// `NSTitlebarAccessoryViewController`s (see `TitlebarAccessory`). They sit in the window's *one*

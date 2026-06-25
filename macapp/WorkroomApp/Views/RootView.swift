@@ -57,39 +57,45 @@ struct RootView: View {
   /// claim the trailing edge while a stretchable bar fills the middle. Env objects + the chip-drag
   /// plumbing are injected/captured inside the closure because the hosted tree lives outside the
   /// WindowGroup's environment.
-  private var titlebar: some View {
-    TitlebarAccessory(
-      edge: .leading, identifier: .init("workroom.titlebar"), fillsWidth: true
-    ) {
-      let tabs = store.displayedWorkroomTargets()
-      HStack(spacing: 6) {
-        LeadingTitlebarBar().titlebarInteractive()
-        if !tabs.isEmpty {
-          WorkroomTabBar(
-            tabs: tabs, selectedID: store.selectedTargetID,
-            onSelect: { selectWorkroomTab($0) },
-            chipPaneDrag: $workroomChipDrag,
-            localize: { workroomChipLocal($0) },
-            dropTarget: { workroomChipDropTarget(at: $0) }
-          )
-        } else {
-          Spacer(minLength: 0)
-        }
-        TrailingTitlebarBar().titlebarInteractive()
+  private var titlebarBar: some View {
+    let tabs = store.displayedWorkroomTargets()
+    return HStack(spacing: 6) {
+      LeadingTitlebarBar()
+      if !tabs.isEmpty {
+        WorkroomTabBar(
+          tabs: tabs, selectedID: store.selectedTargetID,
+          onSelect: { selectWorkroomTab($0) },
+          chipPaneDrag: $workroomChipDrag,
+          localize: { workroomChipLocal($0) },
+          dropTarget: { workroomChipDropTarget(at: $0) }
+        )
+      } else {
+        Spacer(minLength: 0)
       }
-      .environmentObject(store)
-      .environmentObject(updater)
-      .environmentObject(notifications)
-      .environmentObject(terminals)
-      // Fill the accessory host so the controls + tabs stay vertically centred on the title-bar row.
-      // The row's extra height (a little padding above/below) comes from the unified-compact toolbar
-      // set in `WindowBackgroundThemer`.
-      .frame(maxHeight: .infinity)
+      TrailingTitlebarBar()
     }
+    // Clear the traffic-light cluster on the leading edge (the bar now spans the full window width
+    // as the top strip of the content, not an accessory placed after the lights by AppKit).
+    .padding(.leading, WorkroomTitlebar.trafficLightInset)
+    .frame(height: WorkroomTitlebar.height)
+    .frame(maxWidth: .infinity)
+    // Empty regions of the bar drag the window; the panel colour reads as one surface with the
+    // title bar / tab bar / gutters (it sits behind the transparent drag layer).
+    .background(WindowDragBackground())
+    .background(ThemeService.shared.tokens.panel)
   }
 
   var body: some View {
-    rootWindowChrome(rootLifecycle(rootReveals(rootModals(splitView))))
+    // The custom title bar is the top strip of the (full-size) content: stack it ABOVE the split view
+    // so the filled detail content can never slide up under it (hanging it off the split view as a top
+    // `safeAreaInset` let the terminal tab strip clip under the bar). `ignoresSafeArea(.top)` lets the
+    // stack reach up under the transparent native title bar so the bar starts at the very top. The
+    // sidebar's own native-card top gap is closed separately, on the sidebar column in `splitView`.
+    VStack(spacing: 0) {
+      titlebarBar
+      rootWindowChrome(rootLifecycle(rootReveals(rootModals(splitView))))
+    }
+    .ignoresSafeArea(.container, edges: .top)
   }
 
   /// The two-column `NavigationSplitView` core (sidebar + detail/inspector). The window chrome, modal
@@ -98,45 +104,26 @@ struct RootView: View {
   /// timed out the type-checker on CI ("unable to type-check this expression in reasonable time"); this
   /// is the same split-it-up reason `EdgeRevealSidebars`/`MenuStateValues`/`NewWorkroomPresenter` exist.
   private var splitView: some View {
-    NavigationSplitView(
-      columnVisibility: Binding(
-        // Own the column visibility so the View ▸ Projects menu item can show a tick (the bar's
-        // toggle, the auto-provided toolbar button, and a drag-collapse all round-trip through
-        // `store.sidebarVisible`). `.detailOnly` is the only hidden state for a two-column split.
-        get: { store.sidebarVisible ? .all : .detailOnly },
-        set: { store.sidebarVisible = $0 != .detailOnly })
-    ) {
-      ProjectSidebar()
-        // The sidebar column's title (for accessibility / the column header). Set here, not inside
-        // `ProjectSidebar`, so the reveal overlay — which reuses `ProjectSidebar` — doesn't leak
-        // "Projects" into the window titlebar when unpinned.
-        .navigationTitle("Projects")
-        // Capture the card's inner content width (before the card's own padding) so the edge-reveal
-        // panel — which re-applies the same `sidebarCard` — matches the docked card exactly (issue #56).
-        .background(
-          GeometryReader { geo in
-            Color.clear.preference(key: SidebarWidthKey.self, value: geo.size.width)
-          }
-        )
-        .onPreferenceChange(SidebarWidthKey.self) { width in
-          if width > 0 { store.dockedSidebarWidth = width }
-        }
-        // No custom card here: macOS already renders the docked sidebar column as an inset floating
-        // card. The edge-reveal panel (an overlay, which gets no native card) re-creates that look via
-        // `sidebarCard` so the unpinned state matches.
-        // Bound the sidebar column: a floor so a wide inspector can't crush it (clipping labels) and
-        // a ceiling so it can't be dragged so wide it eats the main panel. Expressed as a
-        // NavigationSplitView column constraint, which the split view honours as the real column
-        // range (a plain `.frame(minWidth:)` is not treated as the column floor).
-        .navigationSplitViewColumnWidth(min: 240, ideal: 270, max: 360)
-        // Persist the user-dragged sidebar width across launches (issue #14) via the
-        // underlying NSSplitView's autosave — SwiftUI offers no width binding.
-        .background(SplitViewAutosave(name: "WorkroomSidebarSplit"))
+    // A hand-rolled split (sidebar | detail | inspector) instead of `NavigationSplitView`: the native
+    // sidebar column drew an inset card with a ~30pt top toolbar-reserve that left an empty gap under
+    // the custom title bar, and that inset isn't controllable. `SidebarColumn`/`InspectorColumn` are
+    // our own resizable cards (same `sidebarCard` as the edge-reveal, so pinned == unpinned), giving
+    // full control over their position. Visibility round-trips through `store.sidebarVisible` /
+    // `showNotifications` (the View-menu ticks + toggles); width persists per column to `Defaults`.
+    // A *detail-only* NavigationSplitView: we keep it (vs a plain HStack) only for the window
+    // toolbar/layering context it sets up — that's what lets the custom title bar, drawn in the
+    // full-size content under the native title bar, render crisp instead of washed-out by the
+    // title-bar vibrancy (a plain HStack / NavigationStack doesn't). Its native sidebar column is
+    // never used (forced `.detailOnly`) — that column is what kept the ~30pt inset-card top gap — so
+    // the real sidebar is our own `SidebarColumn` in the detail HStack, flush below the bar.
+    NavigationSplitView(columnVisibility: .constant(.detailOnly)) {
+      Color.clear.frame(width: 0)
     } detail: {
-      // The inspector is a custom card laid out beside the detail (it pushes the detail narrower, like
-      // the sidebar) rather than the native `.inspector` — which drew a separator line beside our card.
-      // `InspectorColumn` reuses the same `sidebarCard` as the reveal, so pinned == unpinned.
       HStack(spacing: 0) {
+        if store.sidebarVisible {
+          SidebarColumn()
+            .transition(.move(edge: .leading))
+        }
         detail
           .frame(maxWidth: .infinity, maxHeight: .infinity)
         if showNotifications {
@@ -144,6 +131,7 @@ struct RootView: View {
             .transition(.move(edge: .trailing))
         }
       }
+      .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: store.sidebarVisible)
       .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: showNotifications)
     }
   }
@@ -319,10 +307,6 @@ struct RootView: View {
       // part of the toolbar, so they stay.
       .toolbar(removing: .sidebarToggle)
       .background(WindowBackgroundThemer())
-      // The single, full-width unified title-bar bar sharing the native title-bar row with the traffic
-      // lights (see `titlebar` / `TitlebarBars`). Hosted outside the WindowGroup's environment, so it
-      // injects its env objects inside the closure.
-      .background(titlebar)
       // Keep the root branch labels reasonably current: refresh when the app regains
       // focus (throttled, so rapid alt-tabbing doesn't fork a git/jj process per project).
       // Regaining focus also dismisses the now-visible terminal's notifications (you're looking at it).
@@ -546,16 +530,6 @@ private struct DetailContentFrameKey: PreferenceKey {
   static func reduce(value: inout CGRect, nextValue: () -> CGRect) {
     let next = nextValue()
     if next != .zero { value = next }
-  }
-}
-
-/// The docked Projects sidebar's measured width, published so the edge-hover reveal panel matches it
-/// (issue #56). Mirrors `DetailContentFrameKey`: a non-zero reading wins.
-private struct SidebarWidthKey: PreferenceKey {
-  static var defaultValue: CGFloat = 0
-  static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-    let next = nextValue()
-    if next != 0 { value = next }
   }
 }
 

@@ -60,6 +60,11 @@ extension Defaults.Keys {
   /// from the live width measurement, clamped to the `.inspectorColumnWidth` min/max range.
   static let inspectorWidth = Key<Double>("inspector.width", default: 300)
 
+  /// The docked Projects sidebar's remembered column width. The sidebar is a custom resizable column
+  /// (`SidebarColumn`, not `NavigationSplitView`'s native one), so its width is persisted here and
+  /// fed back on launch — mirrors `inspectorWidth`. Clamped to the column's min/max when applied.
+  static let sidebarWidth = Key<Double>("sidebar.width", default: 270)
+
   /// Whether the notifications menu bar item is shown (issue #33). On by default.
   static let showMenuBarItem = Key<Bool>("showMenuBarItem", default: true)
 

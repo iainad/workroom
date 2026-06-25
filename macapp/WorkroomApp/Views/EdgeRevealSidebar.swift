@@ -174,7 +174,10 @@ struct EdgeRevealSidebar<Content: View>: View {
       // The same floating card the docked column uses (`sidebarCard`). `topMargin: 0` extends the card
       // up to sit flush below the toolbar like the native pinned card (the reveal's safe-area top is
       // ~8pt lower than the native card's top), so pinned and unpinned line up.
-      .sidebarCard(topMargin: 0)
+      // Both docked columns now use the frosted `.sidebar` vibrancy, so both reveals match them
+      // (pinned == unpinned). `elevated`: an unpinned panel floats over the content, so it gets a
+      // deeper drop shadow than the docked card.
+      .sidebarCard(topMargin: 0, vibrant: true, elevated: true)
       .offset(x: panelOffsetX)
       .opacity(reducer.revealed ? 1 : 0)
       // Hidden/off-screen panel must never eat terminal clicks.

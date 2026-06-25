@@ -149,11 +149,10 @@ final class AppStore: ObservableObject {
   @Published var workroomTabOrder: [TerminalTarget.ID] = Defaults[.workroomTabOrder] {
     didSet { if persistsSidebarPrefs { Defaults[.workroomTabOrder] = workroomTabOrder } }
   }
-  /// Whether the projects sidebar column is visible. The single source of truth for the
-  /// `NavigationSplitView` column visibility *and* the View ▸ Projects checkmark — a bare AppKit
-  /// `toggleSidebar` has no state a menu checkmark can bind to, so it could never show a tick.
-  /// Session-only (resets to shown on launch); the dragged width is persisted separately by
-  /// `SplitViewAutosave`.
+  /// Whether the projects sidebar column is visible. The single source of truth for showing the
+  /// custom `SidebarColumn` *and* the View ▸ Projects checkmark — a bare AppKit `toggleSidebar` has no
+  /// state a menu checkmark can bind to, so it could never show a tick. Session-only (resets to shown
+  /// on launch); the dragged width is persisted separately to `Defaults.sidebarWidth`.
   @Published var sidebarVisible: Bool = true
   /// Whether a collapsed sidebar is *temporarily* on screen via edge-hover reveal (issue #56): the
   /// left Projects overlay (`previewingLeft`) and the right inspector overlay (`previewingRight`).
@@ -173,15 +172,11 @@ final class AppStore: ObservableObject {
   /// `EdgeRevealSidebar`. Session-only, not persisted (transient hover state).
   @Published var hoveringLeftToggle: Bool = false
   @Published var hoveringRightToggle: Bool = false
-  /// The docked Projects sidebar's last-measured width, captured by a `GeometryReader` in `RootView`
-  /// while the sidebar is shown, so the edge-hover reveal panel (issue #56) matches the user's chosen
-  /// (autosaved) width rather than a fixed guess. `nil` until first measured — the reveal falls back
-  /// to a sensible default. Session-only.
-  ///
-  /// Deliberately NOT `@Published`: it's written on every layout change (including mid-resize-drag),
-  /// and publishing it then would re-render the `NavigationSplitView` during the drag and fight the
-  /// `NSSplitView` divider (you couldn't resize). The reveal reads it on the next natural render —
-  /// when the sidebar collapses — which is the only time it's needed.
+  /// The docked Projects sidebar's chosen width, set by `SidebarColumn`'s resize handle on drag-end
+  /// (mirrors `dockedInspectorWidth`), so the edge-hover reveal panel (issue #56) matches the user's
+  /// width rather than a fixed guess. `nil` until first set this session; both the column and the
+  /// reveal fall back to `Defaults.sidebarWidth`. Session-only; not `@Published` — the live drag is
+  /// tracked in the column's local state and only committed here once, on drag-end.
   var dockedSidebarWidth: CGFloat?
   /// The docked right inspector's width (issue #56), set by the custom inspector column's resize
   /// handle and read by both the docked card and the right edge-hover reveal. `@Published` so a
