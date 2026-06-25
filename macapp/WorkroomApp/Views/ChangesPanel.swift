@@ -1,4 +1,5 @@
 import AppKit
+import Defaults
 import SwiftUI
 
 /// The right inspector (issue #24). macOS 14 supports only one `.inspector` per view, so the
@@ -80,13 +81,13 @@ struct RightInspector: View {
   }
 
   /// The Pull Request header's trailing controls (issue #77): the PR number badge — a link to the
-  /// PR, tinted by state and turning red when checks fail — then, only for a draft, a "Ready for
-  /// Review" button, and finally the actions menu. Order is left → right, so the ellipsis stays
-  /// rightmost (matching the other section headers).
+  /// PR, tinted by state and turning red when checks fail — then the actions menu. The draft-only
+  /// "Ready for Review" button moved into the panel body (above the title) so it can't crowd the
+  /// section title in a narrow inspector (issue #93 feedback). Order is left → right, so the ellipsis
+  /// stays rightmost (matching the other section headers).
   @ViewBuilder private var prHeaderAccessory: some View {
     HStack(spacing: 6) {
       prNumberLink
-      readyForReviewButton
       prActionsMenu
     }
   }
@@ -102,47 +103,11 @@ struct RightInspector: View {
       let failing = pr.state == .open && PRPresentation.isFailing(status)
       let tint: Color = failing ? .red : badge.semantic.color
       let failSuffix = failing ? ", checks failing" : ""
-      let helpText =
-        "Pull request #\(String(pr.number)): \(badge.label)\(failSuffix). Open in browser."
-      let a11y = "Pull request #\(String(pr.number)), \(badge.label)\(failSuffix), open in browser"
-      Button {
-        if let url = URL(string: pr.url) { openURL(url) }
-      } label: {
-        // `verbatim:` so the Int isn't run through LocalizedStringKey number formatting, which would
-        // group it as "#1,042" — a PR number is an identifier, not a quantity.
-        Text(verbatim: "#\(pr.number)")
-          .font(.caption2).fontWeight(.semibold).monospacedDigit()
-          .foregroundStyle(tint)
-          .padding(.horizontal, 5).padding(.vertical, 1)
-          .background(Capsule().fill(tint.opacity(0.22)))
-          .contentShape(Capsule())
-      }
-      .buttonStyle(.plain)
-      .help(helpText)
-      .accessibilityLabel(a11y)
-    }
-  }
-
-  /// A draft-only shortcut to mark the PR ready for review (issue #77), sitting to the left of the
-  /// actions menu. Gated on `PRAction.available` so it mirrors the menu's own ready action exactly.
-  @ViewBuilder private var readyForReviewButton: some View {
-    if store.githubCLIStatus == .available, let pr = selectedStatus?.pr,
-      let sid = store.selectedTargetID, PRAction.available(for: pr).contains(.markReady)
-    {
-      Button {
-        store.performPRAction(.markReady, number: pr.number, on: sid)
-      } label: {
-        Text("Ready for Review")
-          .font(.caption2).fontWeight(.medium)
-          .padding(.horizontal, 7).padding(.vertical, 2)
-          .foregroundStyle(Color.accentColor)
-          .background(Capsule().fill(Color.accentColor.opacity(0.15)))
-          .contentShape(Capsule())
-      }
-      .buttonStyle(.plain)
-      .disabled(store.prActionInFlight)
-      .help("Mark pull request #\(String(pr.number)) ready for review")
-      .accessibilityLabel("Ready for review")
+      PRNumberBadge(
+        number: pr.number, tint: tint, url: URL(string: pr.url),
+        help: "Pull request #\(String(pr.number)): \(badge.label)\(failSuffix). Open in browser.",
+        accessibility:
+          "Pull request #\(String(pr.number)), \(badge.label)\(failSuffix), open in browser")
     }
   }
 
@@ -269,6 +234,38 @@ private struct PendingPRAction: Identifiable {
   var id: String { "\(action.rawValue)-\(number)" }
 }
 
+/// The Pull Request section header's number badge (issue #77): a capsule "#N" link that opens the PR
+/// in the browser, tinted by PR state (red when checks fail). A standalone view so it can carry its
+/// own `@State` hover, which the `@ViewBuilder` accessory can't — the capsule fill deepens on hover.
+private struct PRNumberBadge: View {
+  let number: Int
+  let tint: Color
+  let url: URL?
+  let help: String
+  let accessibility: String
+  @Environment(\.openURL) private var openURL
+  @State private var hovering = false
+
+  var body: some View {
+    Button {
+      if let url { openURL(url) }
+    } label: {
+      // `verbatim:` so the Int isn't run through LocalizedStringKey number formatting, which would
+      // group it as "#1,042" — a PR number is an identifier, not a quantity.
+      Text(verbatim: "#\(number)")
+        .font(.caption2).fontWeight(.semibold).monospacedDigit()
+        .foregroundStyle(tint)
+        .padding(.horizontal, 5).padding(.vertical, 1)
+        .background(Capsule().fill(tint.opacity(hovering ? 0.34 : 0.22)))
+        .contentShape(Capsule())
+    }
+    .buttonStyle(.plain)
+    .onHover { hovering = $0 }
+    .help(help)
+    .accessibilityLabel(accessibility)
+  }
+}
+
 /// One changed-file row: a colored change-kind letter (M/A/D/…), the filename, then its parent
 /// directory dimmed (issue #24 feedback). Clicking opens the file's diff in the workroom's tab strip
 /// (issue #66): a single click opens it in preview mode (eagerly — the diff appears at once), a quick
@@ -287,6 +284,10 @@ private struct ChangedFileRow: View {
   /// Time of the last click, so a quick second click promotes the preview tab to persisted (eager
   /// single/double discrimination — the single click never waits).
   @State private var lastClick: Date?
+  /// Observed so the hover toolbar / context-menu "Open file in <editor>" label updates live when
+  /// the user changes Settings → "Open file paths in" (issue #93); otherwise it'd be stale until an
+  /// unrelated redraw.
+  @Default(.filePathEditor) private var filePathEditorID
   private let theme = ThemeService.shared
 
   var body: some View {
@@ -309,18 +310,28 @@ private struct ChangedFileRow: View {
       }
       Spacer(minLength: 0)
     }
-    .padding(.vertical, 2)
-    .padding(.horizontal, 4)
+    .padding(.vertical, 4)
+    .padding(.horizontal, 6)
     .frame(maxWidth: .infinity, alignment: .leading)
     .background(
-      RoundedRectangle(cornerRadius: 5)
-        .fill(
-          isSelected
-            ? theme.tokens.accent.opacity(0.22) : theme.tokens.hover.opacity(hovering ? 1 : 0))
+      // Square, full-width band (no corner radius): bleed past the section's 12pt inset so the
+      // hover/selection highlight fills the inspector width edge-to-edge (issue #93 feedback).
+      Rectangle()
+        .fill(isSelected ? theme.tokens.rowSelection : (hovering ? theme.tokens.rowHover : .clear))
+        .padding(.horizontal, -12)
     )
+    // Hover toolbar (issue #93): a content-sized cluster pinned to the trailing edge, painted over
+    // the path. Only the button area intercepts clicks (it opens the file) — the rest of the row
+    // still opens the diff. Built only while hovering, so the editor-name lookup runs on hover only.
+    .overlay(alignment: .trailing) { if hovering { rowToolbar } }
     .contentShape(Rectangle())
     .onHover { hovering = $0 }
     .onTapGesture {
+      if NSEvent.modifierFlags.contains(.command) {
+        store.openChangedFileInEditor(file)  // ⌘-click → open the file, not the diff (issue #93)
+        lastClick = nil  // clear any pending double-click state so the next plain click is fresh
+        return
+      }
       let now = Date()
       if let last = lastClick, now.timeIntervalSince(last) < 0.35 {
         store.openDiffPersistent(file, source: source)  // quick second click → persist
@@ -336,7 +347,51 @@ private struct ChangedFileRow: View {
     .accessibilityIdentifier("changes.file.\(file.path)")
     .accessibilityLabel(
       dir.isEmpty
-        ? "\(name), \(changeWord), open diff" : "\(name), \(changeWord), in \(dir), open diff")
+        ? "\(name), \(changeWord), open diff" : "\(name), \(changeWord), in \(dir), open diff"
+    )
+    // A non-pointer path to the open-file action (the hover toolbar is mouse-only): keyboard /
+    // VoiceOver reach it here, mirroring the diff-tab chip's "Open File in…" (issue #93).
+    .contextMenu {
+      Button {
+        store.openChangedFileInEditor(file)
+      } label: {
+        Label("Open File in \(openFileEditorName)", systemImage: "doc.text")
+      }
+      .disabled(file.change == .deleted)
+    }
+  }
+
+  /// The trailing hover toolbar: the "Open file in <editor>" button (extensible to more buttons).
+  /// Hidden for a deleted file — there's no working copy to open — so the toolbar renders nothing.
+  /// Its backing is the same opaque `rowHover`/`rowSelection` token the row uses for its highlight, so
+  /// the toolbar is solid (occludes the path text) and exactly the same colour as the row.
+  @ViewBuilder private var rowToolbar: some View {
+    if file.change != .deleted {
+      HStack(spacing: 2) {
+        TabToolbarButton(
+          systemImage: "doc.text", help: "Open file in \(openFileEditorName)",
+          accessibilityLabel: "Open file in editor",
+          identifier: "changes.file.openFile.\(file.path)"
+        ) {
+          store.openChangedFileInEditor(file)
+        }
+      }
+      .padding(.horizontal, 2)
+      .background(
+        // The same opaque token the row fills its highlight with — solid (occludes the path text) and
+        // identical in colour to the row by construction.
+        RoundedRectangle(cornerRadius: 5)
+          .fill(isSelected ? theme.tokens.rowSelection : theme.tokens.rowHover)
+      )
+      .fixedSize()
+    }
+  }
+
+  /// Display name of the editor the "Open file in…" action targets — the Settings "Open file paths
+  /// in" choice (`ExternalEditor.forFilePaths`), or "your default app" when unset. Recomputes when
+  /// `filePathEditorID` changes (issue #93).
+  private var openFileEditorName: String {
+    ExternalEditor.forFilePaths?.name ?? "your default app"
   }
 
   /// True when this row's file+revision is the currently focused diff tab in the selected target —

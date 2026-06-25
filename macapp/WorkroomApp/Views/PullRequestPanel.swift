@@ -63,6 +63,7 @@ struct PullRequestPanel: View {
       // no PR shows just "No pull request" (no CI rows).
       VStack(alignment: .leading, spacing: 8) {
         if let pr = status.pr {
+          readyForReviewButton(pr: pr, sid: sid)
           prRows(pr)
           // Summary glyph, tappable → the PR's "/checks" tab. Derived from the loaded per-check list
           // so it can't contradict the rows below; falls back to the branch CI aggregate
@@ -77,6 +78,16 @@ struct PullRequestPanel: View {
       }
       .padding(12)
       .frame(maxWidth: .infinity, alignment: .leading)
+    }
+  }
+
+  /// A draft-only "Ready for Review" shortcut (issue #77), at the top of the panel body above the PR
+  /// title (moved out of the section header, where it crowded the title — issue #93 feedback). Gated
+  /// on `PRAction.available` so it mirrors the actions menu's own ready action exactly.
+  @ViewBuilder
+  private func readyForReviewButton(pr: PullRequestInfo, sid: SidebarID) -> some View {
+    if PRAction.available(for: pr).contains(.markReady) {
+      ReadyForReviewButton(pr: pr, sid: sid)
     }
   }
 
@@ -214,6 +225,33 @@ struct PullRequestPanel: View {
     }
   }
 
+}
+
+/// The draft-only "Ready for Review" button (issue #77). A standalone view so it can carry its own
+/// `@State` hover, which a `@ViewBuilder` helper can't — the accent capsule deepens on hover.
+private struct ReadyForReviewButton: View {
+  let pr: PullRequestInfo
+  let sid: SidebarID
+  @EnvironmentObject var store: AppStore
+  @State private var hovering = false
+
+  var body: some View {
+    Button {
+      store.performPRAction(.markReady, number: pr.number, on: sid)
+    } label: {
+      Text("Ready for Review")
+        .font(.callout).fontWeight(.medium)
+        .padding(.horizontal, 10).padding(.vertical, 3)
+        .foregroundStyle(Color.accentColor)
+        .background(Capsule().fill(Color.accentColor.opacity(hovering ? 0.28 : 0.15)))
+        .contentShape(Capsule())
+    }
+    .buttonStyle(.plain)
+    .onHover { hovering = $0 }
+    .disabled(store.prActionInFlight)
+    .help("Mark pull request #\(String(pr.number)) ready for review")
+    .accessibilityLabel("Ready for review")
+  }
 }
 
 extension PRPresentation.Semantic {

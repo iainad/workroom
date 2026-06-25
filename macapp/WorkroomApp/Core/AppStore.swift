@@ -2351,16 +2351,38 @@ final class AppStore: ObservableObject {
       for: target)
   }
 
-  /// Open a diff tab's underlying file in the configured "Open file paths in" editor (the tab
-  /// toolbar / context-menu "Open file in…", issue #72). Resolves the diff's repo-relative path
-  /// against the workroom directory and reuses `TerminalLinkOpener` — so it honours
-  /// `Defaults[.filePathEditor]` and opens the file *inside* the workroom folder window, exactly
-  /// like the Changes-panel click. Caller disables this for a deleted-source diff (the working file
+  /// Open a workroom-relative file in the configured "Open file paths in" editor — the single path
+  /// resolution shared by `openDiffTabFile` (#72) and `openChangedFileInEditor` (#93). Reuses
+  /// `TerminalLinkOpener`, so it honours `Defaults[.filePathEditor]`; for a folder-capable editor CLI
+  /// (VS Code/Zed/Xcode) the file opens *inside* the workroom folder window, while the default-app
+  /// fallback just opens the file (no folder/window targeting). Fire-and-forget; a missing file
+  /// no-ops in `openFilePath`.
+  private func openWorkroomFile(relativePath: String, for target: TerminalTarget) {
+    let absPath = (target.path as NSString).appendingPathComponent(relativePath)
+    TerminalLinkOpener.openFilePath(absPath, cwd: nil, project: target.path)
+  }
+
+  /// Open a diff tab's underlying file in the configured editor (the tab toolbar / context-menu
+  /// "Open file in…", issue #72). Caller disables this for a deleted-source diff (the working file
   /// is gone — `DiffDescriptor.change == .deleted`); for a jj `@-` diff it opens the working copy,
   /// which may differ from the displayed parent revision (editing the live file is the useful action).
   func openDiffTabFile(_ descriptor: DiffDescriptor, for target: TerminalTarget) {
-    let absPath = (target.path as NSString).appendingPathComponent(descriptor.path)
-    TerminalLinkOpener.openFilePath(absPath, cwd: nil, project: target.path)
+    openWorkroomFile(relativePath: descriptor.path, for: target)
+  }
+
+  /// Open a changed file's working copy in the configured editor — the Changes-panel hover-toolbar
+  /// button, the row's ⌘-click, and the row context menu (issue #93). No-op when nothing's selected
+  /// or the file was deleted (no working file to open — see `resolveOpenTarget`).
+  func openChangedFileInEditor(_ file: ChangedFile) {
+    guard let target = selectedTarget, let rel = Self.resolveOpenTarget(file: file) else { return }
+    openWorkroomFile(relativePath: rel, for: target)
+  }
+
+  /// The repo-relative path to open for a changed file, or nil when there's nothing to open (a
+  /// deleted source — the working file is gone). `nonisolated` + pure so the open decision is
+  /// unit-testable from a synchronous context, without the side-effecting opener (issue #93).
+  nonisolated static func resolveOpenTarget(file: ChangedFile) -> String? {
+    file.change == .deleted ? nil : file.path
   }
 
   /// The focused pane's surface for the selected target (the focused tab is the focused pane), or nil

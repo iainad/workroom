@@ -31,6 +31,11 @@ struct ThemeTokens {
   let border: Color  // fg @ 0.12 — hairline dividers
   let hover: Color  // fg @ 0.06 — hover wash
   let tabActive: Color  // fg @ 0.16 — selected tab fill: distinctly stronger than hover/surface
+  // Opaque changed-file row fills (issue #93). Baked solid (panel blended toward fg / accent) rather
+  // than a translucent wash, so a row's highlight and the hover toolbar painted over it are the exact
+  // same colour — a wash double-composites over the toolbar's own backing and never matches.
+  let rowHover: Color  // panel + 6% fg, opaque
+  let rowSelection: Color  // panel + 22% accent, opaque
 
   // Accent (palette[4]).
   let accent: Color
@@ -101,6 +106,11 @@ struct ThemeTokens {
     border = Color(nsColor: fgColor.withAlphaComponent(0.12))
     hover = Color(nsColor: fgColor.withAlphaComponent(0.06))
     tabActive = Color(nsColor: fgColor.withAlphaComponent(0.16))
+    let fgSRGB = fgColor.usingColorSpace(.sRGB) ?? fgColor
+    let accentSRGB = accentColor.usingColorSpace(.sRGB) ?? accentColor
+    rowHover = Color(nsColor: panelColor.blended(withFraction: 0.06, of: fgSRGB) ?? panelColor)
+    rowSelection = Color(
+      nsColor: panelColor.blended(withFraction: 0.22, of: accentSRGB) ?? panelColor)
 
     accent = Color(nsColor: accentColor)
     accentSoft = Color(nsColor: accentColor.withAlphaComponent(0.10))

@@ -33,6 +33,15 @@ struct ExternalEditor: Identifiable {
     return installed.first { $0.id == Defaults[.lastEditor] } ?? installed.first
   }
 
+  /// The editor configured for opening *file paths* (Settings → "Open file paths in",
+  /// `Defaults[.filePathEditor]`), or nil when unset — i.e. the file's default app. Names the
+  /// Changes-panel "Open file in…" action (issue #93). Unlike `remembered`, this never falls back to
+  /// the first installed editor: an unset/uninstalled choice deliberately reads as "default app".
+  static var forFilePaths: ExternalEditor? {
+    let id = Defaults[.filePathEditor]
+    return id.isEmpty ? nil : installed.first { $0.id == id }
+  }
+
   /// The app's Finder icon, sized for inline display beside its name in the
   /// "Open in…" button and menu.
   var icon: NSImage {

@@ -581,37 +581,6 @@ private struct TabCloseButton: View {
   }
 }
 
-/// One icon-only action in the tab strip's trailing toolbar (issue #72), styled to match the strip's
-/// other controls (the "+" new-terminal button, the remove-from-split ✕): a small glyph with a hover
-/// well, a tooltip, and an accessibility label + identifier (per the "tooltips on all controls"
-/// convention). Carries its own `onHover` so the `.help` tooltip's tracking area is reliably installed.
-private struct TabToolbarButton: View {
-  let systemImage: String
-  let help: String
-  let accessibilityLabel: String
-  let identifier: String
-  let action: () -> Void
-  @State private var hovering = false
-
-  var body: some View {
-    Button(action: action) {
-      Image(systemName: systemImage)
-        .font(.system(size: 11))
-        .foregroundStyle(.secondary)
-        .padding(4)
-        .background(
-          RoundedRectangle(cornerRadius: 5)
-            .fill(ThemeService.shared.tokens.hover.opacity(hovering ? 1 : 0))
-        )
-    }
-    .buttonStyle(.plain)
-    .onHover { hovering = $0 }
-    .help(help)
-    .accessibilityLabel(accessibilityLabel)
-    .accessibilityIdentifier(identifier)
-  }
-}
-
 /// A grouped two-segment switch for the diff view mode (issue #66): unified | side-by-side, rendered
 /// as one control — a faint rounded track with a raised "thumb" behind the active segment — so it
 /// reads as a single switch rather than two loose buttons. Clicking a segment reports that mode.
