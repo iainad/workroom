@@ -796,19 +796,25 @@ struct WorkroomCommands: Commands {
     // disabled with no projects, so ⌘N is a silent no-op rather than an empty dialog (issue #81 D3).
     // Replaces the standard WindowGroup item so the labels are explicit.
     CommandGroup(replacing: .newItem) {
-      Button("New Workroom") { store?.requestNewWorkroomPicker = true }
+      Button("New Window") { openWindow(value: WindowSeed(id: UUID(), restore: false)) }
+      Button("New Workroom…") { store?.requestNewWorkroomPicker = true }
         .keyboardShortcut("n", modifiers: .command)
         .disabled(hasProjects != true)
-      Button("New Window") { openWindow(value: WindowSeed(id: UUID(), restore: false)) }
+      // Open workroom… (⌘O, issue #94): raises the open-existing picker (RootView observes
+      // `requestOpenWorkroomPicker`); picking a root/workroom switches + focuses it. ⌘O moved here
+      // from the Go-menu "Open in Editor" (which keeps its menu item, no shortcut). Disabled with no
+      // projects, so ⌘O is a silent no-op rather than an empty picker.
+      Button("Open Workroom…") { store?.requestOpenWorkroomPicker = true }
+        .keyboardShortcut("o", modifiers: .command)
+        .disabled(hasProjects != true)
     }
 
     CommandGroup(after: .newItem) {
+      // No key equivalent: ⌘O is File ▸ Open workroom…, ⇧⌘O is Go ▸ Open in Editor (issue #94).
+      // New Project keeps its menu item without an accelerator.
       Button("New Project…") {
         store?.requestAddProject = true
       }
-      // ⇧⌘O: plain ⌘O is now "Open in editor" (Go menu). Shift-⌘O keeps a near-conventional "open a
-      // folder" accelerator for adding a project.
-      .keyboardShortcut("o", modifiers: [.command, .shift])
 
       Divider()
 
@@ -879,13 +885,15 @@ struct WorkroomCommands: Commands {
         .keyboardShortcut("]", modifiers: .command)
         .disabled(canNavigateForward != true)
 
-      // Open the selected target in the remembered external editor (the toolbar's open button, ⌘O).
-      // Disabled when nothing's selected / its directory is missing / no editor is installed.
+      // Open the selected target in the remembered external editor (the toolbar's open button, ⇧⌘O).
+      // ⌘O is now File ▸ Open workroom… (issue #94); this took ⇧⌘O from New Project, which keeps its
+      // menu item without a shortcut. Disabled when nothing's selected / its directory is missing /
+      // no editor is installed.
       Divider()
       Button("Open in \(ExternalEditor.remembered?.name ?? "Editor")") {
         store?.openSelectedInEditor()
       }
-      .keyboardShortcut("o", modifiers: .command)
+      .keyboardShortcut("o", modifiers: [.command, .shift])
       .disabled(canOpenInEditor != true)
 
       // Scroll the focused terminal to the top/bottom of its scrollback (issue #42). ⌘↑/⌘↓ — the

@@ -52,6 +52,18 @@ final class ProjectPickerModelTests: XCTestCase {
     XCTAssertTrue(ProjectPickerModel.filtered(projects, query: "zzz").isEmpty)
   }
 
+  // MARK: fuzzy + multi-token (issue #94 follow-up)
+
+  func testFuzzySubsequenceMatch() {
+    // "aph" is a subsequence of "alpha" (a·l·p·h·a) but of neither "Bravo" nor "charlie".
+    XCTAssertEqual(
+      ProjectPickerModel.filtered(projects, query: "aph").map(\.displayName), ["alpha"])
+  }
+
+  func testFuzzyMultiTokenAllMustMatch() {
+    XCTAssertTrue(ProjectPickerModel.filtered(projects, query: "alpha zzz").isEmpty)
+  }
+
   // MARK: clamped
 
   func testClampedWithinRange() {

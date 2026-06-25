@@ -49,12 +49,13 @@ struct WindowBackgroundThemer: NSViewRepresentable {
     // which surfaces centred in the bar whenever nothing opaque (a selected workroom's tab bar /
     // trailing controls) happens to paint over it, e.g. the "Nothing selected" state on a wide/zoomed
     // window. Hiding the toolbar removes the overflow entirely; we use none of its items (the accessory
-    // replicates them), and the `.unifiedCompact` style still applies so the taller title-bar row — the
-    // breathing room above/below the controls + workroom tabs — is preserved. (Replacing the toolbar
+    // replicates them), and the `.unified` style still applies so the taller title-bar row — the
+    // breathing room above/below the controls + workroom tabs — is preserved. `.unified` (vs the
+    // shorter `.unifiedCompact`) gives a taller bar with more space beneath it. (Replacing the toolbar
     // outright crashes — SwiftUI owns it — so hide, don't replace.) `.none` separator so no hairline
     // rule appears under the bar when the terminal scrolls.
     window.toolbar?.isVisible = false
-    window.toolbarStyle = .unifiedCompact
+    window.toolbarStyle = .unified
     window.titlebarSeparatorStyle = .none
     // The title bar belongs to the chrome panel, so it takes the panel colour (a subtle step off
     // the terminal background) — title bar + tab bar + panel read as one surface, terminals as

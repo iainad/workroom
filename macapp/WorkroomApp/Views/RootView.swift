@@ -18,8 +18,8 @@ struct RootView: View {
   /// View-menu command (WorkroomCommands) toggles the same value.
   @Default(.showNotifications) private var showNotifications
 
-  /// Drives the add-project importer — set from `store.requestAddProject`, which both ⌘O and the
-  /// sidebar's Add-Project buttons raise. Hosted here (vs the sidebar) so the ⌘O command presents it
+  /// Drives the add-project importer — set from `store.requestAddProject`, which both ⇧⌘O and the
+  /// sidebar's Add-Project buttons raise. Hosted here (vs the sidebar) so the ⇧⌘O command presents it
   /// even if the sidebar is collapsed via the standard toggle.
   @State private var showImporter = false
 
@@ -65,7 +65,6 @@ struct RootView: View {
       HStack(spacing: 6) {
         LeadingTitlebarBar().titlebarInteractive()
         if !tabs.isEmpty {
-          TitlebarDivider()
           WorkroomTabBar(
             tabs: tabs, selectedID: store.selectedTargetID,
             onSelect: { selectWorkroomTab($0) },
@@ -192,6 +191,9 @@ struct RootView: View {
       // The menu command gates on `hasProjects`, so it only fires with ≥1 project; the dialog itself
       // still handles a filter that matches nothing.
       .modifier(NewWorkroomPresenter(store: store))
+      // Open Workroom picker (⌘O, issue #94): same store-flag bridge, also gated on `hasProjects`.
+      // One of several sibling `.sheet` presenters on this view — only one is ever active at a time.
+      .modifier(OpenWorkroomPresenter(store: store))
       .confirmationDialog(
         store.pendingDeletion.map { "Delete '\($0.workroom.name)'?" } ?? "Delete workroom?",
         isPresented: Binding(

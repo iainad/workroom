@@ -22,6 +22,13 @@ enum SidebarID: Hashable {
   }
 }
 
+/// Which command-palette dialog is showing (issue #94). A single `@Published` `ActivePicker?` on the
+/// store drives both presenters, so raising one dialog automatically dismisses the other.
+enum ActivePicker {
+  case new
+  case open
+}
+
 /// A workroom queued for deletion, awaiting the user's confirmation. Held on the store so
 /// both the sidebar's delete affordances and the Delete menu command (⌘⌫) raise the same
 /// confirmation prompt.
@@ -276,6 +283,12 @@ final class AppStore: ObservableObject {
   /// Set by the "New Workroom" menu command (⌘N) to raise the project-picker dialog (issue #81).
   /// RootView observes it, presents the sheet, and resets the flag — same idiom as `requestAddProject`.
   @Published var requestNewWorkroomPicker = false
+  /// Set by the "Open workroom…" menu command (⌘O, issue #94) to raise the open-existing picker.
+  /// RootView observes it, presents the sheet, and resets the flag — same idiom as the two above.
+  @Published var requestOpenWorkroomPicker = false
+  /// Which command-palette dialog is currently shown (nil = none). Single source of truth so the New
+  /// and Open Workroom presenters are mutually exclusive — opening one replaces the other (issue #94).
+  @Published var activePicker: ActivePicker?
   /// A workroom awaiting delete confirmation; setting it raises the confirmation prompt.
   @Published var pendingDeletion: PendingWorkroomDeletion?
   /// A target awaiting close confirmation (tab bar "Close"); setting it raises the close prompt.
@@ -2513,6 +2526,16 @@ final class AppStore: ObservableObject {
   /// notification jumps, so the selection + focus land together and record exactly one history entry.
   func revealTerminal(_ tabID: TerminalTab.ID, at sid: SidebarID) {
     applyLocation(target: sid, tab: tabID, recordHistory: true)
+  }
+
+  /// Open an existing root/workroom from the Open Workroom picker (⌘O, issue #94). Brings the app
+  /// forward and selects + focuses the target through the same `applyLocation` primitive the
+  /// notification path (`openTerminal`) uses — so an already-selected target just refocuses, and a
+  /// target with no live tab still selects (the detail pane opens it). `tab: nil` lets
+  /// `applyLocation` pick the target's current focused tab.
+  func openExisting(_ sid: SidebarID) {
+    NSApp.activate(ignoringOtherApps: true)
+    applyLocation(target: sid, tab: nil, recordHistory: true)
   }
 
   // MARK: Notifications

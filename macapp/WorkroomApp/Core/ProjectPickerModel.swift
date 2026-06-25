@@ -1,38 +1,34 @@
 import Foundation
 
-/// Pure filter + keyboard-highlight logic for the New Workroom project picker (issue #81), factored
-/// out of `NewWorkroomDialog` so it's unit-testable in isolation (mirrors `EdgeRevealReducer` /
-/// `TabReorderMath` — the view owns the `query` / `highlight` `@State`, this just computes).
+/// New Workroom project picker (issue #81): a thin adapter over the generic `PickerModel` that
+/// matches the query against each project's `displayName`. The shared core lives in `PickerModel`
+/// so the New / Open pickers can't drift; this preserves the project-specific call sites and keeps
+/// `ProjectPickerModelTests` exercising the behaviour through the adapter.
 ///
-///   type ──► filtered(projects, query)    → the visible rows
-///   ↑/↓  ──► move(highlight, by:, count:)  → clamped index, NO side effects (creation is click/⏎ only)
+///   type ──► filtered(projects, query)     → the visible rows
+///   ↑/↓  ──► move(highlight, by:, count:)   → clamped index, NO side effects (creation is click/⏎ only)
 ///   ⏎    ──► selection(filtered, highlight) → the project to create, or nil (empty / no-match guard)
 enum ProjectPickerModel {
-  /// Projects whose `displayName` contains `query` (case-insensitive, whitespace-trimmed). An empty
-  /// query returns every project in the original order.
+  /// Projects matching `query` by fuzzy, multi-token subsequence over `displayName` (issue #94
+  /// follow-up): the query is split on whitespace and every token must be a case-insensitive
+  /// subsequence of the name (so "ap" matches "alpha", "pro a" needs both tokens). An empty query
+  /// returns every project in the original order.
   static func filtered(_ projects: [Project], query: String) -> [Project] {
-    let q = query.trimmingCharacters(in: .whitespaces)
-    guard !q.isEmpty else { return projects }
-    return projects.filter { $0.displayName.localizedCaseInsensitiveContains(q) }
+    PickerModel.fuzzyFiltered(projects, query: query) { $0.displayName }
   }
 
-  /// Clamp `index` into a list of `count` items. Returns 0 for an empty list so callers always have a
-  /// safe value; the `selection` guard still prevents acting on an empty list.
+  /// Clamp `index` into a list of `count` items. Returns 0 for an empty list.
   static func clamped(_ index: Int, count: Int) -> Int {
-    guard count > 0 else { return 0 }
-    return min(max(index, 0), count - 1)
+    PickerModel.clamped(index, count: count)
   }
 
-  /// Move `highlight` by `delta`, clamped to `[0, count-1]`. No side effects — ↑/↓ only move the
-  /// selection; a workroom is created on click/Return, never on a keystroke.
+  /// Move `highlight` by `delta`, clamped to `[0, count-1]`. No side effects.
   static func move(highlight: Int, by delta: Int, count: Int) -> Int {
-    clamped(highlight + delta, count: count)
+    PickerModel.move(highlight: highlight, by: delta, count: count)
   }
 
-  /// The project Return/click should create: `filtered[highlight]`, or nil when the list is empty or
-  /// the index is out of range — this is the guard that makes Return a no-op on an empty/no-match list.
+  /// The project Return/click should create: `filtered[highlight]`, or nil when out of range.
   static func selection(filtered: [Project], highlight: Int) -> Project? {
-    guard filtered.indices.contains(highlight) else { return nil }
-    return filtered[highlight]
+    PickerModel.selection(filtered: filtered, highlight: highlight)
   }
 }

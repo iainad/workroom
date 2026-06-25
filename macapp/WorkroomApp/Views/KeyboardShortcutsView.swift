@@ -141,13 +141,14 @@ extension KeyboardShortcutsView {
       items: [
         ShortcutItem(label: "Back", keys: "⌘["),
         ShortcutItem(label: "Forward", keys: "⌘]"),
+        ShortcutItem(label: "Open in Editor", keys: "⇧⌘O"),
         ShortcutItem(label: "Next Notification", keys: "⇧⌘N"),
       ]),
     ShortcutGroup(
       title: "App",
       items: [
         ShortcutItem(label: "New Workroom", keys: "⌘N"),
-        ShortcutItem(label: "New Project…", keys: "⌘O"),
+        ShortcutItem(label: "Open workroom…", keys: "⌘O"),
         ShortcutItem(label: "Settings", keys: "⌘,"),
         ShortcutItem(label: "Quit", keys: "⌘Q"),
         ShortcutItem(label: "Show/Hide Workroom (global)", keys: "⌘§"),

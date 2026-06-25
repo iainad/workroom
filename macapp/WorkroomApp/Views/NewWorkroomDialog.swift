@@ -17,8 +17,10 @@ import SwiftUI
 ///   └─────────────────────────────────────┘
 struct NewWorkroomDialog: View {
   @ObservedObject var store: AppStore
+  /// Closes the dialog (the presenter owns the presentation state). Replaces `@Environment(\.dismiss)`
+  /// now that the dialog is shown as a `DialogOverlay`, not a `.sheet`.
+  let onClose: () -> Void
   private let theme = ThemeService.shared
-  @Environment(\.dismiss) private var dismiss
 
   @State private var query = ""
   /// Index into `filtered` of the keyboard-highlighted row (↑/↓ move it, ⏎ / click pick it).
@@ -32,7 +34,7 @@ struct NewWorkroomDialog: View {
   /// Pick a project: dismiss first, then kick off the (async) create+open. `createWorkroom` mounts
   /// and selects the new workroom, so the detail pane opens it — no extra wiring here.
   private func pick(_ project: Project) {
-    dismiss()
+    onClose()
     Task { await store.createWorkroom(in: project) }
   }
 
@@ -48,7 +50,7 @@ struct NewWorkroomDialog: View {
       HStack {
         Text("New Workroom").font(.headline)
         Spacer()
-        Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
+        Button("Cancel") { onClose() }.keyboardShortcut(.cancelAction)
       }
       .padding(12)
       Divider()
@@ -141,18 +143,23 @@ struct NewWorkroomDialog: View {
 /// state so RootView doesn't have to.
 struct NewWorkroomPresenter: ViewModifier {
   @ObservedObject var store: AppStore
-  @State private var isPresented = false
 
   func body(content: Content) -> some View {
     content
+      // Raising New sets `activePicker = .new`, which replaces Open if it was showing (issue #94).
       .onChange(of: store.requestNewWorkroomPicker) { _, request in
         if request {
-          isPresented = true
+          store.activePicker = .new
           store.requestNewWorkroomPicker = false
         }
       }
-      .sheet(isPresented: $isPresented) {
-        NewWorkroomDialog(store: store)
+      // A dismissable overlay (not a `.sheet`) so a click outside the dialog closes it.
+      .overlay {
+        if store.activePicker == .new {
+          DialogOverlay(onDismiss: { store.activePicker = nil }) {
+            NewWorkroomDialog(store: store, onClose: { store.activePicker = nil })
+          }
+        }
       }
   }
 }

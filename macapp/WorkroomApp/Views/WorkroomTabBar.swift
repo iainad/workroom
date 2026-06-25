@@ -27,6 +27,7 @@ struct WorkroomTabBar: View {
 
   @State private var hoveredID: SidebarID?
   @State private var addHovering = false
+  @State private var openHovering = false
 
   // Drag-to-reorder: the order is frozen during a drag (the dragged chip follows the cursor, the rest
   // slide aside to open a gap), committed once on drop — mirrors `TerminalTabStrip`.
@@ -104,23 +105,21 @@ struct WorkroomTabBar: View {
           .animation(
             isDragging || reduceMotion ? nil : .easeInOut(duration: 0.18), value: offsetX)
         }
-        // A divider sets the "new workroom" (+) button apart from the last tab. Hidden when the last
-        // tab is framed on its own — hovered (its wash) — or in a split group (the `splitWell` bracket
-        // already frames it, so a divider would double against its rounded edge). The focused tab is
-        // just underlined now, so it keeps this divider. Toggled via OPACITY (not removed) so the "+"
-        // never shifts as the hover comes and goes. Negative leading trims the gap to the last tab to
-        // ~2pt (HStack `tabSpacing` 4 − 2), matching the inter-chip dividers. Mirrors the terminal strip.
+        // A divider sets the "new workroom" (+) button apart from the last tab. Hidden only when the
+        // last tab is in a split group (the `splitWell` bracket already frames it, so a divider would
+        // double against its rounded edge) — hover no longer hides it (tabs are just underlined now).
+        // Toggled via OPACITY (not removed) so the "+" never shifts. Negative leading trims the gap to
+        // the last tab to ~2pt (HStack `tabSpacing` 4 − 2), matching the inter-chip dividers.
         Rectangle()
           .fill(ThemeService.shared.tokens.border)
           .frame(width: 1, height: 16)
           .padding(.leading, -2)
           .padding(.trailing, 4)
           .opacity(
-            tabs.last.map {
-              $0.sid != hoveredID && !splitMemberSet.contains($0.sid)
-            } ?? true ? 1 : 0)
-        // The "new workroom" (+) button, immediately after the last chip (scrolls with them) — mirrors
-        // the terminal strip's `addTerminalButton`.
+            tabs.last.map { !splitMemberSet.contains($0.sid) } ?? true ? 1 : 0)
+        // Open-workroom + new-workroom buttons, immediately after the last chip (scroll with them).
+        // Open sits to the left of the "+" and shares its exact size/style.
+        openWorkroomButton
         addWorkroomButton
       }
       .background(alignment: .leading) { splitWell }
@@ -139,18 +138,20 @@ struct WorkroomTabBar: View {
     .frame(maxWidth: .infinity, alignment: .leading)
   }
 
-  /// Whether to draw a hairline on the leading edge of tab `index`, separating it from its left
-  /// neighbour. A divider sits between every adjacent pair, dropped only beside a tab that's already
-  /// framed on its own: the **hovered** tab (its wash) — the focused tab is just underlined now, so it
-  /// keeps its dividers. Also dropped at a split group's **outer** boundary (exactly one neighbour is a
-  /// member): the `splitWell` bracket already separates the group there, so a hairline would double up
-  /// against its rounded border. Interior member↔member boundaries keep theirs. Never mid-drag.
+  /// Whether to draw a hairline on the leading edge of tab `index`. Every tab gets a leading divider
+  /// (including the first — so all tabs are bracketed left and right, the right one being the next
+  /// tab's leading hairline or the trailing "+" divider). The exception is a split group: it only
+  /// divides **within** itself, so a hairline is dropped at the group's **outer** boundary — the first
+  /// member's leading edge (index 0 member, or a member following a non-member) and, symmetrically, a
+  /// non-member following a member. The `splitWell` bracket separates the group there instead. Interior
+  /// member↔member boundaries keep their hairline. Never mid-drag.
   private func showsLeadingSeparator(at index: Int) -> Bool {
-    guard index > 0, draggingID == nil else { return false }
-    let here = tabs[index].sid
-    let prev = tabs[index - 1].sid
-    if hoveredID == here || hoveredID == prev { return false }
+    guard draggingID == nil else { return false }
     let members = splitMemberSet
+    let here = tabs[index].sid
+    // First tab: a leading divider unless it's the leading (outer) edge of a split group.
+    guard index > 0 else { return !members.contains(here) }
+    let prev = tabs[index - 1].sid
     if members.contains(here) != members.contains(prev) { return false }
     return true
   }
@@ -260,6 +261,31 @@ struct WorkroomTabBar: View {
     .accessibilityLabel("New workroom")
     .accessibilityIdentifier("NewWorkroom")
   }
+
+  /// The "open workroom" button — raises the Open Workroom picker (`requestOpenWorkroomPicker`, the
+  /// same flag File ▸ Open workroom… / ⌘O sets). Sits just left of the "+" and shares its exact
+  /// size/style (a hover-washed rounded glyph).
+  private var openWorkroomButton: some View {
+    Button {
+      store.requestOpenWorkroomPicker = true
+    } label: {
+      Image(systemName: "chevron.down")
+        .font(.system(size: 11))
+        .foregroundStyle(.secondary)
+        .padding(4)
+        .background(
+          RoundedRectangle(cornerRadius: 5)
+            .fill(ThemeService.shared.tokens.hover.opacity(openHovering ? 1 : 0))
+        )
+        .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .onHover { openHovering = $0 }
+    .padding(.leading, 2)
+    .help("Open workroom (⌘O)")
+    .accessibilityLabel("Open workroom")
+    .accessibilityIdentifier("OpenWorkroom")
+  }
 }
 
 /// A single Workrooms View tab chip: a leading glyph, the project name, then run / unread / active
@@ -362,15 +388,8 @@ private struct WorkroomTabChip: View {
     }
     .padding(.horizontal, 14)
     .padding(.vertical, 7)
-    // The focused tab is marked by an accent underline (below), not a fill or border — so the chip
-    // background carries only the faint hover wash on a non-active tab; a solid lifted chip while
-    // dragging.
-    .background {
-      RoundedRectangle(cornerRadius: 6)
-        .fill(!isActive && isHovered ? theme.tokens.hover : Color.clear)
-        // Fade the hover wash in/out instead of snapping it on.
-        .animation(reduceMotion ? nil : .easeInOut(duration: 0.12), value: isHovered)
-    }
+    // Both the focused tab and a hovered tab are marked by an accent underline (below), not a fill or
+    // border — so an idle chip has no background wash; a solid lifted chip while dragging.
     .background {
       RoundedRectangle(cornerRadius: 6)
         .fill(.thickMaterial)
@@ -396,17 +415,18 @@ private struct WorkroomTabChip: View {
           .offset(x: -2)
       }
     }
-    // Focused indicator: an accent underline along the chip's base — no fill, no border. Placed before
-    // the running underline so a working workroom's flowing bar draws over it. An overlay so it never
-    // enters the width the drag gap math measures.
+    // Focused/hover indicator: an accent underline along the chip's base — no fill, no border. A
+    // hovered tab gets the same underline as the selected one, faded in/out on hover. Placed before the
+    // running underline so a working workroom's flowing bar draws over it. An overlay so it never
+    // enters the drag-gap width.
     .overlay(alignment: .bottom) {
-      if isActive {
-        RoundedRectangle(cornerRadius: 0.5)
-          .fill(theme.tokens.accent)
-          .frame(height: 1)
-          .padding(.horizontal, 6)
-          .padding(.bottom, 1)
-      }
+      RoundedRectangle(cornerRadius: 0.5)
+        .fill(theme.tokens.accent)
+        .frame(height: 1)
+        .padding(.horizontal, 6)
+        .padding(.bottom, 3)
+        .opacity(isActive || isHovered ? 1 : 0)
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.12), value: isHovered)
     }
     // A flowing underline along the chip's base while any of this workroom's terminals is working
     // (OSC 9;4) — the same indeterminate-progress animation as the terminal tabs (issue #28). An
@@ -415,7 +435,7 @@ private struct WorkroomTabChip: View {
       if terminals.isRunning(forTargetID: target.id) {
         RunningUnderline()
           .padding(.horizontal, 6)
-          .padding(.bottom, 1)
+          .padding(.bottom, 3)
       }
     }
     .contentShape(Rectangle())
