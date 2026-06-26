@@ -45,7 +45,7 @@ struct TitlebarControlsBar: View {
         }
       }
       .disabled(notifications.total == 0)
-      .help(notifications.total > 0 ? "Open oldest notification" : "No notifications")
+      .help(notifications.total > 0 ? "Open oldest notification (⇧⌘N)" : "No notifications")
       .accessibilityLabel(Self.bellLabel(unread: notifications.total))
       .accessibilityIdentifier("titlebar.notifications")
 

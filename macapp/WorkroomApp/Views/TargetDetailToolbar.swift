@@ -17,7 +17,7 @@ struct OpenInControl: View {
     if !editors.isEmpty {
       let remembered = editors.first { $0.id == lastEditorID } ?? editors[0]
       // Two SEPARATE controls in one tight group: an icon Button that opens in the remembered editor
-      // on a single click (also ⌘O / the Go-menu item), and a chevron Menu to pick a different one.
+      // on a single click (also ⇧⌘O / the Go-menu item), and a chevron Menu to pick a different one.
       // Both inherit the bar's `ToolbarIconButtonStyle`, so each gets its own hover well. Negative
       // spacing pulls the two 22pt-min wells together so the small chevron sits snug against the icon
       // (each well only paints on its own hover, so the slight overlap never shows two at once).
@@ -32,7 +32,7 @@ struct OpenInControl: View {
             }
             .frame(width: 16, height: 16)
         }
-        .help("Open in \(remembered.name) (⌘O)")
+        .help("Open in \(remembered.name) (⇧⌘O)")
         .accessibilityLabel("Open in \(remembered.name)")
 
         Menu {
@@ -83,7 +83,7 @@ struct RunControls: View {
         } label: {
           Image(systemName: "stop.fill")
         }
-        .help("Stop the run command (again to force-quit)")
+        .help("Stop the run command (⇧⌘R) — again to force-quit")
         .accessibilityLabel("Stop")
         .accessibilityIdentifier("runCommand.stop")
 
@@ -92,7 +92,7 @@ struct RunControls: View {
         } label: {
           Image(systemName: "arrow.clockwise")
         }
-        .help("Restart the run command")
+        .help("Restart the run command (⌥⌘R)")
         .accessibilityLabel("Restart")
         .accessibilityIdentifier("runCommand.restart")
       } else {
@@ -103,7 +103,7 @@ struct RunControls: View {
         } label: {
           Image(systemName: "play.fill")
         }
-        .help("Run the project command")
+        .help("Run the project command (⌘R)")
         .accessibilityLabel("Run")
         .accessibilityIdentifier("runCommand.run")
       }

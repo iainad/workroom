@@ -253,7 +253,7 @@ struct WorkroomTabBar: View {
     .buttonStyle(.plain)
     .onHover { addHovering = $0 }
     .padding(.leading, 2)
-    .help("New workroom")
+    .help("New workroom (⌘N)")
     .accessibilityLabel("New workroom")
     .accessibilityIdentifier("NewWorkroom")
   }

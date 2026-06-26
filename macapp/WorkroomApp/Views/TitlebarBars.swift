@@ -72,7 +72,7 @@ struct LeadingTitlebarBar: View {
       } label: {
         Image(systemName: "sidebar.left")
       }
-      .help(store.sidebarVisible ? "Hide sidebar" : "Show sidebar")
+      .help(store.sidebarVisible ? "Hide sidebar (⌃⌘S)" : "Show sidebar (⌃⌘S)")
       .accessibilityLabel("Toggle sidebar")
       .accessibilityIdentifier("toolbar.toggleSidebar")
       // Hovering this button (while the sidebar is collapsed) peeks the sidebar via the edge-reveal
@@ -90,7 +90,7 @@ struct LeadingTitlebarBar: View {
       } label: {
         Image(systemName: "chevron.left")
       }
-      .help("Back")
+      .help("Back (⌘[)")
       .accessibilityLabel("Back")
       .disabled(!store.canGoBack)
 
@@ -99,7 +99,7 @@ struct LeadingTitlebarBar: View {
       } label: {
         Image(systemName: "chevron.right")
       }
-      .help("Forward")
+      .help("Forward (⌘])")
       .accessibilityLabel("Forward")
       .disabled(!store.canGoForward)
     }

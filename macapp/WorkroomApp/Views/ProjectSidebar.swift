@@ -539,9 +539,9 @@ struct ProjectSidebar: View {
 
       Spacer()
 
-      // Add Project, bottom-right. ⌘O is bound on the File-menu command (WorkroomCommands). Routes
-      // through the store's request flag so the importer (re-homed to RootView, issue #23 OV1) can
-      // present even when this sidebar is collapsed in Workrooms View.
+      // Add Project, bottom-right. No key equivalent — File ▸ New Project… lost ⌘O to Open Workroom…
+      // (issue #94). Routes through the store's request flag so the importer (re-homed to RootView,
+      // issue #23 OV1) can present even when this sidebar is collapsed in Workrooms View.
       Button {
         store.requestAddProject = true
       } label: {
@@ -556,7 +556,7 @@ struct ProjectSidebar: View {
       }
       .buttonStyle(.plain)
       .onHover { addProjectHovering = $0 }
-      .help("Add a project folder (⌘O)")
+      .help("Add a project folder")
       .accessibilityLabel("Add Project")
       .accessibilityIdentifier("AddProject")
     }

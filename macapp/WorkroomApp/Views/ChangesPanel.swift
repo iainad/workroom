@@ -24,7 +24,8 @@ struct RightInspector: View {
         AnyView(
           SectionHeader(
             title: "Changes", collapsed: $store.changesSectionCollapsed,
-            indicator: changesIndicator, indicatorLabel: changesIndicatorLabel
+            indicator: changesIndicator, indicatorLabel: changesIndicatorLabel,
+            shortcut: "⌥⌘C"
           ) {
             InspectorHeaderButton(systemImage: "arrow.clockwise", help: "Refresh workroom status") {
               store.refreshWorkroomStatuses(force: true)
@@ -33,7 +34,8 @@ struct RightInspector: View {
           .environmentObject(store).environmentObject(notifications)),
         AnyView(
           SectionHeader(
-            title: "Pull Request", collapsed: $store.prSectionCollapsed
+            title: "Pull Request", collapsed: $store.prSectionCollapsed,
+            shortcut: "⌥⌘P"
           ) {
             prHeaderAccessory
           }
@@ -41,7 +43,8 @@ struct RightInspector: View {
         AnyView(
           SectionHeader(
             title: "Notifications", collapsed: $store.notificationsSectionCollapsed,
-            indicator: notificationsIndicator, indicatorLabel: notificationsIndicatorLabel
+            indicator: notificationsIndicator, indicatorLabel: notificationsIndicatorLabel,
+            shortcut: "⌥⌘N"
           ) {
             InspectorHeaderButton(
               systemImage: "trash", help: "Clear notifications", destructive: true,

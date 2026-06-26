@@ -204,7 +204,7 @@ struct TerminalTabStrip: View {
     .buttonStyle(.plain)
     .onHover { addHovering = $0 }
     .padding(.leading, 2)
-    .help("New terminal")
+    .help("New terminal (⌘T)")
     .accessibilityLabel("New terminal")
     .accessibilityIdentifier("NewTerminal")
   }
@@ -236,7 +236,7 @@ struct TerminalTabStrip: View {
           .disabled(descriptor.change == .deleted)
         }
         TabToolbarButton(
-          systemImage: "square.split.2x1", help: "Split right",
+          systemImage: "square.split.2x1", help: "Split right (⌘D)",
           accessibilityLabel: "Split right", identifier: "tab.toolbar.splitRight"
         ) {
           sessions.splitTab(active.id, on: .right, for: target)

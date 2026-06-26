@@ -306,6 +306,9 @@ struct SectionHeader<Accessory: View>: View {
   @Binding var collapsed: Bool
   var indicator: AnyView = AnyView(EmptyView())
   var indicatorLabel: String = ""
+  /// The View-menu shortcut that reveals this section (e.g. "⌥⌘C"), shown in the header tooltip for
+  /// discoverability. Nil for sections with no command equivalent.
+  var shortcut: String? = nil
   @ViewBuilder var accessory: () -> Accessory
 
   var body: some View {
@@ -333,7 +336,10 @@ struct SectionHeader<Accessory: View>: View {
         + (indicatorLabel.isEmpty ? "" : ", \(indicatorLabel)")
     )
     .accessibilityIdentifier("inspector.header.\(title)")
-    .help(collapsed ? "Expand \(title)" : "Collapse \(title)")
+    .help(
+      (collapsed ? "Expand \(title)" : "Collapse \(title)")
+        + (shortcut.map { " (\($0))" } ?? "")
+    )
     .frame(maxWidth: .infinity, maxHeight: .infinity)
     .background(ThemeService.shared.tokens.surface)
     .overlay(alignment: .trailing) {
