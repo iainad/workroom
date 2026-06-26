@@ -34,6 +34,28 @@ struct WindowDragBackground: NSViewRepresentable {
   }
 }
 
+/// Toggles the window's `isMovable` to gate AppKit's automatic title-bar drag. The custom title bar
+/// (issue #23) is drawn in the window's full-size content, where AppKit's title-bar drag ignores the
+/// content views' `mouseDownCanMoveWindow` (verified) — so a drag anywhere in the bar, including on a
+/// workroom tab chip, moves the whole *window* and steals the chip's reorder `DragGesture`. `isMovable`
+/// is the one lever that actually disables that drag, but it's window-wide, so we flip it by hover:
+/// the bar passes `movable = false` only while the cursor is over (or dragging) a chip, and `true`
+/// otherwise — so the chips reorder while the empty bar still drags the window. Hover fires before the
+/// press, so the flag is already set when the drag begins.
+struct WindowMovableController: NSViewRepresentable {
+  let movable: Bool
+
+  func makeNSView(context: Context) -> NSView {
+    let view = NSView(frame: .zero)
+    DispatchQueue.main.async { [weak view] in view?.window?.isMovable = movable }
+    return view
+  }
+
+  func updateNSView(_ nsView: NSView, context: Context) {
+    nsView.window?.isMovable = movable
+  }
+}
+
 /// The single unified title-bar toolbar, split into a leading and a trailing half hosted as
 /// `NSTitlebarAccessoryViewController`s (see `TitlebarAccessory`). They sit in the window's *one*
 /// title-bar row — the leading half right after the traffic lights, the trailing half at the

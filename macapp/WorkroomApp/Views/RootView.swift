@@ -400,8 +400,12 @@ struct RootView: View {
   }
 
   /// The content-local point for a chip drag at `global`, or nil when the cursor is still over the bar
-  /// (→ a reorder, not a drop-into-content).
+  /// (→ a reorder, not a drop-into-content). The detail content frame spans the full window height —
+  /// its top sits *under* the title bar — so a point still within the title-bar strip is a reorder, not
+  /// a drop-into-pane (without this guard every horizontal reorder drag, staying at chip height, would
+  /// be mistaken for a split — the chips could never be reordered).
   private func workroomChipLocal(_ global: CGPoint) -> CGPoint? {
+    guard global.y >= WorkroomTitlebar.height else { return nil }
     guard detailContentFrame.contains(global) else { return nil }
     return CGPoint(x: global.x - detailContentFrame.minX, y: global.y - detailContentFrame.minY)
   }

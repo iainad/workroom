@@ -132,6 +132,10 @@ struct WorkroomTabBar: View {
     // height so the parent title-bar HStack centres the bar on the traffic-light line.
     .fixedSize(horizontal: false, vertical: true)
     .frame(maxWidth: .infinity, alignment: .leading)
+    // Disable AppKit's title-bar window drag only while the cursor is over (or dragging) a chip, so a
+    // chip drag reorders instead of moving the window — the empty bar still drags it. See
+    // `WindowMovableController`.
+    .background(WindowMovableController(movable: draggingID == nil && hoveredID == nil))
   }
 
   /// Whether to draw a hairline on the leading edge of tab `index`. Every tab gets a leading divider
