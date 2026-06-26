@@ -2279,19 +2279,26 @@ final class AppStore: ObservableObject {
     }
   }
 
-  /// Confirm closing `count` tab(s), then run `proceed` on confirm. Owns the modal: the next-runloop
-  /// defer (so the ⌘W key-equivalent / ✕ mouse-tracking event finishes draining first, else the
-  /// modal doesn't reliably become key and the confirming Return is dropped — issue #54), the "Don't
-  /// ask me again" suppression (writes the same `confirmOnCloseTerminal` key the Settings checkbox
-  /// and File-menu toggle bind to), and singular/plural copy. Says "tab(s)", not "terminal", because
-  /// diff/content tabs close through here too. Callers decide *whether* a confirm is needed
-  /// (`closeNeedsConfirm`) — it can't be inferred from `count`. Guarded against reentrant double fire.
+  /// Confirm closing `count` tab(s), then run `proceed` on confirm. Owns the modal: a window-modal
+  /// sheet attached to the key window, the "Don't ask me again" suppression (writes the same
+  /// `confirmOnCloseTerminal` key the Settings checkbox and File-menu toggle bind to), and
+  /// singular/plural copy. Says "tab(s)", not "terminal", because diff/content tabs close through
+  /// here too. Callers decide *whether* a confirm is needed (`closeNeedsConfirm`) — it can't be
+  /// inferred from `count`. Guarded against reentrant double fire.
+  ///
+  /// A *sheet* (not a free-floating `runModal()` alert) is what makes the confirming Return reliable:
+  /// the sheet is hosted by a window that's already key, so its default "Close" button owns Return
+  /// with no race. The old app-modal alert had to *become* key after `runModal()` spun up, which lost
+  /// the keystroke whenever the triggering event (the ⌘W key-equivalent / the ✕'s mouse tracking) was
+  /// still draining; deferring the alert one runloop tick narrowed that window but couldn't close it,
+  /// so Return was still dropped intermittently (issues #54, #100). We still defer one tick so the
+  /// triggering event unwinds before the sheet drops, then fall back to an app-modal alert only when
+  /// there's no window to host the sheet.
   private func confirmCloseThen(count: Int, title: String?, then proceed: @escaping () -> Void) {
     guard !isPresentingCloseConfirm else { return }
     isPresentingCloseConfirm = true
     DispatchQueue.main.async { [weak self] in
       guard let self else { return }
-      defer { self.isPresentingCloseConfirm = false }
       let alert = NSAlert()
       alert.messageText =
         count == 1 ? "Close ‘\(title ?? "this tab")’?" : "Close \(count) tabs?"
@@ -2303,11 +2310,21 @@ final class AppStore: ObservableObject {
       alert.addButton(withTitle: "Cancel")
       alert.showsSuppressionButton = true
       alert.suppressionButton?.title = "Don't ask me again"
-      let confirmed = alert.runModal() == .alertFirstButtonReturn
-      if alert.suppressionButton?.state == .on {
-        Defaults[.confirmOnCloseTerminal] = false
+      // Shared resolution for both the sheet and the no-window fallback: clear the reentrancy guard,
+      // honour "Don't ask me again", and proceed only on the default Close button.
+      let resolve: (NSApplication.ModalResponse) -> Void = { [weak self] response in
+        guard let self else { return }
+        self.isPresentingCloseConfirm = false
+        if alert.suppressionButton?.state == .on {
+          Defaults[.confirmOnCloseTerminal] = false
+        }
+        if response == .alertFirstButtonReturn { proceed() }
       }
-      if confirmed { proceed() }
+      if let window = NSApp.keyWindow ?? NSApp.mainWindow {
+        alert.beginSheetModal(for: window, completionHandler: resolve)
+      } else {
+        resolve(alert.runModal())
+      }
     }
   }
 
