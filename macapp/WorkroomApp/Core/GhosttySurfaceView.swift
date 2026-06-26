@@ -18,6 +18,13 @@ final class GhosttySurfaceView: NSView {
   /// runtime callbacks (via `ghostty_surface_userdata`) read it; all writes happen on the main thread.
   nonisolated(unsafe) private(set) var surface: ghostty_surface_t?
 
+  /// Set once `tearDown()` runs — the view is dead and must NEVER re-spawn its surface. SwiftUI/AppKit
+  /// can re-mount a still-referenced view after its tab closed (a `closeTab` teardown racing a pending
+  /// view update); without this, `viewDidMoveToWindow` → `createSurface` would relaunch the command on
+  /// the dead view, spawning an UNTRACKED duplicate the app can't stop — for a run command that's a
+  /// phantom dev server orphaned on its port ("A server is already running" next start; issue #7).
+  private(set) var isTornDown = false
+
   /// The cwd the surface spawned its shell in. `internal` (not `private`) so tests can assert it
   /// (e.g. the quick terminal at `~/`).
   let workingDirectory: String
@@ -62,6 +69,12 @@ final class GhosttySurfaceView: NSView {
   /// them without a confirm, since the process is gone); ordinary tabs leave it nil and keep
   /// forwarding keys / staying in place after the shell exits (issue #7).
   var onCloseRequested: (() -> Void)?
+  /// True while this run surface is stopped but kept open under the supervisor (issue #7): the
+  /// supervisor process is still alive (so `processHasExited` is false), but the user's command has
+  /// exited and the supervisor printed "Process exited. Press any key to close the terminal.". A key
+  /// then closes the tab via `onCloseRequested`, matching libghostty's native wait_after_command UX.
+  /// The host flips this true on a stop/exit and false on a (re)start.
+  var runStoppedAwaitingClose = false
   /// The user pressed ⌃C in this (run) surface. The host marks the run interrupted so the imminent
   /// child-exit reads as a user-initiated stop (no failure toast/icon) regardless of exit code
   /// (issue #79). Fired from `keyDown` BEFORE the keystroke is forwarded — the surface still sends
@@ -154,10 +167,16 @@ final class GhosttySurfaceView: NSView {
 
   // MARK: Surface lifecycle (A1)
 
+  /// Whether a (re-)spawn should proceed now. One predicate gates every entry into `createSurface`
+  /// (window mount, background `ensureSurfaceCreated`, deferred `setFrameSize`/`layout`) so no path can
+  /// slip through: a torn-down view must NEVER re-spawn (issue #7 phantom respawn — SwiftUI can re-mount
+  /// a closed run tab's view, which would relaunch its command as an untracked dev server orphaned on
+  /// its port), a test view (`spawnsSurface == false`) stays surface-less, and an already-spawned one
+  /// isn't duplicated. Exposed so the lifecycle guards are unit-testable without a live libghostty surface.
+  var canSpawnSurface: Bool { !isTornDown && spawnsSurface && surface == nil }
+
   private func createSurface() {
-    // Test seam: mount the view without a live libghostty surface (see `spawnsSurface`).
-    guard spawnsSurface else { return }
-    guard surface == nil, let app = GhosttyApp.shared.app else { return }
+    guard canSpawnSurface, let app = GhosttyApp.shared.app else { return }
     guard let backingSize = backingPixelSize() else {
       pendingSurfaceCreation = true
       return
@@ -256,6 +275,7 @@ final class GhosttySurfaceView: NSView {
   /// Explicit teardown on close/delete (plan A1). Clears callbacks first so a late libghostty
   /// callback resolving this view via `userdata` can't invoke a dangling closure, then frees.
   func tearDown() {
+    isTornDown = true  // dead view: block any later re-spawn (issue #7 phantom respawn)
     setHandCursor(false)
     onActivity = nil
     onOpenURL = nil
@@ -660,7 +680,7 @@ final class GhosttySurfaceView: NSView {
     // libghostty shows the prompt but never emits a close action here, so close the tab ourselves on
     // the next key. Only run tabs wire `onCloseRequested`; ordinary tabs fall through and forward
     // keys as usual (a finished login shell just keeps its pane) (issue #7).
-    if let onCloseRequested, processHasExited {
+    if let onCloseRequested, processHasExited || runStoppedAwaitingClose {
       onCloseRequested()
       return
     }
