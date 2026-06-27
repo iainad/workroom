@@ -201,19 +201,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         Task { @MainActor in WindowRegistry.shared.keyStore?.restartSelectedRunCommand() }
         return nil
       }
-      // ⌘G / ⇧⌘G: next / previous scrollback-search match — but ONLY while the focused terminal's find
-      // bar is open. Caught here (not as a menu key-equivalent) so that with no active search the key
-      // passes straight through to the terminal: ⌘G is an ordinary app/shell key. `navigateFocused
-      // TerminalSearch` returns false when no search is open, so the event isn't consumed then.
-      if flags == .command || flags == [.command, .shift],
-        event.charactersIgnoringModifiers?.lowercased() == "g",
-        MainActor.assumeIsolated({
-          WindowRegistry.shared.keyStore?.navigateFocusedTerminalSearch(forward: flags == .command)
-            ?? false
-        })
-      {
-        return nil
-      }
       // ⌥⌘←/→: previous/next terminal tab (issue #29). Caught here like ⌘1–9 so it fires before the
       // terminal; consumed when it switches a tab, and reserved in `isAppShortcut` anyway so it never
       // reaches the terminal as input. (⌥⌘↑/↓ are unbound — they pass through to the terminal.)
@@ -793,18 +780,20 @@ struct WorkroomCommands: Commands {
     }
 
     CommandGroup(after: .pasteboard) {
-      // Edit ▸ Find: scrollback search of the focused terminal. ⌘F opens the find bar (reserved in
-      // GhosttySurfaceView.isAppShortcut so the key-equivalent wins over the terminal). Find Next /
-      // Previous carry NO key equivalent here — ⌘G / ⇧⌘G are caught by the AppDelegate monitor so they
-      // only act while the bar is open and otherwise pass through to the terminal; the items are shown
-      // for discoverability (like the monitor-driven tab-cycle items). All disabled with no terminal.
+      // Edit ▸ Find: scrollback search of the focused terminal. ⌘F opens the find bar; ⌘G / ⇧⌘G step
+      // to the next / previous match (wrapping at the ends — see TerminalSearchModel.navigate). All
+      // three are reserved in GhosttySurfaceView.isAppShortcut so the menu key-equivalent wins over
+      // the terminal even while a TUI in an enhanced keyboard mode (Claude/Codex) is running. Find
+      // Next / Previous no-op when no find bar is open. All disabled with no terminal.
       Divider()
       Button("Find…") { store?.startFindInFocusedTerminal() }
         .keyboardShortcut("f", modifiers: .command)
         .disabled(hasTerminal != true)
       Button("Find Next") { store?.navigateFocusedTerminalSearch(forward: true) }
+        .keyboardShortcut("g", modifiers: .command)
         .disabled(hasTerminal != true)
       Button("Find Previous") { store?.navigateFocusedTerminalSearch(forward: false) }
+        .keyboardShortcut("g", modifiers: [.command, .shift])
         .disabled(hasTerminal != true)
 
       // Edit menu: toggle copy-on-select (checkmark reflects state). A divider sets it apart

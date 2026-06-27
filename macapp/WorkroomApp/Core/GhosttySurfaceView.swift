@@ -841,20 +841,20 @@ final class GhosttySurfaceView: NSView {
     // Menu commands that pair Command with Shift or Option fail the command-only guard below, so
     // reserve them explicitly. Without this they reach the terminal, and a TUI in an enhanced
     // keyboard mode (Claude/Codex) consumes the keystroke so the menu key-equivalent never fires.
-    // ⇧⌘D = Split Down; ⇧⌘K = Theme picker (issue #36/#53); ⇧⌘L = dark/light toggle (issue #57);
-    // ⇧⌘N = Next Notification; ⇧⌘R = Stop run; ⌥⌘N = Notifications toggle; ⌥⌘R = Restart run (issue #7).
+    // ⇧⌘D = Split Down; ⇧⌘G = Find Previous; ⇧⌘K = Theme picker (issue #36/#53); ⇧⌘L = dark/light
+    // toggle (issue #57); ⇧⌘N = Next Notification; ⇧⌘R = Stop run; ⌥⌘N = Notifications toggle;
+    // ⌥⌘R = Restart run (issue #7).
     if flags == [.command, .shift] {
-      return key == "d" || key == "k" || key == "l" || key == "n" || key == "r"
+      return key == "d" || key == "g" || key == "k" || key == "l" || key == "n" || key == "r"
     }
     if flags == [.command, .option] { return key == "n" || key == "r" }
     guard flags == .command else { return false }
     if ("1"..."9").contains(ch) { return true }  // focus tab N
     // ⌘N is New Window (issue #70); ⌘T/⌘W/⌘O/⌘D are real menu commands; ⌘Q/⌘H/⌘M/⌘, are system
     // standards; ⌘[ / ⌘] are Back/Forward navigation (issue #26); ⌘R is Run (issue #7); ⌘F opens the
-    // scrollback find bar — all reserved so the menu key-equivalent fires instead of being swallowed
-    // by the terminal. (⌘G/⇧⌘G for find next/previous are NOT reserved here: the AppDelegate monitor
-    // only consumes them while the find bar is open, so they pass through to the terminal otherwise.)
-    return ["n", "t", "w", "o", "d", "q", "h", "m", ",", "[", "]", "r", "f"].contains(key)
+    // scrollback find bar and ⌘G / ⇧⌘G step through matches — all reserved so the menu key-equivalent
+    // fires instead of being swallowed by the terminal (a no-op via the menu when no find bar is open).
+    return ["n", "t", "w", "o", "d", "q", "h", "m", ",", "[", "]", "r", "f", "g"].contains(key)
   }
 
   /// ⌘↑ / ⌘↓ jump the viewport to the top / bottom of the scrollback (issue #42). libghostty has no

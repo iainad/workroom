@@ -2472,9 +2472,10 @@ final class AppStore: ObservableObject {
   /// Open the scrollback find bar on the focused terminal (⌘F / Edit ▸ Find).
   func startFindInFocusedTerminal() { focusedSurface?.startSearch() }
 
-  /// Navigate the focused terminal's *active* find to the next/previous match (⌘G / ⇧⌘G). Returns
-  /// `true` only when a search is open, so the AppDelegate monitor consumes the key then but lets it
-  /// reach the terminal otherwise — ⌘G is an ordinary key with no find bar showing.
+  /// Navigate the focused terminal's *active* find to the next/previous match (⌘G / ⇧⌘G), wrapping
+  /// at the ends (the wrap is synthesized in `TerminalSearchModel.navigate` — the engine doesn't
+  /// wrap). Driven by the Edit ▸ Find Next/Previous menu key-equivalents; a no-op (returns `false`)
+  /// when no find bar is open. Still `@discardableResult` for the menu-button call site.
   @discardableResult
   func navigateFocusedTerminalSearch(forward: Bool) -> Bool {
     guard let surface = focusedSurface, surface.searchModel.isActive else { return false }

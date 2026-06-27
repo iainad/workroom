@@ -72,6 +72,9 @@ struct TerminalSearchBar: View {
       // `TerminalContainerView.applyFocus` also yields to us while the search is active, so the
       // terminal surface doesn't steal first responder back.
       .onAppear { DispatchQueue.main.async { fieldFocused = true } }
+      // ⌘F while the bar is already open bumps `focusRequest`; pull focus back to the field (the bar
+      // is already on screen, so `onAppear` won't fire again). Same one-runloop defer as onAppear.
+      .onChange(of: model.focusRequest) { DispatchQueue.main.async { fieldFocused = true } }
       // Esc closes even when focus sits on a button rather than the field.
       .onExitCommand { model.end() }
     }

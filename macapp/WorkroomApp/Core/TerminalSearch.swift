@@ -47,6 +47,40 @@ enum TerminalSearchAction: Equatable {
     case .end: return "end_search"
     }
   }
+
+  /// The `navigate_search` step(s) for one Find-Next / Find-Previous press (⌘G / ⇧⌘G), given the
+  /// engine's current `selected` match index and the `total` match count. `selected` is libghostty's
+  /// raw **0-based** index, but in the engine's own order it counts **newest→oldest** (index `0` is
+  /// the bottom-most match, `total - 1` the top-most); `< 0` means no match is selected. Pure, so the
+  /// direction + wrap logic is unit-tested.
+  ///
+  /// **Direction is inverted from the engine's:** Ghostty's `navigate_search:next` steps newest→oldest
+  /// (up the scrollback), which is the opposite of the editor convention users expect from "Find Next"
+  /// (the topmost match first, then *downward*). So Find Next emits engine `previous` and Find Previous
+  /// emits engine `next`. The bar's 1-based position is `total - selected` (see `matchSummary`), so it
+  /// counts up as Find Next walks down the screen.
+  ///
+  /// **Wrap is synthesized host-side:** libghostty's `navigate_search` does NOT wrap — the bundled
+  /// Ghostty (1.3.1) stops dead at the ends ("we don't wrap or reset the match currently"). At an end
+  /// we step the other way across the remaining (total-1) matches to reach the opposite end. The
+  /// engine's search thread drains the whole burst in one mailbox pass and notifies only the *net*
+  /// selection once, so it collapses into a single selection + render — no flicker. With no current
+  /// selection (`selected < 0`) a single step lets the engine pick an end itself (and it is NOT
+  /// mistaken for an end match, so it never wraps).
+  static func navigationPlan(findNext: Bool, selected: Int, total: Int) -> [Direction] {
+    guard total > 0 else { return [] }
+    if findNext {
+      // Find Next == engine `previous` (steps toward index 0, the bottom). At index 0 (the last
+      // Find-Next position) → wrap to the top (index total-1) via `next` steps.
+      if total > 1 && selected == 0 { return Array(repeating: .next, count: total - 1) }
+      return [.previous]
+    } else {
+      // Find Previous == engine `next` (steps toward index total-1, the top). At index total-1 (the
+      // last Find-Previous position) → wrap to the bottom (index 0) via `previous` steps.
+      if total > 1 && selected == total - 1 { return Array(repeating: .previous, count: total - 1) }
+      return [.next]
+    }
+  }
 }
 
 // MARK: - Engine → app (pure)
@@ -60,8 +94,12 @@ struct TerminalSearchState: Equatable {
   var needle: String
   /// Total matches in the scrollback, as reported by the engine.
   var total: Int
-  /// The 1-based index of the currently-selected match (0 when there are none). The base is whatever
-  /// libghostty reports; we store it verbatim and clamp negatives ("no selection") to 0.
+  /// The engine's **0-based** index of the currently-selected match, in libghostty's own
+  /// newest→oldest order (`0` = bottom-most match, `total - 1` = top-most); `-1` when none is
+  /// selected. libghostty reports a negative index for "no current match" (e.g. right after typing,
+  /// before the first navigate); we normalise any negative to `-1` so it stays distinct from index
+  /// `0`. The find bar maps this to a top-down 1-based position via `total - selected` (see
+  /// `matchSummary`), and Find Next/Previous are inverted from the engine's (see `navigationPlan`).
   var selected: Int
 
   /// A libghostty search callback. Mirrors the four `GHOSTTY_ACTION_*SEARCH*` apprt actions.
@@ -78,14 +116,15 @@ struct TerminalSearchState: Equatable {
   static func reduce(_ current: TerminalSearchState?, _ event: Event) -> TerminalSearchState? {
     switch event {
     case .start(let needle):
-      return TerminalSearchState(needle: needle, total: 0, selected: 0)
+      return TerminalSearchState(needle: needle, total: 0, selected: -1)
     case .total(let total):
       guard var next = current else { return nil }
       next.total = max(0, total)
       return next
     case .selected(let selected):
       guard var next = current else { return nil }
-      next.selected = max(0, selected)
+      // Keep the raw 0-based index; collapse any negative ("no current match") to -1.
+      next.selected = selected < 0 ? -1 : selected
       return next
     case .end:
       return nil
@@ -110,10 +149,14 @@ final class TerminalSearchModel: ObservableObject {
   @Published var needle: String = ""
   /// Total matches reported by the engine.
   @Published private(set) var total: Int = 0
-  /// 1-based index of the selected match (0 = none).
-  @Published private(set) var selected: Int = 0
+  /// Engine 0-based index of the selected match (newest→oldest: `0` = bottom, `total-1` = top);
+  /// `-1` = none. The bar shows `total - selected` as a top-down 1-based position.
+  @Published private(set) var selected: Int = -1
   /// Whether the find bar is shown.
   @Published private(set) var isActive: Bool = false
+  /// Bumped on every `start()` (⌘F). The bar observes it to (re)focus the find field — so ⌘F while
+  /// the bar is already open pulls focus back to the field instead of doing nothing.
+  @Published private(set) var focusRequest: Int = 0
 
   /// Set by the owning surface: runs a search keybind action on the live surface. Nil in headless
   /// tests, so the model is exercisable without an engine.
@@ -121,9 +164,14 @@ final class TerminalSearchModel: ObservableObject {
 
   // MARK: App → engine
 
-  /// Open the find bar (⌘F). Shows optimistically so the bar is instant even before the engine
-  /// echoes `START_SEARCH`; the callback then refines the needle (e.g. a selection).
+  /// Open the find bar (⌘F), or — if it's already open — just pull focus back to the field. Shows
+  /// optimistically so the bar is instant even before the engine echoes `START_SEARCH`; the callback
+  /// then refines the needle (e.g. a selection). `focusRequest` is always bumped so the bar refocuses
+  /// the field; the engine `start_search` is sent only on the first open (re-sending it while a
+  /// search is live would needlessly restart the engine's search).
   func start() {
+    focusRequest &+= 1
+    guard !isActive else { return }
     isActive = true
     perform?(.start)
   }
@@ -135,10 +183,16 @@ final class TerminalSearchModel: ObservableObject {
     perform?(.setNeedle(text))
   }
 
-  /// Jump to the next / previous match (⌘G / ⇧⌘G). No-op while closed.
+  /// Jump to the next / previous match (⌘G / ⇧⌘G), wrapping at the ends. No-op while closed.
+  /// The wrap is synthesized as a burst of opposite-direction steps (see `navigationPlan`) because
+  /// the engine itself doesn't wrap; the burst coalesces into one selection in the engine.
   func navigate(_ direction: TerminalSearchAction.Direction) {
     guard isActive else { return }
-    perform?(.navigate(direction))
+    for step in TerminalSearchAction.navigationPlan(
+      findNext: direction == .next, selected: selected, total: total)
+    {
+      perform?(.navigate(step))
+    }
   }
 
   /// Close the find bar (Esc). Hides immediately rather than waiting for the `END_SEARCH` echo —
@@ -170,16 +224,19 @@ final class TerminalSearchModel: ObservableObject {
     isActive = false
     needle = ""
     total = 0
-    selected = 0
+    selected = -1
   }
 
   // MARK: Derived (for the bar)
 
   var hasMatches: Bool { total > 0 }
 
-  /// "3/12", "No results", or "" while the field is empty.
+  /// "3/12", "0/12" (matches found, none selected yet), "No results", or "" while the field is empty.
+  /// `selected` is the engine's 0-based index counting newest→oldest, so the user-facing position
+  /// (top match = 1, counting down as Find Next advances) is `total - selected`; `-1` (none) shows 0.
   var matchSummary: String {
     if needle.isEmpty { return "" }
-    return total > 0 ? "\(selected)/\(total)" : "No results"
+    guard total > 0 else { return "No results" }
+    return "\(selected < 0 ? 0 : total - selected)/\(total)"
   }
 }
