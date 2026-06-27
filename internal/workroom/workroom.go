@@ -566,17 +566,16 @@ func (s *Service) InteractiveDelete(dir string) error {
 	return nil
 }
 
-func (s *Service) deleteByName(dir, name string) error {
+// RunTeardown runs the teardown script for a workroom. It resolves the workroom
+// directory via the config WorkroomsDir, streams output to the NDJSON log sink (in
+// --json mode) or a live log panel (in human mode), and respects Pretend mode.
+// Returns the script error if the script fails; returns nil when the script is absent.
+func (s *Service) RunTeardown(dir, name string) error {
 	wrPath, err := s.workroomPath(name)
 	if err != nil {
 		return err
 	}
 
-	// Run teardown script, streaming its output as it runs. --json mode supplies an
-	// NDJSON sink (ScriptLogWriter); otherwise the human terminal gets a live log
-	// panel. When neither applies (output discarded, no sink) the stream is nil, so
-	// script.Run keeps the captured output in the returned error instead of dropping
-	// it.
 	teardownScript := filepath.Join(dir, "scripts", "workroom_teardown")
 	if _, err := os.Stat(teardownScript); err == nil {
 		s.sayStatus("teardown", fmt.Sprintf("Running %s from %q", teardownScript, wrPath))
@@ -600,6 +599,23 @@ func (s *Service) deleteByName(dir, name string) error {
 				s.say("")
 			}
 		}
+	}
+	return nil
+}
+
+func (s *Service) deleteByName(dir, name string) error {
+	wrPath, err := s.workroomPath(name)
+	if err != nil {
+		return err
+	}
+
+	// Run teardown script, streaming its output as it runs. --json mode supplies an
+	// NDJSON sink (ScriptLogWriter); otherwise the human terminal gets a live log
+	// panel. When neither applies (output discarded, no sink) the stream is nil, so
+	// script.Run keeps the captured output in the returned error instead of dropping
+	// it.
+	if err := s.RunTeardown(dir, name); err != nil {
+		return err
 	}
 
 	// Delete VCS workspace

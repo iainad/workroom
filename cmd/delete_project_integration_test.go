@@ -92,7 +92,7 @@ func TestDeleteProjectSafetyGit_NoFlagKeepsDiskAndBranch(t *testing.T) {
 	}
 	svc, cfg, canon, wrPath := setupGitProject(t)
 
-	if err := runDeleteProject(svc, true, canon, false, []string{canon}, &bytes.Buffer{}, &bytes.Buffer{}); err != nil {
+	if err := runDeleteProject(svc, true, canon, false, false, []string{canon}, &bytes.Buffer{}, &bytes.Buffer{}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -117,7 +117,7 @@ func TestDeleteProjectSafetyGit_WithWorkroomsRemovesDirKeepsBranch(t *testing.T)
 	}
 	svc, cfg, canon, wrPath := setupGitProject(t)
 
-	if err := runDeleteProject(svc, true, canon, true, []string{canon}, &bytes.Buffer{}, &bytes.Buffer{}); err != nil {
+	if err := runDeleteProject(svc, true, canon, true, false, []string{canon}, &bytes.Buffer{}, &bytes.Buffer{}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -175,7 +175,7 @@ func TestDeleteProjectSafetyJJ_WithWorkroomsForgetsWorkspaceKeepsRepo(t *testing
 	}
 
 	svc := &workroom.Service{Config: cfg, VCS: j, Out: &bytes.Buffer{}, KeepEmptyProject: true}
-	if err := runDeleteProject(svc, true, canon, true, []string{canon}, &bytes.Buffer{}, &bytes.Buffer{}); err != nil {
+	if err := runDeleteProject(svc, true, canon, true, false, []string{canon}, &bytes.Buffer{}, &bytes.Buffer{}); err != nil {
 		t.Fatal(err)
 	}
 

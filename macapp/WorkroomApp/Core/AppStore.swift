@@ -69,6 +69,12 @@ final class AppStore: ObservableObject {
   let projectStore: ProjectStore
   private var projectStoreObservation: AnyCancellable?
 
+  /// Seam over the macOS Trash (issue #108): a from-disk project delete moves dirs to the Bin via
+  /// `FileManager.trashItem` (Finder "Put Back", no TCC prompt). Injectable so tests assert the
+  /// orchestration with a fake recorder instead of polluting the real Trash. Mirrors the
+  /// `CommandExecutor` mock seam.
+  var trasher: Trashing = SystemTrasher()
+
   /// The `NSWindow` hosting this store, resolved once the view tree is in a window (issue #70). Weak:
   /// the window outlives the store's need for it, and the registry holds the authoritative mapping.
   weak var hostWindow: NSWindow?
@@ -2109,15 +2115,21 @@ final class AppStore: ObservableObject {
     errorMessage = output.isEmpty ? errorText(error) : output
   }
 
-  /// Removes a project from the sidebar immediately, then removes it from config — and,
-  /// when `deleteWorkrooms`, tears down each of its workrooms first — in the background.
-  /// Mirrors `deleteWorkroom`: optimistic removal + scoped selection/split/status cleanup,
-  /// then graceful run-stop → in-app reap → CLI. On failure we reload (so it reappears if
-  /// it still exists) and surface the error with any captured teardown log.
+  /// Removes a project from the sidebar immediately, then runs the chosen `scope` in the
+  /// background. Mirrors `deleteWorkroom`: optimistic removal + scoped selection/split/status
+  /// cleanup, then graceful run-stop → in-app reap → CLI.
   ///
-  /// Branches/bookmarks are never deleted in either mode — the cascade reuses the same
-  /// per-workroom teardown as `deleteWorkroom`, whose VCS removal leaves refs intact.
-  func deleteProject(_ project: Project, deleteWorkrooms: Bool) {
+  /// - `.configOnly`: drop from config only; nothing on disk is touched.
+  /// - `.workrooms`: also hard-delete every workroom's worktree dir (branches kept) — unchanged.
+  /// - `.fromDisk`: the CLI runs teardowns + drops config and returns the directories
+  ///   (project root + workrooms); the app then moves them to the **Bin** (issue #108).
+  ///
+  /// Failure handling differs by phase: if the CLI throws (teardown/guard failure, or a
+  /// config-only/workrooms delete failure) the config was NOT changed, so we `reload()` (the
+  /// project reappears if it still exists) and surface the error. For `.fromDisk`, once the CLI
+  /// returns the config is already dropped — a subsequent Trash failure leaves the project removed
+  /// and is reported on its own (we do NOT restore it), listing the dirs left behind.
+  func deleteProject(_ project: Project, scope: DeleteProjectScope) {
     let targetIDs = removeProjectLocally(project)
     let stores = affectedStores
     // Clear the project's targets (root + each workroom) from every OTHER window's split + selection
@@ -2136,18 +2148,47 @@ final class AppStore: ObservableObject {
       for store in stores { for id in targetIDs { store.reapTargetLocally(id) } }
       Task {
         let log =
-          deleteWorkrooms
-          ? ScriptLogSession(title: "Deleting \(project.displayName)", phase: "teardown") : nil
+          scope == .configOnly
+          ? nil : ScriptLogSession(title: "Deleting \(project.displayName)", phase: "teardown")
         do {
-          try await WorkroomCLI.shared.deleteProject(
-            project.path, withWorkrooms: deleteWorkrooms
+          let trashPaths = try await WorkroomCLI.shared.deleteProject(
+            project.path,
+            withWorkrooms: scope == .workrooms,
+            fromDisk: scope == .fromDisk
           ) { text in DispatchQueue.main.async { log?.append(text) } }
+          if scope == .fromDisk {
+            // CLI already ran teardowns + dropped config; move the returned dirs to the Bin.
+            let failed = self.trashToBin(trashPaths)
+            if !failed.isEmpty { self.presentTrashFailure(project, failedPaths: failed) }
+          }
         } catch {
           await self.reload()
           self.presentDeleteProjectFailure(project, error: error, log: log)
         }
       }
     }
+  }
+
+  /// Moves each path to the Bin via the injected `trasher`, returning the URLs that could NOT be
+  /// moved so the caller can tell the user exactly what was left behind. The project is already
+  /// out of config by this point (the CLI dropped it), so a partial failure does not restore it.
+  /// Internal (not private) so the from-disk trash orchestration is unit-testable with a fake.
+  func trashToBin(_ urls: [URL]) -> [URL] {
+    var failed: [URL] = []
+    for url in urls {
+      do { try trasher.trash(url) } catch { failed.append(url) }
+    }
+    return failed
+  }
+
+  /// A from-disk delete dropped the project from config but some directories could not be moved to
+  /// the Bin. Report which ones so the user can move them manually (they are not lost).
+  func presentTrashFailure(_ project: Project, failedPaths: [URL]) {
+    let list = failedPaths.map(\.path).joined(separator: "\n")
+    errorTitle = "Some files of ‘\(project.displayName)’ could not be moved to the Bin"
+    errorMessage =
+      "‘\(project.displayName)’ was removed from Workroom, but these could not be moved to the "
+      + "Bin — move them manually:\n\(list)"
   }
 
   /// Optimistic, synchronous removal of a project from every piece of in-memory state — the

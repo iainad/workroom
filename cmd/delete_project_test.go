@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"os"
 	"path/filepath"
+	"sort"
 	"testing"
 
 	"github.com/joelmoss/workroom/internal/config"
@@ -55,7 +57,7 @@ func newTestSvc(t *testing.T, v vcs.VCS) (*workroom.Service, *config.Config) {
 
 func TestDeleteProjectRequiresJSON(t *testing.T) {
 	svc, _ := newTestSvc(t, &fakeVCS{})
-	err := runDeleteProject(svc, false, "", false, []string{"/p"}, &bytes.Buffer{}, &bytes.Buffer{})
+	err := runDeleteProject(svc, false, "", false, false, []string{"/p"}, &bytes.Buffer{}, &bytes.Buffer{})
 	if err == nil || !bytes.Contains([]byte(err.Error()), []byte("only available in --json mode")) {
 		t.Fatalf("expected --json-only error, got %v", err)
 	}
@@ -63,7 +65,7 @@ func TestDeleteProjectRequiresJSON(t *testing.T) {
 
 func TestDeleteProjectRequiresPathArg(t *testing.T) {
 	svc, _ := newTestSvc(t, &fakeVCS{})
-	err := runDeleteProject(svc, true, "", false, []string{}, &bytes.Buffer{}, &bytes.Buffer{})
+	err := runDeleteProject(svc, true, "", false, false, []string{}, &bytes.Buffer{}, &bytes.Buffer{})
 	if err == nil {
 		t.Fatal("expected error when no path argument is given")
 	}
@@ -77,7 +79,7 @@ func TestDeleteProjectConfirmMismatch(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err := runDeleteProject(svc, true, "wrong-path", false, []string{proj}, &bytes.Buffer{}, &bytes.Buffer{})
+	err := runDeleteProject(svc, true, "wrong-path", false, false, []string{proj}, &bytes.Buffer{}, &bytes.Buffer{})
 	if !errors.Is(err, errs.ErrConfirmMismatch) {
 		t.Fatalf("expected ErrConfirmMismatch, got %v", err)
 	}
@@ -99,7 +101,7 @@ func TestDeleteProjectConfigOnly(t *testing.T) {
 
 	var stdout bytes.Buffer
 	// confirm matches the as-given path (gate accepts canon OR path).
-	if err := runDeleteProject(svc, true, proj, false, []string{proj}, &stdout, &bytes.Buffer{}); err != nil {
+	if err := runDeleteProject(svc, true, proj, false, false, []string{proj}, &stdout, &bytes.Buffer{}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -134,7 +136,7 @@ func TestDeleteProjectCascade(t *testing.T) {
 	}
 
 	var stdout, logs bytes.Buffer
-	if err := runDeleteProject(svc, true, canon, true, []string{proj}, &stdout, &logs); err != nil {
+	if err := runDeleteProject(svc, true, canon, true, false, []string{proj}, &stdout, &logs); err != nil {
 		t.Fatal(err)
 	}
 
@@ -165,7 +167,7 @@ func TestDeleteProjectCascadePartialFailureKeepsProject(t *testing.T) {
 		}
 	}
 
-	err := runDeleteProject(svc, true, canon, true, []string{proj}, &bytes.Buffer{}, &bytes.Buffer{})
+	err := runDeleteProject(svc, true, canon, true, false, []string{proj}, &bytes.Buffer{}, &bytes.Buffer{})
 	if err == nil {
 		t.Fatal("expected cascade to surface the teardown failure")
 	}
@@ -177,5 +179,254 @@ func TestDeleteProjectCascadePartialFailureKeepsProject(t *testing.T) {
 	data, _ := cfg.Read()
 	if _, ok := data[canon]; !ok {
 		t.Fatal("project removed despite a cascade failure (should be retryable)")
+	}
+}
+
+// TestDeleteProjectFromDisk verifies the --from-disk happy path: teardowns are run
+// (none exist in this test), config is cleaned up, and the envelope contains
+// from_disk:true and trash_paths = [root, ...sorted workroom paths].
+func TestDeleteProjectFromDisk(t *testing.T) {
+	fake := &fakeVCS{}
+	svc, cfg := newTestSvc(t, fake)
+	proj := t.TempDir()
+	canon, _ := config.CanonicalPath(proj)
+
+	wrBase := t.TempDir()
+	wrAlpha := filepath.Join(wrBase, "alpha")
+	wrBravo := filepath.Join(wrBase, "bravo")
+	if err := os.MkdirAll(wrAlpha, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(wrBravo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := cfg.AddWorkroom(canon, "alpha", wrAlpha, "git"); err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.AddWorkroom(canon, "bravo", wrBravo, "git"); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, logs bytes.Buffer
+	if err := runDeleteProject(svc, true, canon, false, true, []string{proj}, &stdout, &logs); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// No VCS teardown — from-disk only runs teardown scripts, not VCS delete.
+	if len(fake.deleteCalls) != 0 {
+		t.Fatalf("from-disk delete should not call VCS.Delete, got: %v", fake.deleteCalls)
+	}
+
+	// Project entry removed from config.
+	data, _ := cfg.Read()
+	if _, ok := data[canon]; ok {
+		t.Fatal("project entry not removed from config after from-disk delete")
+	}
+
+	// Workroom dirs still exist on disk (CLI must NOT delete them).
+	if _, err := os.Stat(wrAlpha); err != nil {
+		t.Fatalf("workroom dir %s should still exist on disk: %v", wrAlpha, err)
+	}
+	if _, err := os.Stat(wrBravo); err != nil {
+		t.Fatalf("workroom dir %s should still exist on disk: %v", wrBravo, err)
+	}
+
+	// Envelope: ok, from_disk:true, trash_paths = [canon, sorted workroom paths].
+	var env map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &env); err != nil {
+		t.Fatalf("bad envelope %q: %v", stdout.String(), err)
+	}
+	if env["ok"] != true {
+		t.Fatalf("expected ok:true, got %v", env["ok"])
+	}
+	if env["from_disk"] != true {
+		t.Fatalf("expected from_disk:true, got %v", env["from_disk"])
+	}
+
+	rawPaths, ok := env["trash_paths"].([]any)
+	if !ok {
+		t.Fatalf("expected trash_paths array, got %T: %v", env["trash_paths"], env["trash_paths"])
+	}
+	trashPaths := make([]string, len(rawPaths))
+	for i, v := range rawPaths {
+		s, ok := v.(string)
+		if !ok {
+			t.Fatalf("trash_paths[%d] is not a string: %v", i, v)
+		}
+		trashPaths[i] = s
+	}
+
+	// First element must be project root.
+	if trashPaths[0] != canon {
+		t.Fatalf("expected trash_paths[0] = %q (project root), got %q", canon, trashPaths[0])
+	}
+	// Remaining elements must be the workroom paths sorted ascending.
+	expectedWR := []string{wrAlpha, wrBravo}
+	sort.Strings(expectedWR)
+	gotWR := trashPaths[1:]
+	if len(gotWR) != len(expectedWR) {
+		t.Fatalf("expected %d workroom paths, got %d: %v", len(expectedWR), len(gotWR), gotWR)
+	}
+	for i, want := range expectedWR {
+		if gotWR[i] != want {
+			t.Fatalf("trash_paths[%d]: want %q, got %q", i+1, want, gotWR[i])
+		}
+	}
+}
+
+// TestDeleteProjectFromDiskTeardownFailureKeepsConfig verifies that a failing teardown
+// script aborts the operation and leaves the project in config (retryable).
+func TestDeleteProjectFromDiskTeardownFailureKeepsConfig(t *testing.T) {
+	fake := &fakeVCS{}
+	svc, cfg := newTestSvc(t, fake)
+	proj := t.TempDir()
+	canon, _ := config.CanonicalPath(proj)
+
+	// Write a failing teardown script into the project directory.
+	scriptsDir := filepath.Join(proj, "scripts")
+	if err := os.MkdirAll(scriptsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	teardownScript := filepath.Join(scriptsDir, "workroom_teardown")
+	if err := os.WriteFile(teardownScript, []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// We need a workroom whose path resolves under the configured WorkroomsDir so
+	// RunTeardown can locate it. Use a real temp dir as the workroom path.
+	wrPath := t.TempDir()
+	if err := cfg.AddWorkroom(canon, "alpha", wrPath, "git"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Override WorkroomsDir so workroomPath("alpha") returns wrPath.
+	// WorkroomsDir is derived from config; inject via cfg.SetWorkroomsDir.
+	// Instead, we set the workrooms_dir in config to the parent of wrPath so
+	// filepath.Join(workroomsDir, "alpha") == wrPath.
+	wrParent := filepath.Dir(wrPath)
+	wrName := filepath.Base(wrPath)
+	// We need the workroom name to match the dir name; use the base of the temp path.
+	// Re-register with the real name.
+	if err := cfg.RemoveProject(canon); err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.SetWorkroomsDir(wrParent); err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.AddWorkroom(canon, wrName, filepath.Join(wrParent, wrName), "git"); err != nil {
+		t.Fatal(err)
+	}
+
+	err := runDeleteProject(svc, true, canon, false, true, []string{proj}, &bytes.Buffer{}, &bytes.Buffer{})
+	if err == nil {
+		t.Fatal("expected error from failing teardown script")
+	}
+
+	// Project must remain in config.
+	data, _ := cfg.Read()
+	if _, ok := data[canon]; !ok {
+		t.Fatal("project was removed from config despite teardown failure — should be retryable")
+	}
+}
+
+// TestDeleteProjectFromDiskGuardRefuses verifies that from-disk refuses when the
+// project is an ancestor of another registered project, returning ErrUnsafeDeletePath.
+func TestDeleteProjectFromDiskGuardRefuses(t *testing.T) {
+	fake := &fakeVCS{}
+	svc, cfg := newTestSvc(t, fake)
+
+	parent := t.TempDir()
+	child := filepath.Join(parent, "child")
+	if err := os.MkdirAll(child, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	parentCanon, _ := config.CanonicalPath(parent)
+	childCanon, _ := config.CanonicalPath(child)
+
+	if err := cfg.AddProject(parentCanon, "git"); err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.AddProject(childCanon, "git"); err != nil {
+		t.Fatal(err)
+	}
+
+	err := runDeleteProject(svc, true, parentCanon, false, true, []string{parent}, &bytes.Buffer{}, &bytes.Buffer{})
+	if !errors.Is(err, errs.ErrUnsafeDeletePath) {
+		t.Fatalf("expected ErrUnsafeDeletePath, got %v", err)
+	}
+
+	// Nothing removed from config.
+	data, _ := cfg.Read()
+	if _, ok := data[parentCanon]; !ok {
+		t.Fatal("parent project removed from config despite guard refusal")
+	}
+	if _, ok := data[childCanon]; !ok {
+		t.Fatal("child project removed from config despite guard refusal")
+	}
+}
+
+// TestUnsafeProjectDeletePath is a table-driven test of the guard function itself.
+func TestUnsafeProjectDeletePath(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	homeCanon, _ := config.CanonicalPath(home)
+
+	// A standalone leaf temp dir that will be registered as the only project.
+	leaf := t.TempDir()
+	leafCanon, _ := config.CanonicalPath(leaf)
+
+	// An ancestor dir (parent of leaf).
+	ancestor := filepath.Dir(leaf)
+
+	// Another project that will be registered.
+	other := t.TempDir()
+	otherCanon, _ := config.CanonicalPath(other)
+
+	// Build a config with the leaf and other registered.
+	cfgDir := t.TempDir()
+	cfg, err := config.New(filepath.Join(cfgDir, "config.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.AddProject(leafCanon, "git"); err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.AddProject(otherCanon, "git"); err != nil {
+		t.Fatal(err)
+	}
+
+	workroomsDir, _ := cfg.WorkroomsDir()
+	workroomsDirCanon, _ := config.CanonicalPath(workroomsDir)
+	workroomsDirParent := filepath.Dir(workroomsDirCanon)
+
+	tests := []struct {
+		name   string
+		canon  string
+		refuse bool
+	}{
+		{"root slash", "/", true},
+		{"home dir", homeCanon, true},
+		{"empty string", "", true},
+		{"relative path", "relative/path", true},
+		{"equals workrooms_dir", workroomsDirCanon, true},
+		{"ancestor of workrooms_dir", workroomsDirParent, true},
+		{"ancestor of another project", ancestor, true},
+		{"standalone leaf project", leafCanon, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := unsafeProjectDeletePath(tt.canon, cfg)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tt.refuse {
+				t.Fatalf("unsafeProjectDeletePath(%q) = %v, want %v", tt.canon, got, tt.refuse)
+			}
+		})
 	}
 }

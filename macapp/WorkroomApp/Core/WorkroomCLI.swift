@@ -177,20 +177,32 @@ final class WorkroomCLI {
     try throwIfError(result)
   }
 
-  /// Removes a project from the config. By default this is config-only — nothing on disk
-  /// is touched (worktree dirs, branches, and files all stay). With `withWorkrooms` it
-  /// first tears down every registered workroom (worktree dirs + files; branches are
-  /// always kept), streaming teardown output via `onLog`. `--confirm` echoes the path
-  /// (the type-to-confirm guard lives in the sheet; this just satisfies the CLI gate).
-  func deleteProject(_ path: String, withWorkrooms: Bool, onLog: ((String) -> Void)? = nil)
-    async throws
-  {
+  /// Removes a project from the config. Three modes (mutually exclusive on disk):
+  /// - default (config-only): nothing on disk is touched (worktree dirs, branches, files stay).
+  /// - `withWorkrooms`: also tears down every registered workroom (hard-deletes worktree dirs +
+  ///   files; branches are always kept), streaming teardown output via `onLog`.
+  /// - `fromDisk`: runs each workroom's teardown, drops the project from config, and RETURNS the
+  ///   directories (project root first, then workrooms) for the app to move to the Bin — the CLI
+  ///   never deletes them itself (issue #108). The returned `[URL]` is empty in the other modes.
+  ///
+  /// `--confirm` echoes the path (the type-to-confirm guard lives in the sheet; this just
+  /// satisfies the CLI gate).
+  @discardableResult
+  func deleteProject(
+    _ path: String, withWorkrooms: Bool, fromDisk: Bool, onLog: ((String) -> Void)? = nil
+  ) async throws -> [URL] {
     var args = ["delete-project", path, "--json", "--confirm", path]
     if withWorkrooms { args.append("--with-workrooms") }
-    let result = try await run(args, timeout: withWorkrooms ? 600 : 15) { event in
+    if fromDisk { args.append("--from-disk") }
+    let result = try await run(args, timeout: (withWorkrooms || fromDisk) ? 600 : 15) { event in
       if event.type == "log", let text = event.text { onLog?(text) }
     }
-    try throwIfError(result)
+    guard fromDisk else {
+      try throwIfError(result)
+      return []
+    }
+    let response = try decode(DeleteProjectResponse.self, from: result)
+    return (response.trashPaths ?? []).map { URL(fileURLWithPath: $0) }
   }
 
   // MARK: Binary location

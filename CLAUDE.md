@@ -72,7 +72,12 @@ Go project using Cobra for CLI, with clean internal package separation:
 - `workroom version` — Print version
 - `workroom add-project [PATH]` / `delete-project [PATH]` — Hidden, app-only: register/remove a
   project in config so the macOS app's sidebar can show empty projects. Both error outside `--json`
-  mode. `delete-project` is config-only unless `--with-workrooms` cascades the per-workroom teardown.
+  mode. `delete-project` is config-only unless: `--with-workrooms` cascades the per-workroom
+  teardown (hard-deletes worktree dirs, branches kept); or `--from-disk` runs each workroom's
+  teardown, drops the project from config, and returns `trash_paths` (project root first, then
+  workrooms) — it does NOT delete anything itself, the macOS app moves those dirs to the Bin via
+  `FileManager.trashItem` (recoverable). `--from-disk` refuses unsafe targets (`ErrUnsafeDeletePath`:
+  root, `$HOME`, the workrooms dir, or an ancestor of another registered project).
 
 ### Flags
 

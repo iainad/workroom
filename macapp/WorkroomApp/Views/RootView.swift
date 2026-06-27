@@ -229,9 +229,9 @@ struct RootView: View {
       .sheet(item: $store.pendingProjectDeletion) { pending in
         DeleteProjectSheet(
           project: pending.project,
-          onDelete: { withWorkrooms in
+          onDelete: { scope in
             store.pendingProjectDeletion = nil
-            store.deleteProject(pending.project, deleteWorkrooms: withWorkrooms)
+            store.deleteProject(pending.project, scope: scope)
           },
           onCancel: { store.pendingProjectDeletion = nil })
       }

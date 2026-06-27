@@ -14,6 +14,7 @@ var (
 	ErrSetup               = errors.New("setup script failed")
 	ErrTeardown            = errors.New("teardown script failed")
 	ErrConfirmMismatch     = errors.New("confirmation value does not match the workroom name")
+	ErrUnsafeDeletePath    = errors.New("refusing to delete an unsafe or reserved path")
 	ErrCancelled           = errors.New("operation cancelled")
 	ErrConfigRead          = errors.New("failed to read config")
 	ErrConfigWrite         = errors.New("failed to write config")
@@ -41,6 +42,8 @@ func Code(err error) string {
 		return "WorkspaceNotFound"
 	case errors.Is(err, ErrConfirmMismatch):
 		return "ConfirmationMismatch"
+	case errors.Is(err, ErrUnsafeDeletePath):
+		return "UnsafeDeletePath"
 	case errors.Is(err, ErrCancelled):
 		return "Cancelled"
 	case errors.Is(err, ErrSetup):
@@ -67,7 +70,7 @@ func ExitCode(err error) int {
 	switch Code(err) {
 	case "":
 		return 0
-	case "ConfirmationMismatch":
+	case "ConfirmationMismatch", "UnsafeDeletePath":
 		return 2
 	case "UnsupportedVCS", "WorkspaceNotFound", "DirExists", "WorkspaceExists", "InvalidName", "InWorkroom":
 		return 3

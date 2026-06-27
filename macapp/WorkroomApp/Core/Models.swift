@@ -177,6 +177,17 @@ struct CreateResponse: Codable {
   let project: String
 }
 
+/// `delete-project --from-disk` success payload. The CLI runs teardowns + drops the project
+/// from config, then returns the directories (project root first, then workrooms) for the app
+/// to move to the Bin — the CLI never deletes them itself (issue #108).
+struct DeleteProjectResponse: Codable {
+  let trashPaths: [String]?
+
+  enum CodingKeys: String, CodingKey {
+    case trashPaths = "trash_paths"
+  }
+}
+
 /// A streamed event from the CLI's stderr in --json mode (one NDJSON object per line)
 /// while the result envelope stays on stdout. `type` discriminates:
 ///  - "log": a line of setup/teardown output (`text`, `phase`).

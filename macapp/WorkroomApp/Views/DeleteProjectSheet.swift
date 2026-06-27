@@ -1,29 +1,54 @@
 import SwiftUI
 
+/// The three escalating destructiveness levels offered by `DeleteProjectSheet` (issue #108):
+/// keep everything, hard-delete the workroom dirs (branches kept), or move the whole project +
+/// its workrooms to the Bin. Drives both the CLI invocation and the sheet's copy.
+enum DeleteProjectScope: CaseIterable {
+  case configOnly
+  case workrooms
+  case fromDisk
+}
+
 /// Pure presentation rules for `DeleteProjectSheet`, extracted so the disable-until-match,
-/// Delete-button label, and escalating footer logic are unit-testable without rendering SwiftUI.
+/// Delete-button label, and per-scope footer logic are unit-testable without rendering SwiftUI.
 enum DeleteProjectSheetModel {
   /// Delete is enabled only on an exact (case-sensitive) match of the project's display name.
   static func nameMatches(typed: String, displayName: String) -> Bool {
     typed == displayName
   }
 
-  static func deleteLabel(workroomCount: Int, cascade: Bool) -> String {
+  static func deleteLabel(scope: DeleteProjectScope, workroomCount: Int) -> String {
     let plural = workroomCount == 1 ? "" : "s"
-    return cascade
-      ? "Delete Project & \(workroomCount) Workroom\(plural)" : "Delete Project"
+    switch scope {
+    case .configOnly: return "Delete Project"
+    case .workrooms: return "Delete Project & \(workroomCount) Workroom\(plural)"
+    case .fromDisk: return "Delete Everything to Bin"
+    }
   }
 
-  /// Reflects the toggle: config-only keeps everything on disk; cascade warns about the dirs.
-  /// Branches are kept in both cases.
-  static func effectFooter(workroomCount: Int, cascade: Bool) -> String {
-    if workroomCount > 0 && cascade {
+  /// Reflects the chosen scope. The copy must make the recoverability inversion explicit (T1):
+  /// level-2 PERMANENTLY removes worktree dirs (branches kept, NOT recoverable); level-3 is the
+  /// bigger blast but is RESTORABLE from the Bin. The from-disk line is also honest that a
+  /// workroom's teardown side effects are not undone by a Put Back (T2).
+  static func effectFooter(scope: DeleteProjectScope, workroomCount: Int) -> String {
+    switch scope {
+    case .configOnly:
+      return "Removes the project from Workroom only. Files on disk are kept."
+    case .workrooms:
+      let dirs = workroomCount == 1 ? "directory" : "directories"
       return
-        "⚠️ Permanently deletes \(workroomCount) worktree "
-        + "director\(workroomCount == 1 ? "y" : "ies") and their files on disk. Branches are kept."
+        "⚠️ Permanently removes \(workroomCount) worktree \(dirs). This is NOT recoverable. "
+        + "Branches are kept."
+    case .fromDisk:
+      if workroomCount > 0 {
+        let plural = workroomCount == 1 ? "" : "s"
+        return
+          "Moves the project and \(workroomCount) workroom\(plural) to the Bin — restorable from "
+          + "the Trash. Each workroom's teardown script still runs first; its side effects are "
+          + "not undone."
+      }
+      return "Moves the project to the Bin — restorable from the Trash."
     }
-    return
-      "Removes the project from Workroom only. Worktrees, branches, and files on disk are kept."
   }
 }
 
@@ -31,19 +56,19 @@ enum DeleteProjectSheetModel {
 /// context menu. The full path is always shown (same-named projects in different parents must
 /// be distinguishable), and Delete stays disabled until the typed name matches exactly.
 ///
-/// When the project still has workrooms, a default-OFF toggle offers to cascade the delete to
-/// them (their worktree directories + files on disk). The footer + Delete-button label escalate
-/// to make the destructive option unmistakable. Branches/bookmarks are NEVER deleted in either
-/// mode — the cascade reuses the per-workroom teardown, which leaves refs intact.
+/// A radio group offers three escalating levels (issue #108): config-only (keep all files),
+/// hard-delete the workroom dirs (branches kept, NOT recoverable), or move the whole project +
+/// its workrooms to the Bin (restorable). The footer + Delete-button label reflect the chosen
+/// level; the copy makes the recoverability inversion between level-2 and level-3 explicit.
 ///
-/// `onDelete(Bool)` passes the cascade toggle state; the parent owns clearing the pending state.
+/// `onDelete(scope)` passes the selected level; the parent owns clearing the pending state.
 struct DeleteProjectSheet: View {
   let project: Project
-  let onDelete: (_ withWorkrooms: Bool) -> Void
+  let onDelete: (_ scope: DeleteProjectScope) -> Void
   let onCancel: () -> Void
 
   @State private var typedName = ""
-  @State private var alsoDeleteWorkrooms = false
+  @State private var scope: DeleteProjectScope = .configOnly
   @FocusState private var nameFieldFocused: Bool
 
   private var hasWorkrooms: Bool { !project.workrooms.isEmpty }
@@ -53,10 +78,10 @@ struct DeleteProjectSheet: View {
     DeleteProjectSheetModel.nameMatches(typed: typedName, displayName: project.displayName)
   }
   private var deleteLabel: String {
-    DeleteProjectSheetModel.deleteLabel(workroomCount: count, cascade: alsoDeleteWorkrooms)
+    DeleteProjectSheetModel.deleteLabel(scope: scope, workroomCount: count)
   }
   private var effectFooter: String {
-    DeleteProjectSheetModel.effectFooter(workroomCount: count, cascade: alsoDeleteWorkrooms)
+    DeleteProjectSheetModel.effectFooter(scope: scope, workroomCount: count)
   }
 
   var body: some View {
@@ -97,12 +122,28 @@ struct DeleteProjectSheet: View {
             .frame(maxWidth: .infinity, alignment: .leading)
           }
           .frame(maxHeight: 120)
-          Toggle(isOn: $alsoDeleteWorkrooms) {
-            Text("Also delete \(count) workroom\(plural)")
-          }
-          .accessibilityIdentifier("deleteProject.cascadeToggle")
         }
       }
+
+      // What to delete. Config-only vs move-to-Bin are always offered; the hard-delete-workrooms
+      // middle level only appears when there are workrooms to delete.
+      Picker("What to delete", selection: $scope) {
+        Text("Remove from Workroom only — keep all files")
+          .tag(DeleteProjectScope.configOnly)
+        if hasWorkrooms {
+          Text("Also delete \(count) workroom\(plural) — permanently; branches kept")
+            .tag(DeleteProjectScope.workrooms)
+        }
+        Text(
+          hasWorkrooms
+            ? "Delete everything → Bin (project + \(count) workroom\(plural))"
+            : "Delete the project → Bin"
+        )
+        .tag(DeleteProjectScope.fromDisk)
+      }
+      .pickerStyle(.radioGroup)
+      .labelsHidden()
+      .accessibilityIdentifier("deleteProject.scopePicker")
 
       VStack(alignment: .leading, spacing: 6) {
         Text("Type the project name to confirm")
@@ -112,7 +153,7 @@ struct DeleteProjectSheet: View {
           .labelsHidden()
           .focused($nameFieldFocused)
           .lineLimit(1)
-          .onSubmit { if nameMatches { onDelete(alsoDeleteWorkrooms) } }
+          .onSubmit { if nameMatches { onDelete(scope) } }
           .accessibilityIdentifier("deleteProject.confirmField")
         Text(effectFooter)
           .font(.callout)
@@ -125,7 +166,7 @@ struct DeleteProjectSheet: View {
         Spacer()
         Button("Cancel") { onCancel() }
           .keyboardShortcut(.cancelAction)
-        Button(deleteLabel) { onDelete(alsoDeleteWorkrooms) }
+        Button(deleteLabel) { onDelete(scope) }
           .keyboardShortcut(.defaultAction)
           .buttonStyle(.borderedProminent)
           .tint(.red)
