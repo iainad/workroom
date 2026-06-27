@@ -111,6 +111,21 @@ final class WorkroomSplitTests: XCTestCase {
     XCTAssertNil(store.workroomSplit, "a missing workroom is rejected as a drop source")
   }
 
+  func testInsertAllowsCrossProjectSplit() {
+    // The sidebar drag (issue #101) exposes every project's rows, so a workroom from one project can be
+    // dropped beside a pane from another — cross-project splits are intended (the tab bar, scoped to the
+    // current workroom, never allowed this). Both leaves resolve via `target(for:)`, so there is no
+    // same-project guard; pin that here so a future guard can't silently regress the behavior.
+    let store = makeStore([
+      project("/a", workrooms: ["main"]),
+      project("/b", workrooms: ["feature"]),
+    ])
+    store.insertWorkroomSplit(wr("feature", in: "/b"), beside: wr("main", in: "/a"), edge: .right)
+    XCTAssertEqual(store.workroomSplit?.tabIDs, [wr("main", in: "/a"), wr("feature", in: "/b")])
+    XCTAssertEqual(store.selectedTargetID, wr("feature", in: "/b"), "the dropped member is focused")
+    XCTAssertTrue(store.workroomSplitActive)
+  }
+
   // MARK: remove / dissolve
 
   func testRemoveCollapsesThreeToTwo() {

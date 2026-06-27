@@ -283,14 +283,38 @@ struct EdgeRevealSidebars: ViewModifier {
   @EnvironmentObject private var store: AppStore
   let sidebarVisible: Bool
   let inspectorVisible: Bool
+  /// Drag-to-split plumbing for the revealed Projects panel (issue #101) — same as the docked
+  /// `SidebarColumn`'s, so dragging a row out of the slide-over forms a split too. Unlike the docked
+  /// column (left of the detail) and the tab bar (above it), the reveal panel floats OVER the detail,
+  /// so the drag is gated to ignore points still over the panel (see `body`) — otherwise a drop would
+  /// register immediately, with no "release over the panel to cancel" zone the other two paths get.
+  var paneDrag: Binding<WorkroomPaneDrag?> = .constant(nil)
+  var localize: (CGPoint) -> CGPoint? = { _ in nil }
+  var dropTarget: (CGPoint) -> (sid: SidebarID, edge: PaneEdge)? = { _ in nil }
 
   func body(content: Content) -> some View {
-    content
+    // The revealed leading panel sits at offset 0 occupying detail-local x `[margin, margin+width]`
+    // (`sidebarCard`'s default 8pt leading inset). `localize` already hands back a detail-local point,
+    // so "cursor still over the panel card" is pure arithmetic — suppress the drag plumbing there so a
+    // reveal-row drag only resolves once it crosses the card's right edge onto a pane (issue #101).
+    // `panelWidth` is bound once and used for BOTH the panel's width and the gate so they can't drift.
+    let panelWidth = store.dockedSidebarWidth ?? 260
+    // sidebarCard's default `margin`; track it if the leading overlay ever passes a `leadingMargin`.
+    let cardLeadingMargin: CGFloat = 8
+    func overPanel(_ global: CGPoint) -> Bool {
+      (localize(global)?.x ?? .infinity) < panelWidth + cardLeadingMargin
+    }
+    return
+      content
       .overlay {
         EdgeRevealSidebar(
-          side: .leading, enabled: !sidebarVisible, width: store.dockedSidebarWidth ?? 260
+          side: .leading, enabled: !sidebarVisible, width: panelWidth
         ) {
-          ProjectSidebar()
+          ProjectSidebar(
+            paneDrag: paneDrag,
+            localize: { overPanel($0) ? nil : localize($0) },
+            dropTarget: { overPanel($0) ? nil : dropTarget($0) }
+          )
         }
       }
       .overlay {
