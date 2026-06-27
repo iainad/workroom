@@ -69,7 +69,7 @@ app-uitest: ## Run the app's UI tests (XCUITest — needs a real GUI login sessi
 	cd macapp && xcodegen generate && xcodebuild -project $(APP_PROJECT) -scheme WorkroomAppUITests -configuration Debug -derivedDataPath DerivedData -clonedSourcePackagesDirPath DerivedData/SourcePackages -destination 'platform=macOS' test $(APP_SIGN_FLAGS)
 
 app-test-supervisor: ## Run the run-command supervisor PTY integration test (real shell + fake server)
-	python3 macapp/Resources/run-supervisor/test_supervisor.py
+	python3 macapp/Tests/run-supervisor/test_supervisor.py
 
 app-generate: ## Force-regenerate the (gitignored) .xcodeproj from project.yml
 	cd macapp && xcodegen generate

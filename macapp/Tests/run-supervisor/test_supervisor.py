@@ -24,7 +24,10 @@ import socket
 import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-SUPERVISOR = os.path.join(HERE, "supervisor.sh")
+# supervisor.sh ships in the app bundle, so it lives under Resources/; the test files are kept OUT
+# of that folder (which project.yml copies wholesale into the .app) — hence the ../../Resources hop.
+SUPERVISOR = os.path.normpath(
+    os.path.join(HERE, "..", "..", "Resources", "run-supervisor", "supervisor.sh"))
 FAKESERVER = os.path.join(HERE, "fakeserver.py")
 PORT = 3111
 

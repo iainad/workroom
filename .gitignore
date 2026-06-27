@@ -16,3 +16,7 @@ CLAUDE.local.md
 /macapp/WorkroomApp.xcodeproj/
 *.xcuserstate
 .xcode.env.local
+
+# Python (run-supervisor integration test)
+__pycache__/
+*.pyc

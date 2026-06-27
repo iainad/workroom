@@ -683,6 +683,29 @@ final class RunCommandTests: XCTestCase {
       "⌘R on a running background run focuses it")
   }
 
+  /// Regression (issue #7): ⌘R / toolbar Run pressed right after a Stop (a Ctrl-C is in flight,
+  /// `.running(interrupted: true)`) must RESTART the run — wait out the stop and respawn — not
+  /// silently focus a dying server. Before the fix this start was swallowed (the pane just focused)
+  /// and the user was left with nothing running after a quick Stop → Run.
+  func testRunOrFocusAfterStopRestartsRatherThanSwallowing() {
+    let store = makeStore([project("/a", workrooms: ["main"])])
+    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    let t = target(store, "/a", "main")
+    store.selectedTargetID = .workroom(project: "/a", name: "main")
+    store.startRunCommand(for: t)
+    let tab = try! XCTUnwrap(store.runTabID(for: t.id))
+
+    store.stopRunCommand(for: t)  // SIGUSR2 → .running(interrupted: true), stop in flight
+    signals.removeAll()
+
+    store.runOrFocusRunCommand()  // ⌘R during the stop → must restart, not swallow
+
+    XCTAssertTrue(
+      signals.contains { $0.1 == SIGUSR1 },
+      "⌘R during a stop must restart (SIGUSR1), not silently focus a dying run")
+    XCTAssertEqual(store.runTabID(for: t.id), tab, "restart keeps the same run tab")
+  }
+
   func testRestartPreservesFocusWhenRunTabWasFocused() {
     // Under the supervisor model, restart signals SIGUSR1 and the same tab stays.
     let store = makeStore([project("/a", workrooms: ["main"])])

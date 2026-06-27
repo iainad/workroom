@@ -60,3 +60,9 @@ jobs:
         run: >-
           make app-test
           APP_SIGN_FLAGS="CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=YES DEVELOPMENT_TEAM="
+
+      # The supervisor PTY integration test (issue #7) drives the real supervisor.sh under a pty with
+      # a fake server — the only gate on the no-orphan / no-"already running" behaviour the Swift unit
+      # tests (mocked seam) can't see. python3 is preinstalled on the macOS runner.
+      - name: Test (run-command supervisor)
+        run: make app-test-supervisor
