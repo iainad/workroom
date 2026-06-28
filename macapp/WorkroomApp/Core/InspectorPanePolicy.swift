@@ -1,9 +1,10 @@
 import AppKit
 
-/// Which inspector section a pane hosts. Mirrors the three `RightInspector` sections, top to
-/// bottom: Changes, Pull Request, Notifications. Used for ordering and the section count.
+/// Which inspector section a pane hosts. Mirrors the `RightInspector` sections, top to bottom:
+/// Changes, Files, Pull Request, Notifications. Used for ordering and the section count.
 enum InspectorSectionKind: CaseIterable {
   case changes
+  case files
   case pullRequest
   case notifications
 }

@@ -686,6 +686,23 @@ struct WorkroomCommands: Commands {
       )
       .keyboardShortcut("c", modifiers: [.command, .option])
 
+      // View menu: reveal the Files view (the repo file tree) — same open-inspector-and-expand-section
+      // semantics as Changes above.
+      Toggle(
+        "Files",
+        isOn: Binding(
+          get: { showNotifications && !(store?.filesSectionCollapsed ?? true) },
+          set: { on in
+            if on {
+              showNotifications = true
+              store?.filesSectionCollapsed = false
+            } else {
+              store?.filesSectionCollapsed = true
+            }
+          })
+      )
+      .keyboardShortcut("f", modifiers: [.command, .option])
+
       // View menu: reveal the Pull Request view — same open-inspector-and-expand-section semantics
       // as Changes above.
       Toggle(
@@ -780,19 +797,20 @@ struct WorkroomCommands: Commands {
     }
 
     CommandGroup(after: .pasteboard) {
-      // Edit ▸ Find: scrollback search of the focused terminal. ⌘F opens the find bar; ⌘G / ⇧⌘G step
-      // to the next / previous match (wrapping at the ends — see TerminalSearchModel.navigate). All
-      // three are reserved in GhosttySurfaceView.isAppShortcut so the menu key-equivalent wins over
-      // the terminal even while a TUI in an enhanced keyboard mode (Claude/Codex) is running. Find
-      // Next / Previous no-op when no find bar is open. All disabled with no terminal.
+      // Edit ▸ Find: searches the focused pane — the terminal's scrollback for a terminal pane, or the
+      // in-file find for a read-only file viewer. ⌘F opens the find bar; ⌘G / ⇧⌘G step to the next /
+      // previous match (wrapping at the ends). All three are reserved in GhosttySurfaceView.isAppShortcut
+      // so the menu key-equivalent wins over the terminal even while a TUI in an enhanced keyboard mode
+      // (Claude/Codex) is running. Find Next / Previous no-op when no find bar is open. Disabled with no
+      // terminal (a workroom always opens with one; a lone file pane is the only gap).
       Divider()
-      Button("Find…") { store?.startFindInFocusedTerminal() }
+      Button("Find…") { store?.startFindInFocusedPane() }
         .keyboardShortcut("f", modifiers: .command)
         .disabled(hasTerminal != true)
-      Button("Find Next") { store?.navigateFocusedTerminalSearch(forward: true) }
+      Button("Find Next") { store?.navigateFocusedPaneSearch(forward: true) }
         .keyboardShortcut("g", modifiers: .command)
         .disabled(hasTerminal != true)
-      Button("Find Previous") { store?.navigateFocusedTerminalSearch(forward: false) }
+      Button("Find Previous") { store?.navigateFocusedPaneSearch(forward: false) }
         .keyboardShortcut("g", modifiers: [.command, .shift])
         .disabled(hasTerminal != true)
 

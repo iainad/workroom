@@ -448,6 +448,19 @@ private struct PaneLeafView: View {
       } else {
         diff
       }
+    case .file(let descriptor):
+      // Read-only file viewer (Files inspector section). Same rounded clip + chip context menu as the
+      // diff leaf, so "Keep Open"/Close behave identically on a previewed file.
+      let file = PlainFileViewer(
+        descriptor: descriptor, directory: target.path, isFocused: focused, find: store.fileFind
+      )
+      .clipShape(
+        RoundedRectangle(cornerRadius: TerminalPanelMetrics.cornerRadius, style: .continuous))
+      if let tab = sessions.tab(tabID, for: target) {
+        file.tabChipContextMenu(tab: tab, target: target, store: store, sessions: sessions)
+      } else {
+        file
+      }
     }
   }
 

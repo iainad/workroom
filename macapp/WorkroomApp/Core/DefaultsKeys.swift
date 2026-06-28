@@ -124,14 +124,14 @@ extension Defaults.Keys {
 }
 
 /// One workroom's persisted inspector layout: the collapse state and relative pane heights of the
-/// three sections, ordered as `InspectorSectionKind.allCases` (Changes, Pull Request,
+/// sections, ordered as `InspectorSectionKind.allCases` (Changes, Files, Pull Request,
 /// Notifications). `weights` are relative (renormalised among the expanded panes at layout time),
-/// so they survive inspector-width/height changes; equal weights == the three-equal-sections
-/// default.
+/// so they survive inspector-width/height changes; equal weights == the equal-sections default. A
+/// layout saved before the Files section existed (3 entries) is discarded to this default on load.
 struct InspectorPaneState: Codable, Defaults.Serializable, Equatable {
   var collapsed: [Bool]
   var weights: [Double]
 
   static let `default` = InspectorPaneState(
-    collapsed: [false, false, false], weights: [1, 1, 1])
+    collapsed: [false, false, false, false], weights: [1, 1, 1, 1])
 }

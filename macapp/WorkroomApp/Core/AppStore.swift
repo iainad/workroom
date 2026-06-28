@@ -137,6 +137,8 @@ final class AppStore: ObservableObject {
       scheduleSelectedStatusRefresh()
       // Swap the inspector to the newly-selected workroom's saved layout (issue #24).
       if selectedTargetID != oldValue { loadInspectorState() }
+      // The Files tree is re-pointed lazily by `FilesPanel` (only while that section is shown), not
+      // here — so selecting a workroom doesn't list its files unless you're actually browsing them.
     }
   }
   /// Project paths the user has collapsed in the sidebar (issue #14). Held here as `@Published`
@@ -242,6 +244,10 @@ final class AppStore: ObservableObject {
   @Published var changesSectionCollapsed = false {
     didSet { persistInspectorState() }
   }
+  /// Collapse state of the Files section (the repo file tree). Sits second, right under Changes.
+  @Published var filesSectionCollapsed = false {
+    didSet { persistInspectorState() }
+  }
   @Published var prSectionCollapsed = false {
     didSet { persistInspectorState() }
   }
@@ -264,7 +270,14 @@ final class AppStore: ObservableObject {
   /// `InspectorSectionKind.allCases`. Equal == the default three-equal-sections layout; updated when
   /// the user drags a divider (via `updateInspectorSizeWeights`) and persisted per workroom. Not set
   /// directly by the view — the `NSSplitView` reports drag results back through the store.
-  @Published var inspectorSizeWeights: [Double] = [1, 1, 1]
+  @Published var inspectorSizeWeights: [Double] = [1, 1, 1, 1]
+  /// The repo file tree behind the inspector's Files section. Re-pointed at the selected target's
+  /// directory whenever the selection changes (see `selectedTargetID.didSet`); the `FilesPanel`
+  /// observes it. Owned here so it survives inspector re-renders and tracks selection centrally.
+  let fileTree = FileTreeModel()
+  /// Shared in-file find state for the read-only file viewer (⌘F in a file pane). Only the focused
+  /// `PlainFileViewer` feeds + shows it; routed to from `startFindInFocusedPane`.
+  let fileFind = FileFindModel()
   /// True while `loadInspectorState` is writing the three collapse flags + weights, so their
   /// `didSet`s don't persist the values straight back (and the load isn't mistaken for a user edit).
   private var isLoadingInspectorState = false
@@ -2464,6 +2477,27 @@ final class AppStore: ObservableObject {
       for: target)
   }
 
+  /// Open a repo file as the selected target's single PREVIEW content tab (single-click in the Files
+  /// inspector section), read-only. Shares the preview slot with diffs. No-op if nothing's selected.
+  func openFilePreview(path: String) {
+    guard let target = selectedTarget else { return }
+    terminals.openFilePreview(FileDescriptor(path: path, isPreview: true), for: target)
+  }
+
+  /// Open a repo file as a *persisted* content tab (double-click in the Files section). No-op if
+  /// nothing's selected.
+  func openFilePersistent(path: String) {
+    guard let target = selectedTarget else { return }
+    terminals.openFilePersistent(FileDescriptor(path: path, isPreview: false), for: target)
+  }
+
+  /// Open a repo file in the configured external editor (⌘-click / context menu in the Files
+  /// section), reusing the shared editor path. No-op if nothing's selected.
+  func openFileInEditor(path: String) {
+    guard let target = selectedTarget else { return }
+    openWorkroomFile(relativePath: path, for: target)
+  }
+
   /// Open a workroom-relative file in the configured "Open file paths in" editor — the single path
   /// resolution shared by `openDiffTabFile` (#72) and `openChangedFileInEditor` (#93). Reuses
   /// `TerminalLinkOpener`, so it honours `Defaults[.filePathEditor]`; for a folder-capable editor CLI
@@ -2510,18 +2544,31 @@ final class AppStore: ObservableObject {
   func scrollFocusedTerminalToTop() { focusedSurface?.scrollToTop() }
   func scrollFocusedTerminalToBottom() { focusedSurface?.scrollToBottom() }
 
-  /// Open the scrollback find bar on the focused terminal (⌘F / Edit ▸ Find).
-  func startFindInFocusedTerminal() { focusedSurface?.startSearch() }
+  /// Open the find bar on the focused pane (⌘F / Edit ▸ Find): the terminal's scrollback search for a
+  /// terminal pane, the in-file find for a file pane. A diff pane has no find (no-op).
+  func startFindInFocusedPane() {
+    guard let target = selectedTarget, let tab = terminals.focusedTab(for: target) else { return }
+    switch tab.content {
+    case .terminal: focusedSurface?.startSearch()
+    case .file: fileFind.open()
+    case .diff: break
+    }
+  }
 
-  /// Navigate the focused terminal's *active* find to the next/previous match (⌘G / ⇧⌘G), wrapping
-  /// at the ends (the wrap is synthesized in `TerminalSearchModel.navigate` — the engine doesn't
-  /// wrap). Driven by the Edit ▸ Find Next/Previous menu key-equivalents; a no-op (returns `false`)
-  /// when no find bar is open. Still `@discardableResult` for the menu-button call site.
+  /// Navigate the focused pane's *active* find to the next/previous match (⌘G / ⇧⌘G), wrapping at the
+  /// ends. Tries the terminal search, then the in-file find. Returns `false` (so the key passes
+  /// through to the terminal) when neither is open. `@discardableResult` for the menu-button call site.
   @discardableResult
-  func navigateFocusedTerminalSearch(forward: Bool) -> Bool {
-    guard let surface = focusedSurface, surface.searchModel.isActive else { return false }
-    surface.searchModel.navigate(forward ? .next : .previous)
-    return true
+  func navigateFocusedPaneSearch(forward: Bool) -> Bool {
+    if let surface = focusedSurface, surface.searchModel.isActive {
+      surface.searchModel.navigate(forward ? .next : .previous)
+      return true
+    }
+    if fileFind.isOpen, fileFind.hasMatches {
+      forward ? fileFind.next() : fileFind.previous()
+      return true
+    }
+    return false
   }
 
   /// Split the focused pane by opening a new terminal beside it: ⌘D to the right, ⇧⌘D below
@@ -2854,12 +2901,17 @@ final class AppStore: ObservableObject {
     let state =
       Self.targetIDString(for: selectedTargetID)
       .flatMap { Defaults[.inspectorPaneStates][$0] } ?? .default
-    let collapsed = state.collapsed.count == 3 ? state.collapsed : [false, false, false]
-    let weights = state.weights.count == 3 ? state.weights : [1, 1, 1]
+    // One Files section was added (3 → 4): a pre-Files persisted layout (count 3) is discarded back
+    // to the all-expanded/equal default rather than mis-mapped onto the new ordering.
+    let count = InspectorSectionKind.allCases.count
+    let collapsed =
+      state.collapsed.count == count ? state.collapsed : Array(repeating: false, count: count)
+    let weights = state.weights.count == count ? state.weights : Array(repeating: 1.0, count: count)
     isLoadingInspectorState = true
     changesSectionCollapsed = collapsed[0]
-    prSectionCollapsed = collapsed[1]
-    notificationsSectionCollapsed = collapsed[2]
+    filesSectionCollapsed = collapsed[1]
+    prSectionCollapsed = collapsed[2]
+    notificationsSectionCollapsed = collapsed[3]
     inspectorSizeWeights = weights
     isLoadingInspectorState = false
   }
@@ -2871,14 +2923,18 @@ final class AppStore: ObservableObject {
       return
     }
     Defaults[.inspectorPaneStates][key] = InspectorPaneState(
-      collapsed: [changesSectionCollapsed, prSectionCollapsed, notificationsSectionCollapsed],
+      collapsed: [
+        changesSectionCollapsed, filesSectionCollapsed, prSectionCollapsed,
+        notificationsSectionCollapsed,
+      ],
       weights: inspectorSizeWeights)
   }
 
   /// Record new pane weights reported by the inspector's `NSSplitView` after a divider drag, and
   /// persist them for the selected workroom.
   func updateInspectorSizeWeights(_ weights: [Double]) {
-    guard weights.count == 3, weights != inspectorSizeWeights else { return }
+    guard weights.count == InspectorSectionKind.allCases.count, weights != inspectorSizeWeights
+    else { return }
     inspectorSizeWeights = weights
     persistInspectorState()
   }
