@@ -124,7 +124,10 @@ struct PlainFileViewer: View {
   /// or break the viewer.
   private func applyHighlight() async {
     guard state == .text, !content.isEmpty else { return }
-    guard let grammar = SyntaxLanguage.grammar(forPath: descriptor.path) else { return }
+    // Detect by path, then by the shebang on the first line — so an extension-less script
+    // (`#!/usr/bin/env bash`) still highlights. No grammar ⇒ keep the plain (already-shown) string.
+    guard let grammar = SyntaxLanguage.grammar(forPath: descriptor.path, firstLine: lines.first)
+    else { return }
     let source = content
     let spans = await Task.detached(priority: .utility) {
       SyntaxHighlighter.shared.spans(for: source, grammar: grammar)
