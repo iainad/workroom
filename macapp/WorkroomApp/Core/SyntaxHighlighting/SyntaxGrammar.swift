@@ -127,6 +127,39 @@ enum SyntaxLanguage {
     return nil
   }
 
+  /// Grammar for a file, trying the path first (extension / known filename), then the **shebang** on
+  /// the first line for an extension-less script (`#!/bin/bash`, `#!/usr/bin/env python3`). `nil` ⇒
+  /// render plain. Used by the file viewer, which has the content to sniff.
+  static func grammar(forPath path: String, firstLine: String?) -> GrammarID? {
+    if let g = grammar(forPath: path) { return g }
+    if let firstLine, let g = grammar(forShebang: firstLine) { return g }
+    return nil
+  }
+
+  /// Map a shebang line to a grammar. Resolves the interpreter basename — unwrapping
+  /// `/usr/bin/env [flags] <interp>` — and strips a version suffix (`python3.11` → python). Returns
+  /// `nil` for a non-shebang line or an unknown interpreter. Pure + unit-tested.
+  static func grammar(forShebang line: String) -> GrammarID? {
+    guard line.hasPrefix("#!") else { return nil }
+    let tokens = line.dropFirst(2).split(whereSeparator: { $0 == " " || $0 == "\t" }).map(
+      String.init)
+    guard var interpreter = tokens.first.map({ ($0 as NSString).lastPathComponent }) else {
+      return nil
+    }
+    // `env` defers to the first non-flag argument (its `-S`/`-i`… options are skipped).
+    if interpreter == "env" {
+      guard let next = tokens.dropFirst().first(where: { !$0.hasPrefix("-") }) else { return nil }
+      interpreter = (next as NSString).lastPathComponent
+    }
+    // Trim any trailing CR (a CRLF first line) / whitespace before matching.
+    let name = interpreter.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+    if ["bash", "sh", "zsh", "dash", "ksh"].contains(name) { return .bash }
+    if name.hasPrefix("python") { return .python }
+    if name.hasPrefix("ruby") { return .ruby }
+    if name.hasPrefix("node") || name == "nodejs" { return .javascript }
+    return nil
+  }
+
   /// Grammar for a single path, honouring the skip-list. `nil` if skip-listed or unknown.
   static func grammar(forPath path: String) -> GrammarID? {
     let name = (path as NSString).lastPathComponent
