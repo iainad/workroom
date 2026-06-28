@@ -1,0 +1,295 @@
+import AppKit
+import SwiftUI
+
+/// Read-only, fully selectable code view backed by `NSTextView` — SwiftUI `Text` can only select
+/// within a single view, so arbitrary multi-line selection needs AppKit. Renders the pre-built
+/// syntax-highlighted `NSAttributedString`, paints the find model's match highlights (scrolling the
+/// current into view), and shows a line-number gutter.
+///
+/// The gutter is a SEPARATE scroll view beside the text's scroll view, scroll-synced — *not* an
+/// `NSRulerView` or a subview of the text view, either of which blanks the layer-backed text view's
+/// glyph rendering under SwiftUI's hosting. The two clip views share one vertical offset, so the
+/// numbers stay aligned with their lines.
+struct CodeTextView: NSViewRepresentable {
+  /// The themed, syntax-highlighted content (built by `FileHighlightMapper.nsAttributedString`).
+  let attributed: NSAttributedString
+  /// Bumped by the host whenever `attributed` is replaced (file load, highlight arrival, theme
+  /// change), so the text storage is reset only then — not on every find keystroke.
+  let version: Int
+  let tokens: ThemeTokens
+  @ObservedObject var find: FileFindModel
+  /// Only the focused pane paints find highlights (the find model is shared across panes).
+  let isFocused: Bool
+
+  func makeCoordinator() -> Coordinator { Coordinator() }
+
+  func makeNSView(context: Context) -> NSView {
+    let coordinator = context.coordinator
+    let container = NSView()
+
+    // --- Text scroll view (a bare document view — anything added to it blanks the rendering). ---
+    let textScroll = NSScrollView()
+    textScroll.borderType = .noBorder
+    textScroll.hasVerticalScroller = true
+    textScroll.autohidesScrollers = true
+    textScroll.drawsBackground = true
+    textScroll.backgroundColor = NSColor(tokens.bg)
+
+    let storage = NSTextStorage()
+    let layoutManager = NSLayoutManager()
+    storage.addLayoutManager(layoutManager)
+    let textContainer = NSTextContainer(
+      containerSize: NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude))
+    textContainer.widthTracksTextView = true
+    layoutManager.addTextContainer(textContainer)
+
+    let textView = NSTextView(
+      frame: NSRect(x: 0, y: 0, width: 600, height: 200), textContainer: textContainer)
+    textView.isEditable = false
+    textView.isSelectable = true
+    textView.isRichText = true
+    textView.usesFontPanel = false
+    textView.allowsUndo = false
+    textView.drawsBackground = true
+    textView.backgroundColor = NSColor(tokens.bg)
+    textView.textColor = tokens.nsFg
+    textView.textContainerInset = NSSize(width: 6, height: 8)
+    textView.minSize = NSSize(width: 0, height: 0)
+    textView.maxSize = NSSize(
+      width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+    textView.isVerticallyResizable = true
+    textView.isHorizontallyResizable = false
+    textView.autoresizingMask = [.width]
+    textScroll.documentView = textView
+
+    // --- Gutter scroll view (driven by the text view's scroll; never user-scrolled). ---
+    let gutterScroll = NSScrollView()
+    gutterScroll.borderType = .noBorder
+    gutterScroll.hasVerticalScroller = false
+    gutterScroll.hasHorizontalScroller = false
+    gutterScroll.verticalScrollElasticity = .none
+    gutterScroll.drawsBackground = true
+    gutterScroll.backgroundColor = NSColor(tokens.bg)
+    let gutterView = GutterView()
+    gutterView.textView = textView
+    gutterView.tokens = tokens
+    gutterScroll.documentView = gutterView
+
+    container.addSubview(gutterScroll)
+    container.addSubview(textScroll)
+
+    coordinator.textView = textView
+    coordinator.textScroll = textScroll
+    coordinator.gutterScroll = gutterScroll
+    coordinator.gutterView = gutterView
+
+    // Keep the gutter's vertical offset locked to the text's as it scrolls.
+    textScroll.contentView.postsBoundsChangedNotifications = true
+    coordinator.scrollObserver = NotificationCenter.default.addObserver(
+      forName: NSView.boundsDidChangeNotification, object: textScroll.contentView, queue: .main
+    ) { [weak coordinator] _ in coordinator?.syncGutterScroll() }
+
+    setText(textView, coordinator: coordinator)
+    coordinator.layout(in: container)
+    return container
+  }
+
+  func updateNSView(_ container: NSView, context: Context) {
+    let coordinator = context.coordinator
+    guard let textView = coordinator.textView else { return }
+    textView.backgroundColor = NSColor(tokens.bg)
+    coordinator.textScroll?.backgroundColor = NSColor(tokens.bg)
+    coordinator.gutterScroll?.backgroundColor = NSColor(tokens.bg)
+    coordinator.gutterView?.tokens = tokens
+
+    if coordinator.appliedVersion != version {
+      setText(textView, coordinator: coordinator)
+      coordinator.layout(in: container)
+    }
+    coordinator.applyFind(
+      needle: (isFocused && find.isOpen) ? find.needle : "",
+      current: find.current,
+      highlight: NSColor(tokens.accent))
+  }
+
+  private func setText(_ textView: NSTextView, coordinator: Coordinator) {
+    textView.textStorage?.setAttributedString(attributed)
+    textView.layoutManager?.ensureLayout(for: textView.textContainer!)
+    coordinator.recomputeGutterWidth(lineCount: (attributed.string as NSString).numberOfLines)
+    coordinator.appliedVersion = version
+    coordinator.gutterView?.needsDisplay = true
+  }
+
+  static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
+    if let observer = coordinator.scrollObserver {
+      NotificationCenter.default.removeObserver(observer)
+    }
+  }
+
+  /// Holds the live views + bookkeeping across SwiftUI updates.
+  final class Coordinator {
+    weak var textView: NSTextView?
+    weak var textScroll: NSScrollView?
+    weak var gutterScroll: NSScrollView?
+    weak var gutterView: GutterView?
+    var scrollObserver: NSObjectProtocol?
+    var appliedVersion = -1
+    private(set) var gutterWidth: CGFloat = 44
+    private var highlightedRanges: [NSRange] = []
+    private var lastNeedle = ""
+    private var lastCurrent = -1
+
+    func recomputeGutterWidth(lineCount: Int) {
+      let digits = max(2, String(max(1, lineCount)).count)
+      gutterWidth = ceil(CGFloat(digits) * 7.0) + 22
+    }
+
+    /// Position the gutter (fixed width, left) and the text scroll view (fills the rest), and size
+    /// the gutter's document to the text's height so it scrolls 1:1.
+    func layout(in container: NSView) {
+      let bounds = container.bounds
+      gutterScroll?.frame = NSRect(x: 0, y: 0, width: gutterWidth, height: bounds.height)
+      gutterScroll?.autoresizingMask = [.height]
+      textScroll?.frame = NSRect(
+        x: gutterWidth, y: 0, width: max(0, bounds.width - gutterWidth), height: bounds.height)
+      textScroll?.autoresizingMask = [.width, .height]
+      if let textView, let gutterView {
+        gutterView.frame = NSRect(
+          x: 0, y: 0, width: gutterWidth, height: max(bounds.height, textView.frame.height))
+        gutterView.needsDisplay = true
+      }
+      syncGutterScroll()
+    }
+
+    func syncGutterScroll() {
+      guard let textScroll, let gutterScroll else { return }
+      let y = textScroll.contentView.bounds.origin.y
+      gutterScroll.contentView.scroll(to: NSPoint(x: 0, y: y))
+      gutterScroll.reflectScrolledClipView(gutterScroll.contentView)
+    }
+
+    /// Paint every match's background (the current one stronger) and scroll the current into view.
+    func applyFind(needle: String, current: Int, highlight: NSColor) {
+      guard let textView, let storage = textView.textStorage else { return }
+      if needle == lastNeedle && current == lastCurrent && !needle.isEmpty { return }
+      lastNeedle = needle
+      lastCurrent = current
+
+      for range in highlightedRanges where NSMaxRange(range) <= storage.length {
+        storage.removeAttribute(.backgroundColor, range: range)
+      }
+      highlightedRanges = []
+      guard !needle.isEmpty else { return }
+
+      let text = storage.string as NSString
+      var searchStart = 0
+      var matchIndex = 0
+      var currentRange: NSRange?
+      while searchStart < text.length {
+        let found = text.range(
+          of: needle, options: .caseInsensitive,
+          range: NSRange(location: searchStart, length: text.length - searchStart))
+        if found.location == NSNotFound { break }
+        storage.addAttribute(
+          .backgroundColor,
+          value: highlight.withAlphaComponent(matchIndex == current ? 0.55 : 0.28),
+          range: found)
+        highlightedRanges.append(found)
+        if matchIndex == current { currentRange = found }
+        matchIndex += 1
+        searchStart = found.location + max(found.length, 1)
+      }
+      if let currentRange { textView.scrollRangeToVisible(currentRange) }
+    }
+  }
+}
+
+/// Draws the 1-based line-number column. A normal `NSView` (document view of its own scroll view), so
+/// its `draw` composites reliably; it shares the text view's vertical coordinates, so a number drawn
+/// at a line fragment's y lines up with that line once the two scroll views are offset together.
+final class GutterView: NSView {
+  weak var textView: NSTextView?
+  var tokens: ThemeTokens? { didSet { needsDisplay = true } }
+
+  private static let numberFont = NSFont.monospacedSystemFont(ofSize: 10, weight: .regular)
+
+  override var isFlipped: Bool { true }
+  // Scrolling over the gutter should scroll the code, not the (fixed) gutter.
+  override func scrollWheel(with event: NSEvent) {
+    textView?.enclosingScrollView?.scrollWheel(with: event)
+  }
+
+  override func draw(_ dirtyRect: NSRect) {
+    guard
+      let textView,
+      let layoutManager = textView.layoutManager,
+      let container = textView.textContainer,
+      let tokens
+    else { return }
+
+    NSColor(tokens.bg).setFill()
+    dirtyRect.fill()
+    NSColor(tokens.fgMuted).withAlphaComponent(0.15).setFill()
+    NSRect(x: bounds.width - 1, y: dirtyRect.minY, width: 1, height: dirtyRect.height).fill()
+
+    let text = textView.string as NSString
+    let originY = textView.textContainerOrigin.y
+    let attrs: [NSAttributedString.Key: Any] = [
+      .font: Self.numberFont, .foregroundColor: NSColor(tokens.fgMuted),
+    ]
+
+    let containerRect = NSRect(
+      x: 0, y: dirtyRect.minY - originY, width: 100_000, height: dirtyRect.height)
+    let glyphRange = layoutManager.glyphRange(forBoundingRect: containerRect, in: container)
+    let charRange = layoutManager.characterRange(forGlyphRange: glyphRange, actualGlyphRange: nil)
+
+    var lineNumber = countNewlines(in: text, upTo: charRange.location) + 1
+    var index = charRange.location
+    let end = NSMaxRange(charRange)
+    while index < end {
+      let lineRange = text.lineRange(for: NSRange(location: index, length: 0))
+      let glyphIndex = layoutManager.glyphIndexForCharacter(at: lineRange.location)
+      let fragment = layoutManager.lineFragmentRect(forGlyphAt: glyphIndex, effectiveRange: nil)
+      let label = "\(lineNumber)" as NSString
+      let size = label.size(withAttributes: attrs)
+      label.draw(
+        at: NSPoint(
+          x: bounds.width - size.width - 7,
+          y: fragment.minY + originY + (fragment.height - size.height) / 2),
+        withAttributes: attrs)
+      lineNumber += 1
+      let next = NSMaxRange(lineRange)
+      if next <= index { break }
+      index = next
+    }
+  }
+
+  private func countNewlines(in text: NSString, upTo limit: Int) -> Int {
+    let end = min(limit, text.length)
+    var count = 0
+    var i = 0
+    while i < end {
+      let r = text.range(of: "\n", options: [], range: NSRange(location: i, length: end - i))
+      if r.location == NSNotFound { break }
+      count += 1
+      i = r.location + 1
+    }
+    return count
+  }
+}
+
+extension NSString {
+  /// Line count = newline count + 1 (non-empty); 1 for the empty string.
+  fileprivate var numberOfLines: Int {
+    guard length > 0 else { return 1 }
+    var count = 1
+    var i = 0
+    while i < length {
+      let r = range(of: "\n", options: [], range: NSRange(location: i, length: length - i))
+      if r.location == NSNotFound { break }
+      count += 1
+      i = r.location + 1
+    }
+    return count
+  }
+}

@@ -34,6 +34,16 @@ struct RightInspector: View {
           .environmentObject(store).environmentObject(notifications)),
         AnyView(
           SectionHeader(
+            title: "Files", collapsed: $store.filesSectionCollapsed,
+            shortcut: "⌥⌘F"
+          ) {
+            InspectorHeaderButton(systemImage: "arrow.clockwise", help: "Refresh files") {
+              store.fileTree.reload()
+            }
+          }
+          .environmentObject(store).environmentObject(notifications)),
+        AnyView(
+          SectionHeader(
             title: "Pull Request", collapsed: $store.prSectionCollapsed,
             shortcut: "⌥⌘P"
           ) {
@@ -57,11 +67,16 @@ struct RightInspector: View {
       ],
       bodies: [
         AnyView(ChangesPanel().environmentObject(store).environmentObject(notifications)),
+        AnyView(
+          FilesPanel(model: store.fileTree).environmentObject(store).environmentObject(
+            notifications)
+        ),
         AnyView(PullRequestPanel().environmentObject(store).environmentObject(notifications)),
         AnyView(NotificationsList().environmentObject(store).environmentObject(notifications)),
       ],
       collapsed: [
         store.changesSectionCollapsed,
+        store.filesSectionCollapsed,
         store.prSectionCollapsed,
         store.notificationsSectionCollapsed,
       ],

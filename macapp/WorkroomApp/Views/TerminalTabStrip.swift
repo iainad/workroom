@@ -408,6 +408,13 @@ private struct TerminalTabChip: View {
           .foregroundStyle(theme.tokens.fgMuted)
           .accessibilityHidden(true)
       }
+      // A file (content) tab gets a document glyph, same intent as the diff glyph above.
+      if case .file = tab.content {
+        Image(systemName: "doc")
+          .font(.system(size: 9, weight: .semibold))
+          .foregroundStyle(theme.tokens.fgMuted)
+          .accessibilityHidden(true)
+      }
       // Unread activity is marked by a leading accent dot (+ accent title) — a different visual
       // primitive from the selected tab's neutral fill, so the two never read alike.
       if hasActivity {
