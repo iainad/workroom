@@ -31,7 +31,19 @@ struct PlainFileViewer: View {
   /// Bumped when a file finishes loading, so the highlight task (keyed on it) re-runs against the
   /// freshly loaded content without re-reading on every theme change.
   @State private var loadToken = 0
+  /// Source vs. rendered for a Markdown file; ignored for other files (always source). Reset to the
+  /// per-file default on load; a manual toggle persists until the next file opens.
+  @State private var mode: RenderMode = .source
+  /// The rendered-Markdown attributed string for preview mode, and its reset token.
+  @State private var rendered = NSAttributedString()
+  @State private var renderVersion = 0
   private let theme = ThemeService.shared
+
+  enum RenderMode: String, CaseIterable { case source, preview }
+
+  /// Whether this file is Markdown (preview mode is offered only then).
+  private var isMarkdown: Bool { SyntaxLanguage.grammar(forPath: descriptor.path) == .markdown }
+  private var showingPreview: Bool { isMarkdown && mode == .preview }
 
   /// Files at or over this size aren't loaded (open them in an editor instead). Comfortably above
   /// the 2 MB syntax-highlight cap, so a big-but-readable file still shows (plain).
@@ -60,18 +72,49 @@ struct PlainFileViewer: View {
   }
 
   var body: some View {
-    content(for: state)
-      .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-      .background(theme.tokens.bg)
-      // Find bar, pinned top-trailing over the focused pane (the model is shared, so gate on focus).
-      .overlay(alignment: .topTrailing) {
-        if isFocused { FileFindBar(model: find) }
+    VStack(spacing: 0) {
+      // Markdown gets a header bar with the Source/Preview switch, so it never overlays the content.
+      if isMarkdown && state == .text { modeToggleBar }
+      content(for: state)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        // Find bar (source mode only — preview has no in-text find), top-trailing over a focused pane.
+        .overlay(alignment: .topTrailing) {
+          if isFocused && !showingPreview { FileFindBar(model: find) }
+        }
+    }
+    .background(theme.tokens.bg)
+    .task(id: descriptor.path) { await load() }
+    .task(id: highlightKey) { await applyHighlight() }
+    // Render Markdown for preview mode (off-main), re-running on content / theme / mode change.
+    .task(id: "\(descriptor.path)\u{1F}\(theme.generation)\u{1F}\(showingPreview)") {
+      await renderMarkdown()
+    }
+    // Feed the find model this file's lines when focus arrives (or the file/content changes), so a
+    // search runs against what's actually on screen.
+    .onChange(of: isFocused) { _, focused in if focused { find.setSource(lines) } }
+  }
+
+  /// The header bar with the Source ⇄ Preview switch (Markdown files only).
+  private var modeToggleBar: some View {
+    HStack(spacing: 0) {
+      Picker("", selection: $mode) {
+        Text("Preview").tag(RenderMode.preview)
+        Text("Source").tag(RenderMode.source)
       }
-      .task(id: descriptor.path) { await load() }
-      .task(id: highlightKey) { await applyHighlight() }
-      // Feed the find model this file's lines when focus arrives (or the file/content changes), so a
-      // search runs against what's actually on screen.
-      .onChange(of: isFocused) { _, focused in if focused { find.setSource(lines) } }
+      .pickerStyle(.segmented)
+      .labelsHidden()
+      .controlSize(.small)
+      .fixedSize()
+      // macOS doesn't show a pointer over controls by default; the switch reads better as a button.
+      .onHover { inside in
+        if inside { NSCursor.pointingHand.push() } else { NSCursor.pop() }
+      }
+      Spacer(minLength: 0)
+    }
+    .padding(.horizontal, 10)
+    .padding(.vertical, 6)
+    .background(theme.tokens.bg)
+    .overlay(alignment: .bottom) { Divider() }
   }
 
   /// Identity of the current highlight: file + theme generation + which load it's for. Any change
@@ -115,8 +158,22 @@ struct PlainFileViewer: View {
       version &+= 1
       state = .text
       loadToken &+= 1
+      mode = isMarkdown ? .preview : .source  // Markdown opens rendered; others always source
       if isFocused { find.setSource(split) }  // search this file once it's on screen
     }
+  }
+
+  /// Render the Markdown content for preview mode (off-main). Cheap miss when not previewing.
+  private func renderMarkdown() async {
+    guard showingPreview, state == .text, !content.isEmpty else { return }
+    let source = content
+    let tokens = theme.tokens
+    let result = await Task.detached(priority: .utility) {
+      MarkdownRenderer.attributedString(source, tokens: tokens)
+    }.value
+    guard !Task.isCancelled, source == content else { return }
+    rendered = result
+    renderVersion &+= 1
   }
 
   /// Build syntax highlighting for the loaded file, off-main and cancellable. Any miss (no grammar,
@@ -181,21 +238,26 @@ struct PlainFileViewer: View {
     }
   }
 
-  private var fileBody: some View {
-    // An NSTextView (CodeTextView) renders the code: read-only, fully selectable across lines, with a
-    // line-number ruler and find-match highlighting.
-    CodeTextView(
-      attributed: attributed, version: version, tokens: theme.tokens, find: find,
-      isFocused: isFocused
-    )
-    .overlay(alignment: .bottomLeading) {
-      if truncated {
-        Text("File truncated — showing the first \(Self.lineCap) lines.")
-          .font(.footnote)
-          .foregroundStyle(.secondary)
-          .padding(.horizontal, 8).padding(.vertical, 4)
-          .background(.regularMaterial, in: Capsule())
-          .padding(8)
+  @ViewBuilder private var fileBody: some View {
+    if showingPreview {
+      // Rendered Markdown — read-only, selectable, with clickable links.
+      MarkdownPreviewView(attributed: rendered, version: renderVersion, tokens: theme.tokens)
+    } else {
+      // Source: an NSTextView (CodeTextView) — read-only, fully selectable across lines, with a
+      // line-number gutter and find-match highlighting.
+      CodeTextView(
+        attributed: attributed, version: version, tokens: theme.tokens, find: find,
+        isFocused: isFocused
+      )
+      .overlay(alignment: .bottomLeading) {
+        if truncated {
+          Text("File truncated — showing the first \(Self.lineCap) lines.")
+            .font(.footnote)
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 8).padding(.vertical, 4)
+            .background(.regularMaterial, in: Capsule())
+            .padding(8)
+        }
       }
     }
   }
