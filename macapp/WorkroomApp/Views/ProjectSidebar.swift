@@ -357,7 +357,8 @@ struct ProjectSidebar: View {
       // workrooms read as aligned siblings.
       leadingSlot(for: target, id: id, root: false)
       // lineLimit so a long name yields to the VCS badges — truncation priority: name first (#24).
-      Text(workroom.name).font(.callout).lineLimit(1).truncationMode(.tail)
+      // Shows the display label when one is set (issue #41), else the real workroom name.
+      Text(workroom.displayName).font(.callout).lineLimit(1).truncationMode(.tail)
       // VCS status sub-cluster: after the name, before the Spacer. The dirty dot is dropped
       // (`showDot: false`) — the leading cube glyph's tint carries that signal — leaving ahead/behind.
       VCSStatusCluster(
@@ -378,7 +379,7 @@ struct ProjectSidebar: View {
         if terminals.isRunning(forTargetID: targetID), hovered != id {
           RunningSpinner()
         }
-        DeleteRowButton(name: workroom.name, visible: hovered == id) {
+        DeleteRowButton(name: workroom.displayName, visible: hovered == id) {
           store.pendingDeletion = PendingWorkroomDeletion(workroom: workroom, project: project)
         }
       }
@@ -402,10 +403,25 @@ struct ProjectSidebar: View {
         if inside { hovered = id } else if hovered == id { hovered = nil }
       }
       .contextMenu {
+        // Set/edit the display label, and remove it when one is set (issue #41). A label is a
+        // display-only alias — the workroom name and its branch are unchanged.
+        Button {
+          store.pendingWorkroomLabel = PendingWorkroomLabel(workroom: workroom, project: project)
+        } label: {
+          Label(workroom.label == nil ? "Set Label…" : "Edit Label…", systemImage: "pencil")
+        }
+        if workroom.label != nil {
+          Button {
+            store.removeWorkroomLabel(workroom, in: project)
+          } label: {
+            Label("Remove Label", systemImage: "pencil.slash")
+          }
+        }
+        Divider()
         Button(role: .destructive) {
           store.pendingDeletion = PendingWorkroomDeletion(workroom: workroom, project: project)
         } label: {
-          Label("Delete \(workroom.name)", systemImage: "trash")
+          Label("Delete \(workroom.displayName)", systemImage: "trash")
         }
       }
   }

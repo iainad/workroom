@@ -187,7 +187,7 @@ struct RootView: View {
       // One of several sibling `.sheet` presenters on this view — only one is ever active at a time.
       .modifier(OpenWorkroomPresenter(store: store))
       .confirmationDialog(
-        store.pendingDeletion.map { "Delete '\($0.workroom.name)'?" } ?? "Delete workroom?",
+        store.pendingDeletion.map { "Delete '\($0.workroom.displayName)'?" } ?? "Delete workroom?",
         isPresented: Binding(
           get: { store.pendingDeletion != nil }, set: { if !$0 { store.pendingDeletion = nil } }),
         titleVisibility: .visible
@@ -234,6 +234,18 @@ struct RootView: View {
             store.deleteProject(pending.project, scope: scope)
           },
           onCancel: { store.pendingProjectDeletion = nil })
+      }
+      // Set/edit a workroom's display label (issue #41). Same `.sheet(item:)` bridge as project
+      // deletion above — the id-keyed item rebuilds the sheet per workroom, resetting its field.
+      .sheet(item: $store.pendingWorkroomLabel) { pending in
+        WorkroomLabelSheet(
+          workroom: pending.workroom,
+          project: pending.project,
+          onSet: { label in
+            store.pendingWorkroomLabel = nil
+            store.setWorkroomLabel(pending.workroom, in: pending.project, to: label)
+          },
+          onCancel: { store.pendingWorkroomLabel = nil })
       }
   }
 

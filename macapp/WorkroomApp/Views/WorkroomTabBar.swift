@@ -322,9 +322,13 @@ private struct WorkroomTabChip: View {
     }
   }
 
-  /// A workroom's own name (nil for a root/project) — rendered as trailing secondary text.
+  /// A workroom's own name (nil for a root/project) — rendered as trailing secondary text. Resolves
+  /// to the display label when one is set (issue #41); this also feeds the "Close" prompt below, so
+  /// that dialog shows the label too.
   private var workroomName: String? {
-    if case .workroom(_, let name) = sid { return name }
+    if case .workroom(let project, let name) = sid {
+      return store.displayName(forWorkroom: name, inProject: project)
+    }
     return nil
   }
 
@@ -449,9 +453,23 @@ private struct WorkroomTabChip: View {
       } label: {
         Label("Close", systemImage: "xmark")
       }
-      // Delete only applies to a workroom (roots are never deletable). Raises the same confirmation
-      // the sidebar's delete affordances do.
+      // Label + delete only apply to a workroom (roots are never labelled or deletable). Mirrors the
+      // sidebar row's context menu (issue #41 + delete).
       if let pair = store.workroomAndProject(for: sid) {
+        Divider()
+        Button {
+          store.pendingWorkroomLabel = PendingWorkroomLabel(
+            workroom: pair.workroom, project: pair.project)
+        } label: {
+          Label(pair.workroom.label == nil ? "Set Label…" : "Edit Label…", systemImage: "pencil")
+        }
+        if pair.workroom.label != nil {
+          Button {
+            store.removeWorkroomLabel(pair.workroom, in: pair.project)
+          } label: {
+            Label("Remove Label", systemImage: "pencil.slash")
+          }
+        }
         Divider()
         Button(role: .destructive) {
           store.pendingDeletion = PendingWorkroomDeletion(

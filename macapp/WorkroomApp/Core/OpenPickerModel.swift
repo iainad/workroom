@@ -6,7 +6,12 @@ import Foundation
 /// (the grouping key).
 struct OpenTarget: Identifiable, Hashable {
   let sid: SidebarID
+  /// The shown text — a workroom's `displayName` (its label when set, else its name) — issue #41.
   let title: String
+  /// The real, immutable workroom name (== `title` for a root or an unlabelled workroom). Kept
+  /// separate so the dialog's `accessibilityIdentifier` stays keyed on the stable name even when the
+  /// label changes the visible `title`, and so a workroom remains findable by its real name.
+  let name: String
   let projectName: String
   let projectPath: String
   let path: String
@@ -16,8 +21,13 @@ struct OpenTarget: Identifiable, Hashable {
 
   /// What the query matches against: the project name **then** the title, so a fuzzy subsequence can
   /// span both fields in reading order — e.g. "proapp" matches project "projectA"'s workroom "apple"
-  /// (pro→projectA, app→apple). Typing a project name also surfaces its workrooms.
-  var searchText: String { "\(projectName) \(title)" }
+  /// (pro→projectA, app→apple). Typing a project name also surfaces its workrooms. When a display
+  /// label hides the real name (`name != title`, issue #41), the real name is appended too so a
+  /// labelled workroom stays findable by it; for roots/unlabelled rows `name == title`, so nothing
+  /// is added and matching is byte-for-byte what it was before labels existed.
+  var searchText: String {
+    name == title ? "\(projectName) \(title)" : "\(projectName) \(title) \(name)"
+  }
 }
 
 /// One project's section in the grouped picker: the header text plus its visible rows (root first,
@@ -47,18 +57,25 @@ enum OpenPickerModel {
         rows.append(
           OpenTarget(
             sid: .root(project: project.path), title: project.displayName,
-            projectName: project.displayName, projectPath: project.path, path: project.path,
-            isRoot: true))
+            name: project.displayName, projectName: project.displayName,
+            projectPath: project.path, path: project.path, isRoot: true))
       }
+      // Sort by the shown name (displayName) so labelled rows read in alphabetical order of what the
+      // user actually sees (issue #41), with the real name as a stable tie-break.
       let workrooms = project.workrooms
         .filter { !$0.target(inProject: project.path).isMissing }
-        .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        .sorted {
+          let byShown = $0.displayName.localizedCaseInsensitiveCompare($1.displayName)
+          return byShown == .orderedSame
+            ? $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+            : byShown == .orderedAscending
+        }
       for workroom in workrooms {
         rows.append(
           OpenTarget(
-            sid: .workroom(project: project.path, name: workroom.name), title: workroom.name,
-            projectName: project.displayName, projectPath: project.path, path: workroom.path,
-            isRoot: false))
+            sid: .workroom(project: project.path, name: workroom.name), title: workroom.displayName,
+            name: workroom.name, projectName: project.displayName, projectPath: project.path,
+            path: workroom.path, isRoot: false))
       }
       return rows
     }

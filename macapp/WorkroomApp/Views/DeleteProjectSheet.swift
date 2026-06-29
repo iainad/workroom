@@ -115,7 +115,7 @@ struct DeleteProjectSheet: View {
           ScrollView {
             VStack(alignment: .leading, spacing: 4) {
               ForEach(project.workrooms) { workroom in
-                Label(workroom.name, systemImage: "folder")
+                Label(workroom.displayName, systemImage: "folder")
                   .font(.callout)
               }
             }

@@ -57,6 +57,16 @@ struct PendingProjectDeletion: Identifiable {
   var id: String { project.path }
 }
 
+/// A workroom awaiting a display-label edit (issue #41). Held on the store (and `Identifiable` so it
+/// drives a `.sheet(item:)`) so the sidebar row's and tab chip's "Set/Edit Label…" items share one
+/// piece of state. `id` is the workroom's project-scoped target id, so re-targeting a different
+/// workroom rebuilds the sheet (resetting its typed `@State`).
+struct PendingWorkroomLabel: Identifiable {
+  let workroom: Workroom
+  let project: Project
+  var id: String { TerminalTarget.workroomID(project: project.path, name: workroom.name) }
+}
+
 /// App-wide state and actions. A single shared instance is used so the App, views,
 /// and menu Commands all act on the same store. All CLI work is awaited (it runs off
 /// the main thread inside WorkroomCLI), keeping the UI responsive.
@@ -297,6 +307,9 @@ final class AppStore: ObservableObject {
   /// A project awaiting type-to-confirm deletion (drives the DeleteProjectSheet). Set by the
   /// project row's context menu; cleared when the sheet's Delete/Cancel resolves.
   @Published var pendingProjectDeletion: PendingProjectDeletion?
+  /// A workroom awaiting a display-label edit (drives the WorkroomLabelSheet, issue #41). Set by the
+  /// sidebar row's / tab chip's "Set Label…"/"Edit Label…" item; cleared when the sheet resolves.
+  @Published var pendingWorkroomLabel: PendingWorkroomLabel?
   /// Setup logs scoped per terminal target (a workroom's target id), rendered under that
   /// workroom's terminal. Kept until the user closes them (or the workroom is deleted) so
   /// the output stays available for review. Keyed on the target id (project-scoped) so
@@ -568,7 +581,8 @@ final class AppStore: ObservableObject {
       return projects.first { $0.id == path }?.displayName ?? defaultWindowTitle
     case .workroom(let path, let name):
       guard let project = projects.first(where: { $0.id == path })?.displayName else { return name }
-      return "\(project) — \(name)"
+      // Show the workroom's display label when set (issue #41); falls back to the real name.
+      return "\(project) — \(displayName(forWorkroom: name, inProject: path))"
     case .project, nil:
       return defaultWindowTitle
     }
@@ -1728,12 +1742,18 @@ final class AppStore: ObservableObject {
     lastLoadAt = Date()
   }
 
-  private func apply(_ fresh: [Project]) {
+  private func apply(_ incoming: [Project]) {
+    // Inject GUI-only display labels (issue #41) onto the decoded workrooms from
+    // `Defaults[.workroomLabels]` — the CLI JSON never carries them — and garbage-collect labels for
+    // workrooms that no longer exist (deleted via the CLI or another build). `incoming` is the full
+    // configured set (`ListData`/`AllProjects`), so pruning anything not present is safe.
+    let fresh0 = enrichLabels(incoming)
+    pruneOrphanedLabels(keeping: fresh0)
     // Sort projects alphabetically by display name (issue #62) so the sidebar order is stable and
     // predictable regardless of CLI/config order. Case-insensitive, with the full path as a
     // tie-break so same-named projects in different dirs keep a deterministic order. Done here at the
     // single source of truth so selection defaults (`fresh.first`) and the rendered tree agree.
-    let fresh = fresh.sorted {
+    let fresh = fresh0.sorted {
       let byName = $0.displayName.localizedCaseInsensitiveCompare($1.displayName)
       return byName == .orderedSame ? $0.path < $1.path : byName == .orderedAscending
     }
@@ -2091,12 +2111,113 @@ final class AppStore: ObservableObject {
     }
   }
 
-  /// Drops a workroom from the in-memory project list so the sidebar updates instantly.
-  private func removeWorkroomLocally(_ workroom: Workroom, in project: Project) {
+  /// Drops a workroom from the in-memory project list so the sidebar updates instantly. `internal`
+  /// so the label-cleanup it performs is a unit-test seam (mirrors `removeProjectLocally`).
+  func removeWorkroomLocally(_ workroom: Workroom, in project: Project) {
     guard let idx = projects.firstIndex(where: { $0.id == project.id }) else { return }
     let p = projects[idx]
     projects[idx] = Project(
       path: p.path, vcs: p.vcs, workrooms: p.workrooms.filter { $0.id != workroom.id })
+    forgetLabels(forProject: project.path, workroomNames: [workroom.name])
+  }
+
+  // MARK: - Workroom labels (issue #41)
+
+  /// Inject each workroom's GUI-only display label from `Defaults[.workroomLabels]` onto the freshly
+  /// decoded model. The CLI JSON never carries a label, so this is the one point the app-side store
+  /// is merged into `projects`. Pure transform — no side effects — so it's reused by both `apply`
+  /// (full reload) and the targeted label mutators below. `internal` so it's a unit-test seam (the
+  /// `apply` path that calls it is private).
+  func enrichLabels(_ incoming: [Project]) -> [Project] {
+    let labels = Defaults[.workroomLabels]
+    guard !labels.isEmpty else { return incoming }
+    return incoming.map { project in
+      Project(
+        path: project.path, vcs: project.vcs,
+        workrooms: project.workrooms.map { wr in
+          var wr = wr
+          wr.label = labels[TerminalTarget.workroomID(project: project.path, name: wr.name)]
+          return wr
+        })
+    }
+  }
+
+  /// Garbage-collect labels whose workroom no longer exists in `live` (deleted via the CLI or
+  /// another build) so the map stays bounded and a recreated same-named workroom can't inherit a
+  /// stale label. Safe to run on every load because `apply` always receives the complete configured
+  /// set (`ListData`/`AllProjects`). `internal` so it's a unit-test seam.
+  func pruneOrphanedLabels(keeping live: [Project]) {
+    let labels = Defaults[.workroomLabels]
+    guard !labels.isEmpty else { return }
+    var liveKeys = Set<String>()
+    for project in live {
+      for wr in project.workrooms {
+        liveKeys.insert(TerminalTarget.workroomID(project: project.path, name: wr.name))
+      }
+    }
+    let pruned = labels.filter { liveKeys.contains($0.key) }
+    if pruned.count != labels.count { Defaults[.workroomLabels] = pruned }
+  }
+
+  /// Drop the stored labels for the named workrooms of a project (used by the delete paths so an
+  /// in-app delete clears the label immediately, not just on the next prune-on-load).
+  private func forgetLabels(forProject path: String, workroomNames: [String]) {
+    var labels = Defaults[.workroomLabels]
+    var changed = false
+    for name in workroomNames {
+      if labels.removeValue(forKey: TerminalTarget.workroomID(project: path, name: name)) != nil {
+        changed = true
+      }
+    }
+    if changed { Defaults[.workroomLabels] = labels }
+  }
+
+  /// The name to show for a workroom referenced only by `SidebarID`/name (the tab chip and window
+  /// title, which never hold the `Workroom` value). Resolves through the enriched model so there's a
+  /// single read path, falling back to the real `name` when the workroom isn't in `projects` yet
+  /// (a mid-reload race) — mirroring `windowTitle`'s own fallback.
+  func displayName(forWorkroom name: String, inProject path: String) -> String {
+    projects.first { $0.id == path }?.workrooms.first { $0.id == name }?.displayName ?? name
+  }
+
+  /// Set (or, for a blank value, remove) a workroom's display label (issue #41). Normalises at the
+  /// write boundary so the stored value is always trimmed and non-empty — `displayName`'s guard is
+  /// then just defense-in-depth. App-only: writes `Defaults` and rebuilds the one affected project in
+  /// the shared `projects`, so every window re-renders instantly with no CLI call and without running
+  /// the heavyweight `apply` (which would needlessly re-validate selection and prune splits).
+  func setWorkroomLabel(_ workroom: Workroom, in project: Project, to raw: String) {
+    let key = TerminalTarget.workroomID(project: project.path, name: workroom.name)
+    var labels = Defaults[.workroomLabels]
+    if let normalized = Workroom.normalizedLabel(raw) {
+      labels[key] = normalized
+    } else {
+      // Blank input means "no label". The sheet disables submit on blank, so this branch is reached
+      // only via `removeWorkroomLabel` (or defensively) — removal is the explicit menu action.
+      labels[key] = nil
+    }
+    Defaults[.workroomLabels] = labels
+    relabelLocally(workroom.name, in: project.path, to: labels[key])
+  }
+
+  /// Remove a workroom's display label, restoring its real name everywhere. Raised by the
+  /// "Remove Label" context-menu item.
+  func removeWorkroomLabel(_ workroom: Workroom, in project: Project) {
+    setWorkroomLabel(workroom, in: project, to: "")
+  }
+
+  /// Targeted single-workroom rebuild of the shared `projects` (mirrors `removeWorkroomLocally`):
+  /// replace just the one workroom with a copy carrying the new label, leaving sort order, selection,
+  /// and splits untouched (a label never changes any of them). `internal` so store tests can drive it.
+  func relabelLocally(_ name: String, in projectPath: String, to label: String?) {
+    guard let pIdx = projects.firstIndex(where: { $0.id == projectPath }),
+      let wIdx = projects[pIdx].workrooms.firstIndex(where: { $0.id == name })
+    else { return }
+    var workrooms = projects[pIdx].workrooms
+    var wr = workrooms[wIdx]
+    wr.label = label
+    workrooms[wIdx] = wr
+    let p = projects[pIdx]
+    projects[pIdx] = Project(path: p.path, vcs: p.vcs, workrooms: workrooms)
   }
 
   /// Maps a workroom log key ("wr|<project>|<name>") back to its selection id.
@@ -2214,6 +2335,10 @@ final class AppStore: ObservableObject {
       removeWorkroomSplitMember(.workroom(project: project.path, name: w.name))
       workroomStatuses[.workroom(project: project.path, name: w.name)] = nil
     }
+    // Drop every label belonging to this project's workrooms (issue #41) — prune-on-load is the
+    // backstop, but clearing here keeps it immediate and prevents a same-named recreate from
+    // inheriting a stale label.
+    forgetLabels(forProject: project.path, workroomNames: project.workrooms.map(\.name))
     return targetIDs
   }
 
@@ -2818,11 +2943,24 @@ final class AppStore: ObservableObject {
   /// Human-readable origin for a notification: the project name, plus the workroom for a
   /// workroom terminal (e.g. "platform" for a root, "platform / fix-auth" for a workroom).
   /// Resolved against the live projects (no string parsing of the id).
-  private func notificationSource(forTargetID id: TerminalTarget.ID) -> String {
+  func notificationSource(forTargetID id: TerminalTarget.ID) -> String {
+    Self.notificationSource(forTargetID: id, in: projects)
+  }
+
+  /// Human-readable origin of a notification: the project name, or "project / workroom" for a
+  /// workroom terminal, using the workroom's `displayName` so a set label shows here too (issue #41).
+  /// Returns "" when the target isn't in `projects` (deleted) — callers fall back to the snapshot
+  /// captured on the record. Pure + `nonisolated` so it's unit-testable, mirroring
+  /// `sidebarID(forTargetID:in:)`.
+  nonisolated static func notificationSource(
+    forTargetID id: TerminalTarget.ID, in projects: [Project]
+  )
+    -> String
+  {
     for p in projects {
       if TerminalTarget.rootID(project: p.path) == id { return p.displayName }
       for w in p.workrooms where TerminalTarget.workroomID(project: p.path, name: w.name) == id {
-        return "\(p.displayName) / \(w.name)"
+        return "\(p.displayName) / \(w.displayName)"
       }
     }
     return ""

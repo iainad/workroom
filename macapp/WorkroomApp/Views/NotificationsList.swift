@@ -12,6 +12,14 @@ struct NotificationsList: View {
   /// which stays open, passes nil.
   var onActivate: (() -> Void)?
 
+  /// The origin label for a row, resolved from the live model so a workroom's display label
+  /// (issue #41) shows here and tracks renames. Falls back to the source captured on the record
+  /// when the target no longer exists (a since-deleted workroom keeps its last-known name).
+  private func resolvedSource(for item: WorkroomNotification) -> String {
+    let live = store.notificationSource(forTargetID: item.targetID)
+    return live.isEmpty ? item.source : live
+  }
+
   var body: some View {
     if notifications.items.isEmpty {
       // Compact, left-aligned, icon-first empty state (issue #24 feedback) — not the large
@@ -39,7 +47,11 @@ struct NotificationsList: View {
       let rows = Array(notifications.items.reversed())
       VStack(spacing: 0) {
         ForEach(Array(rows.enumerated()), id: \.element.id) { index, item in
-          NotificationRow(item: item, flash: store.flashNotifID == item.id) {
+          // Resolve the origin label at render so a renamed workroom (issue #41) updates live;
+          // fall back to the snapshot captured on the record when the target is gone (deleted).
+          NotificationRow(
+            item: item, source: resolvedSource(for: item), flash: store.flashNotifID == item.id
+          ) {
             store.openTerminal(targetID: item.targetID, tabID: item.tabID, notifID: item.id)
             onActivate?()
           }
@@ -60,6 +72,9 @@ struct NotificationsList: View {
 /// clickable target it is; a plain `.buttonStyle(.plain)` row gave no hover feedback.
 private struct NotificationRow: View {
   let item: WorkroomNotification
+  /// The origin label to show (project, or "project / workroom") — resolved by the parent so it
+  /// reflects a workroom's display label (issue #41). Distinct from `item.source` (the snapshot).
+  let source: String
   /// True when this row just arrived while the inspector was open — flashes once to draw the eye
   /// (issue #31), mirroring the per-pane activity flash in `PaneLeafView`.
   var flash: Bool = false
@@ -136,8 +151,8 @@ private struct NotificationRow: View {
           Text(subtext).font(.caption).foregroundStyle(.secondary).lineLimit(2)
         }
         HStack(spacing: 4) {
-          if !item.source.isEmpty {
-            Text(item.source).lineLimit(1)
+          if !source.isEmpty {
+            Text(source).lineLimit(1)
             Text("·")
           }
           // A static approximate "time ago" (e.g. "2 min. ago"), not the ticking `.relative` timer
