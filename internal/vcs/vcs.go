@@ -37,6 +37,20 @@ func Detect(dir string) (VCS, error) {
 	return nil, errs.ErrUnsupportedVCS
 }
 
+// InitGit initializes a new Git repository at dir with an initial empty commit,
+// so the directory is immediately usable as a Workroom project (workrooms can be
+// created without the user first making a commit). The empty commit's identity
+// and signing are pinned so it succeeds with no global git config — see
+// (*Git).InitialCommit. Returns the raw command error for the caller to wrap.
+func InitGit(dir string) error {
+	g := &Git{Executor: &RealExecutor{}}
+	if _, err := g.Init(dir); err != nil {
+		return err
+	}
+	_, err := g.InitialCommit(dir)
+	return err
+}
+
 // New constructs a VCS implementation from a stored type string (e.g. the "vcs"
 // field persisted in config), without touching the filesystem. Used when listing
 // workrooms for a project whose directory may not currently exist.

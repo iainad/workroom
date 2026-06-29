@@ -203,6 +203,14 @@ struct CreateResponse: Codable {
   let project: String
 }
 
+/// `add-project` success payload. `path` is the canonical (symlink-resolved,
+/// ~-expanded) project path the CLI registered — the app selects the project by
+/// it after a reload. `vcs` is "git" or "jj".
+struct AddProjectResponse: Codable {
+  let path: String
+  let vcs: String
+}
+
 /// `delete-project --from-disk` success payload. The CLI runs teardowns + drops the project
 /// from config, then returns the directories (project root first, then workrooms) for the app
 /// to move to the Bin — the CLI never deletes them itself (issue #108).

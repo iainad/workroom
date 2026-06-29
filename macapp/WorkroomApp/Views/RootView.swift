@@ -18,10 +18,11 @@ struct RootView: View {
   /// View-menu command (WorkroomCommands) toggles the same value.
   @Default(.showNotifications) private var showNotifications
 
-  /// Drives the add-project importer — set from `store.requestAddProject`, which both ⇧⌘O and the
-  /// sidebar's Add-Project buttons raise. Hosted here (vs the sidebar) so the ⇧⌘O command presents it
-  /// even if the sidebar is collapsed via the standard toggle.
-  @State private var showImporter = false
+  /// Drives the New Project sheet — set from `store.requestAddProject`, which both the menu command
+  /// and the sidebar's Add-Project buttons raise. Hosted here (vs the sidebar) so the command presents
+  /// it even if the sidebar is collapsed via the standard toggle. The sheet (issue #103) offers two
+  /// modes: add an existing repo, or create + git-init a new directory.
+  @State private var showAddProject = false
 
   /// Presents the theme picker (issue #36), raised by the `Theme…` (⌘⇧K) command via notification.
   @State private var showThemePicker = false
@@ -169,14 +170,17 @@ struct RootView: View {
       // commands and the sidebar's own buttons.
       .onChange(of: store.requestAddProject) { _, request in
         if request {
-          showImporter = true
+          showAddProject = true
           store.requestAddProject = false
         }
       }
-      .fileImporter(isPresented: $showImporter, allowedContentTypes: [.folder]) { result in
-        if case .success(let url) = result {
-          Task { await store.addProject(url) }
-        }
+      .sheet(isPresented: $showAddProject) {
+        AddProjectSheet(
+          onAdd: { path, create in
+            showAddProject = false
+            Task { await store.addProject(path, create: create) }
+          },
+          onCancel: { showAddProject = false })
       }
       // New Workroom picker (⌘N, issue #81): same store-flag bridge as the importer above, packaged as
       // a modifier so this large `body` stays within the type-checker's budget (like EdgeRevealSidebars).

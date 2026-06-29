@@ -131,9 +131,16 @@ func (c *Config) withLock(fn func() error) error {
 
 // CanonicalPath resolves a path to an absolute, symlink-evaluated form so that
 // the same project referenced via a symlink or trailing slash maps to one key.
-// If the path does not exist (EvalSymlinks fails), the absolute form is returned.
+// A leading ~ (or ~/) is expanded to the user's home directory first — a shell
+// does this before a program sees the path, but a path typed into the app's New
+// Project dialog reaches the CLI raw. If the path does not exist (EvalSymlinks
+// fails), the absolute form is returned.
 func CanonicalPath(p string) (string, error) {
-	abs, err := filepath.Abs(p)
+	expanded, err := expandTilde(p)
+	if err != nil {
+		return "", err
+	}
+	abs, err := filepath.Abs(expanded)
 	if err != nil {
 		return "", err
 	}
@@ -141,6 +148,23 @@ func CanonicalPath(p string) (string, error) {
 		return resolved, nil
 	}
 	return abs, nil
+}
+
+// expandTilde expands a leading "~" or "~/" to the user's home directory. Other
+// forms (e.g. "~user") are left untouched — only the current user's home is
+// resolved.
+func expandTilde(p string) (string, error) {
+	if p != "~" && !strings.HasPrefix(p, "~/") {
+		return p, nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	if p == "~" {
+		return home, nil
+	}
+	return filepath.Join(home, p[2:]), nil
 }
 
 // AddWorkroom adds a workroom entry under the given parent project path.

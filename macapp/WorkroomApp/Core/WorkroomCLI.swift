@@ -123,10 +123,27 @@ private final class StderrCollector: @unchecked Sendable {
   }
 }
 
+/// The subset of `WorkroomCLI` that `AppStore` drives, expressed as a protocol so
+/// tests can inject a fake (issue #103). `WorkroomCLI` is the production conformer;
+/// `bundledBinaryURL` and the process plumbing stay concrete (not used by AppStore).
+protocol WorkroomCLIProtocol {
+  func list(warnings: String, project: String?) async throws -> ListResponse
+  func addProject(_ path: String, create: Bool) async throws -> String
+  func create(
+    project: String,
+    onLog: ((String) -> Void)?,
+    onReady: ((_ name: String, _ path: String, _ hasSetup: Bool) -> Void)?
+  ) async throws -> CreateResponse
+  func delete(name: String, project: String, onLog: ((String) -> Void)?) async throws
+  func deleteProject(
+    _ path: String, withWorkrooms: Bool, fromDisk: Bool, onLog: ((String) -> Void)?
+  ) async throws -> [URL]
+}
+
 /// Drives the bundled `workroom` binary over its `--json` contract. All work runs
 /// off the main thread. Mutations are rare and one-shot; the binary itself forks to
 /// git/jj, so the subprocess spawn is negligible.
-final class WorkroomCLI {
+final class WorkroomCLI: WorkroomCLIProtocol {
   static let shared = WorkroomCLI()
   private init() {}
 
@@ -139,9 +156,16 @@ final class WorkroomCLI {
     return try decode(ListResponse.self, from: result)
   }
 
-  func addProject(_ path: String) async throws {
-    let result = try await run(["add-project", path, "--json"], timeout: 15)
-    try throwIfError(result)
+  /// Registers a project. With `create`, the CLI creates and git-initializes the
+  /// directory if it does not already exist (issue #103); otherwise the path must
+  /// already be a Git/JJ repo. Returns the canonical path the CLI registered (used
+  /// to select the project after a reload). The git init + initial commit can take
+  /// a moment, so the timeout is generous.
+  func addProject(_ path: String, create: Bool) async throws -> String {
+    var args = ["add-project", path, "--json"]
+    if create { args.append("--create") }
+    let result = try await run(args, timeout: 60)
+    return try decode(AddProjectResponse.self, from: result).path
   }
 
   /// Creates a workroom. `onReady(name, path, hasSetup)` fires when the workroom exists

@@ -79,6 +79,12 @@ final class AppStore: ObservableObject {
   let projectStore: ProjectStore
   private var projectStoreObservation: AnyCancellable?
 
+  /// Seam over the bundled `workroom` CLI (issue #103). Production uses
+  /// `WorkroomCLI.shared`; tests inject a fake to drive mutations without a real
+  /// subprocess. Injected like `projectStore` (in the init body, not as a default
+  /// arg, which is evaluated nonisolated).
+  private let cli: WorkroomCLIProtocol
+
   /// Seam over the macOS Trash (issue #108): a from-disk project delete moves dirs to the Bin via
   /// `FileManager.trashItem` (Finder "Put Back", no TCC prompt). Injectable so tests assert the
   /// orchestration with a fake recorder instead of polluting the real Trash. Mirrors the
@@ -389,12 +395,13 @@ final class AppStore: ObservableObject {
   /// Production builds one store per window (issue #70), each sharing `ProjectStore.shared`; tests
   /// build an isolated `AppStore()` (own fresh `ProjectStore`), inject `projects`, and drive the real
   /// recording/navigation paths. `init` does no CLI work (only `bootstrap()`/`load()` do).
-  init(projectStore: ProjectStore? = nil) {
+  init(projectStore: ProjectStore? = nil, cli: WorkroomCLIProtocol? = nil) {
     // Default to a fresh, isolated store (so `AppStore()` in tests never touches the singleton);
     // production passes `.shared`. Constructed here in the main-actor init body, not as a default
     // argument (default args are evaluated nonisolated, which can't call a @MainActor initializer).
     let store = projectStore ?? ProjectStore()
     self.projectStore = store
+    self.cli = cli ?? WorkroomCLI.shared
     // Re-publish the shared project store's changes so views and menus observing THIS store
     // re-render when the proxied `projects` / `rootRefs` / `workroomStatuses` / … change (issue #70).
     projectStoreObservation = store.objectWillChange.sink { [weak self] _ in
@@ -1662,7 +1669,7 @@ final class AppStore: ObservableObject {
     isLoading = true
     defer { isLoading = false }
     do {
-      let response = try await WorkroomCLI.shared.list(warnings: warnings)
+      let response = try await cli.list(warnings: warnings, project: nil)
       apply(response.projects)
       lastLoadAt = Date()
       resolveBranches()
@@ -1905,18 +1912,19 @@ final class AppStore: ObservableObject {
 
   // MARK: Mutations
 
-  func addProject(_ url: URL) async {
+  /// Registers a project at `path`. With `create`, a non-existent directory is
+  /// created and git-initialized by the CLI (issue #103, "Create new directory…");
+  /// otherwise `path` must already be a Git/JJ repo ("From existing path…").
+  func addProject(_ path: String, create: Bool) async {
     do {
-      try await WorkroomCLI.shared.addProject(url.path)
+      let canonical = try await cli.addProject(path, create: create)
       await reload()
-      // Select the freshly added project and open a terminal on its root — mirroring workroom
-      // creation, which lands the user in a live terminal rather than the "Nothing selected" empty
-      // state (issue #104). Selecting the root target mounts its terminal view, which opens the
-      // initial shell via `ensureInitialTerminal`. A new project has no workrooms, so the root is
-      // the only sensible terminal to open.
-      if let match = projects.first(where: {
-        $0.path == url.path || ($0.path as NSString).lastPathComponent == url.lastPathComponent
-      }) {
+      // Select the freshly added project (by the canonical path the CLI registered —
+      // it resolves symlinks and ~, so it's more reliable than the typed path) and
+      // open a terminal on its root, mirroring workroom creation rather than leaving
+      // the user on the "Nothing selected" empty state (issue #104). A new project
+      // has no workrooms, so the root is the only sensible terminal to open.
+      if let match = projects.first(where: { $0.path == canonical }) {
         selectedProjectID = match.id
         selectedTargetID = .root(project: match.path)
       }
@@ -1935,7 +1943,7 @@ final class AppStore: ObservableObject {
     // A blocking session shows its log full-pane (no terminal) until the user dismisses.
     var hasSetup = false
     do {
-      let created = try await WorkroomCLI.shared.create(
+      let created = try await cli.create(
         project: project.path,
         onLog: { text in
           DispatchQueue.main.async { session.append(text) }
@@ -2101,7 +2109,7 @@ final class AppStore: ObservableObject {
     Task {
       let log = ScriptLogSession(title: "Tearing down \(workroom.name)", phase: "teardown")
       do {
-        try await WorkroomCLI.shared.delete(name: workroom.name, project: project.path) { text in
+        try await cli.delete(name: workroom.name, project: project.path) { text in
           DispatchQueue.main.async { log.append(text) }
         }
       } catch {
@@ -2272,7 +2280,7 @@ final class AppStore: ObservableObject {
           scope == .configOnly
           ? nil : ScriptLogSession(title: "Deleting \(project.displayName)", phase: "teardown")
         do {
-          let trashPaths = try await WorkroomCLI.shared.deleteProject(
+          let trashPaths = try await self.cli.deleteProject(
             project.path,
             withWorkrooms: scope == .workrooms,
             fromDisk: scope == .fromDisk

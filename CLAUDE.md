@@ -72,7 +72,13 @@ Go project using Cobra for CLI, with clean internal package separation:
 - `workroom version` — Print version
 - `workroom add-project [PATH]` / `delete-project [PATH]` — Hidden, app-only: register/remove a
   project in config so the macOS app's sidebar can show empty projects. Both error outside `--json`
-  mode. `delete-project` is config-only unless: `--with-workrooms` cascades the per-workroom
+  mode. `add-project` is repo-only by default (PATH must already be a Git/JJ repo) unless `--create`:
+  with `--create` a missing PATH is created and git-initialized with an initial empty commit (so it's
+  immediately usable as a project), an empty/junk-only existing dir is git-initialized, an existing
+  Git/JJ repo is used as-is, and a non-empty non-repo dir or a file path is rejected
+  (`ErrUnsupportedVCS` / `ErrNotDirectory`); `--create --pretend` is a dry-run (reports
+  `would_create`, mutates nothing). Backs the app's "Create new directory…" mode (issue #103).
+  `delete-project` is config-only unless: `--with-workrooms` cascades the per-workroom
   teardown (hard-deletes worktree dirs, branches kept); or `--from-disk` runs each workroom's
   teardown, drops the project from config, and returns `trash_paths` (project root first, then
   workrooms) — it does NOT delete anything itself, the macOS app moves those dirs to the Bin via
