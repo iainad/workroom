@@ -12,13 +12,13 @@ import SwiftUI
 struct WorkroomTerminalsView: View {
   let target: TerminalTarget
   @ObservedObject var sessions: TerminalSessions
-  /// When this target is a workroom co-displayed in a split (issue #23 follow-up), the action that
-  /// removes it from the split — surfaced as a control on the right edge of the tab strip. nil
-  /// (default) for the normal single-target case.
-  var onCloseWorkroomPane: (() -> Void)? = nil
   /// Whether this workroom's terminal may hold keyboard focus — `false` for a co-displayed but
   /// non-focused split member, so it doesn't steal first responder (and the workroom selection) on mount.
   var surfaceActive: Bool = true
+  /// A workroom-split member (issue #110) draws the terminal with a tighter gutter to its group card,
+  /// so the lighter group fill reads as a thin frame, not a wide margin. Solo targets keep the wider
+  /// gutter that lines the terminal up with the sidebar cards.
+  var compact: Bool = false
   @EnvironmentObject var notifications: NotificationCenterStore
   @EnvironmentObject var store: AppStore
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -50,13 +50,14 @@ struct WorkroomTerminalsView: View {
             Color.clear.preference(key: ContentFrameKey.self, value: geo.frame(in: .global))
           }
         )
-        // 6pt gutter left/right; the bottom uses 4pt so the terminal pane's bottom edge lines up with
-        // the left/right sidebar cards — the detail content carries a little extra bottom inset of its
-        // own, so a 6pt gutter sat ~2pt high vs the sidebars (measured). Top is always 0 so the tab
-        // strip sits flush on the content (the active tab bridges the panel→bg colour step) — the
+        // Solo: 6pt gutter left/right; the bottom uses 4pt so the terminal pane's bottom edge lines up
+        // with the left/right sidebar cards — the detail content carries a little extra bottom inset of
+        // its own, so a 6pt gutter sat ~2pt high vs the sidebars (measured). A split member (`compact`,
+        // issue #110) tightens this to a thin 2pt frame inside its group card. Top is always 0 so the
+        // tab strip sits flush on the content (the active tab bridges the panel→bg colour step) — the
         // Chrome-style merge with the strip above.
-        .padding(.horizontal, 6)
-        .padding(.bottom, 4)
+        .padding(.horizontal, compact ? 2 : 6)
+        .padding(.bottom, compact ? 2 : 4)
         .padding(.top, 0)
       } else {
         ContentUnavailableView {
@@ -75,19 +76,17 @@ struct WorkroomTerminalsView: View {
     .frame(maxWidth: .infinity, maxHeight: .infinity)
     .onPreferenceChange(ContentFrameKey.self) { contentFrame = $0 }
     .safeAreaInset(edge: .top, spacing: 0) {
-      // Normally no tab bar when there are no terminals: the empty state's "New Terminal" button (and
-      // ⌘T) cover adding one, so the strip and its "+" would be redundant. But a *split member* still
-      // needs its remove-from-split ✕ — which rides on the strip's right edge — reachable after its
-      // last terminal is closed (issue #23 follow-up); otherwise an empty split pane has no way out
-      // of the split. So when this is a split member (`onCloseWorkroomPane != nil`) keep the strip
-      // even with zero tabs (it collapses to just the "+" and the close ✕).
-      if !tabs.isEmpty || onCloseWorkroomPane != nil {
+      // No tab bar when there are no terminals: the empty state's "New Terminal" button (and ⌘T) cover
+      // adding one, so the strip and its "+" would be redundant. A split member's remove-from-split ✕
+      // now lives in its group title bar (issue #110), drawn by the leaf above this view and present
+      // even with zero tabs — so the strip no longer needs to stay alive just to host the ✕.
+      if !tabs.isEmpty {
         TerminalTabStrip(
           tabs: tabs, activeID: active?.id, target: target, sessions: sessions,
+          compact: compact,
           chipPaneDrag: $chipPaneDrag,
           localize: { chipLocal($0) },
-          dropTarget: { chipDropTarget(at: $0) },
-          onCloseWorkroomPane: onCloseWorkroomPane
+          dropTarget: { chipDropTarget(at: $0) }
         )
         // A backgrounded workroom (`!surfaceActive` — a non-focused workroom *split* member, or a
         // backgrounded solo workroom, issue #82) dims its terminals via the per-pane scrim in

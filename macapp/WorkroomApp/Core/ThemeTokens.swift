@@ -76,6 +76,13 @@ struct ThemeTokens {
   let focused: Color
   let terminalDim: Color
 
+  // Workroom-split group fills (issue #110): the raised card behind a split member. The focused member
+  // is tinted by the accent so focus reads as a colour, not just a border; the rest take a faint neutral
+  // lift. Dedicated tokens (not the `hover`/`accentSoft` washes) so the group treatment can be tuned
+  // without dragging hover/selection along with it.
+  let splitGroupFill: Color  // fg @ 0.06 — unfocused member's raised fill
+  let splitGroupFocusedFill: Color  // accent @ 0.10 — focused member's accent-tinted fill
+
   let colorScheme: ColorScheme
 
   /// Resolve a parsed theme (or fall back to system colours) into the full token set.
@@ -165,6 +172,8 @@ struct ThemeTokens {
     // focused pane reads as "the focused one" without a heavy extra ring around it.
     terminalDim = Color(nsColor: bgColor)
     focused = Color(nsColor: fgColor.withAlphaComponent(0.3))
+    splitGroupFill = Color(nsColor: fgColor.withAlphaComponent(0.06))
+    splitGroupFocusedFill = Color(nsColor: accentColor.withAlphaComponent(0.10))
 
     colorScheme = Self.luminance(of: bgColor) > 0.5 ? .light : .dark
   }

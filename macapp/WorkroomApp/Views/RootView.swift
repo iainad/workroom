@@ -490,10 +490,13 @@ struct RootView: View {
         layout: store.visibleWorkroomLayout(for: selected),
         resolve: { store.target(for: $0) },
         focusedID: selected,
-        externalDrag: workroomChipDrag,
+        externalDrag: $workroomChipDrag,
+        localize: { workroomChipLocal($0) },
+        dropTarget: { workroomChipDropTarget(at: $0) },
         onFocus: { selectWorkroomTab($0) },
         onSetRatio: { store.setWorkroomSplitRatio($0, forSplit: $1) },
-        onClose: { store.removeWorkroomSplitMember($0) }
+        onClose: { store.removeWorkroomSplitMember($0) },
+        onMove: { store.insertWorkroomSplit($0, beside: $1, edge: $2) }
       )
     } else {
       targetTerminalBody(focused)
