@@ -521,6 +521,75 @@ final class TerminalSessionsTests: XCTestCase {
     XCTAssertNil(tabs.first?.surface)  // a content tab owns no surface
   }
 
+  // MARK: File preview/persist tabs (mirror the diff mechanics; share the preview slot)
+
+  func testOpenFilePreviewCreatesAndFocusesPreviewTab() {
+    let s = makeSessions()
+    let id = s.openFilePreview(FileDescriptor(path: "dir/notes.md", isPreview: false), for: target)
+    let tabs = s.tabs(for: target)
+    XCTAssertEqual(tabs.count, 1)
+    XCTAssertEqual(s.activeTab(for: target)?.id, id)
+    XCTAssertTrue(tabs.first!.isPreview)
+    XCTAssertEqual(tabs.first?.title, "notes.md")  // basename only
+    XCTAssertNil(tabs.first?.surface)  // a content tab owns no surface
+  }
+
+  func testSecondFilePreviewRetargetsInPlaceKeepingID() {
+    let s = makeSessions()
+    let first = s.openFilePreview(FileDescriptor(path: "a.txt", isPreview: false), for: target)
+    let second = s.openFilePreview(FileDescriptor(path: "b.txt", isPreview: false), for: target)
+    XCTAssertEqual(first, second)
+    XCTAssertEqual(s.tabs(for: target).count, 1)
+    XCTAssertEqual(s.tabs(for: target).first?.title, "b.txt")
+  }
+
+  func testOpenFilePersistentCreatesNonPreview() {
+    let s = makeSessions()
+    let id = s.openFilePersistent(FileDescriptor(path: "a.txt", isPreview: false), for: target)
+    XCTAssertFalse(s.tabs(for: target).first!.isPreview)
+    XCTAssertEqual(s.activeTab(for: target)?.id, id)
+  }
+
+  func testReopeningAlreadyOpenFileReselectsItsTab() {
+    let s = makeSessions()
+    let persisted = s.openFilePersistent(
+      FileDescriptor(path: "a.txt", isPreview: false), for: target)
+    s.addTab(for: target)  // focus elsewhere
+    let again = s.openFilePreview(FileDescriptor(path: "a.txt", isPreview: false), for: target)
+    XCTAssertEqual(persisted, again, "reopening the same file reselects its tab, not a new one")
+    XCTAssertFalse(s.tabs(for: target).first { $0.id == again }!.isPreview, "stays persisted")
+  }
+
+  func testPersistPromotesFilePreviewSoItIsNoLongerRetargeted() {
+    let s = makeSessions()
+    let id = s.openFilePreview(FileDescriptor(path: "a.txt", isPreview: false), for: target)
+    s.persist(id, for: target)
+    XCTAssertFalse(s.tabs(for: target).first!.isPreview)
+    let next = s.openFilePreview(FileDescriptor(path: "b.txt", isPreview: false), for: target)
+    XCTAssertNotEqual(id, next, "a promoted file tab is no longer the retargetable preview slot")
+    XCTAssertEqual(s.tabs(for: target).count, 2)
+  }
+
+  /// The key cross-type invariant: files and diffs SHARE the single preview slot. Opening a file
+  /// preview retargets the lone diff preview in place (same id/slot), and vice-versa — never two
+  /// preview tabs.
+  func testFileAndDiffSharePreviewSlot() {
+    let s = makeSessions()
+    let diff = s.openDiffPreview(diffDesc("a.swift"), for: target)
+    let file = s.openFilePreview(FileDescriptor(path: "b.txt", isPreview: false), for: target)
+    XCTAssertEqual(diff, file, "a file preview retargets the diff preview in place")
+    XCTAssertEqual(s.tabs(for: target).count, 1)
+    if case .file(let f) = s.tabs(for: target).first?.content {
+      XCTAssertEqual(f.path, "b.txt")
+    } else {
+      XCTFail("the shared preview slot should now hold the file")
+    }
+    // …and back the other way: a diff preview retargets the file preview.
+    let diff2 = s.openDiffPreview(diffDesc("c.swift"), for: target)
+    XCTAssertEqual(file, diff2)
+    XCTAssertEqual(s.tabs(for: target).count, 1)
+  }
+
   /// A second preview retargets the lone preview tab IN PLACE — same id (keeps slot), still ≤1
   /// preview (Inv A + Inv B).
   func testSecondPreviewRetargetsInPlaceKeepingID() {

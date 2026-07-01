@@ -38,6 +38,13 @@ final class FileFindTests: XCTestCase {
     XCTAssertEqual(matches, [FileFindMatch(line: 0, range: 2..<5)])
   }
 
+  func testMatchesStopAtCap() {
+    // A one-char needle repeated past the cap yields exactly `matchCap` matches, never more — so a
+    // one-character search in a huge file can't produce an unbounded list.
+    let line = String(repeating: "a", count: FileFind.matchCap + 100)
+    XCTAssertEqual(FileFind.matches(in: [line], needle: "a").count, FileFind.matchCap)
+  }
+
   // MARK: FileFindModel
 
   @MainActor func testModelComputesSummaryAndNavigatesWithWrap() {

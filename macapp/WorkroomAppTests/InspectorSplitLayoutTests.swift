@@ -77,4 +77,22 @@ final class InspectorSplitLayoutTests: XCTestCase {
     // its header height; the expanded panes report their live heights.
     XCTAssertEqual(reported, [300, 5, 200, 150])
   }
+
+  // MARK: Persisted-layout migration (3 → 4 sections, issue #24)
+
+  func testReconcileDiscardsStalePreFilesLayout() {
+    // A count-3 layout saved before the Files section existed is discarded to the all-expanded /
+    // equal-weight default, not mis-mapped onto the new 4-section ordering.
+    let stale = InspectorPaneState(collapsed: [true, false, true], weights: [2, 1, 3])
+    let result = AppStore.reconcileInspectorState(stale, sectionCount: 4)
+    XCTAssertEqual(result.collapsed, [false, false, false, false])
+    XCTAssertEqual(result.weights, [1, 1, 1, 1])
+  }
+
+  func testReconcileKeepsMatchingCountLayout() {
+    let saved = InspectorPaneState(collapsed: [true, false, false, true], weights: [1, 2, 1, 1])
+    let result = AppStore.reconcileInspectorState(saved, sectionCount: 4)
+    XCTAssertEqual(result.collapsed, [true, false, false, true])
+    XCTAssertEqual(result.weights, [1, 2, 1, 1])
+  }
 }

@@ -175,6 +175,12 @@ final class SyntaxHighlighterTests: XCTestCase {
     XCTAssertEqual(SyntaxLanguage.grammar(forShebang: "#!/usr/bin/env -S python3 -u"), .python)
   }
 
+  func testShebangEnvWithNoInterpreterIsNil() {
+    // `env` with nothing (or only flags) after it names no interpreter → no language.
+    XCTAssertNil(SyntaxLanguage.grammar(forShebang: "#!/usr/bin/env"))
+    XCTAssertNil(SyntaxLanguage.grammar(forShebang: "#!/usr/bin/env -S"))
+  }
+
   func testShebangToleratesTrailingCR() {
     // A CRLF first line leaves a trailing `\r` on the interpreter token — must still match.
     XCTAssertEqual(SyntaxLanguage.grammar(forShebang: "#!/bin/bash\r"), .bash)

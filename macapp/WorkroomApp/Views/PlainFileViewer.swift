@@ -132,7 +132,12 @@ struct PlainFileViewer: View {
     content = ""
     truncated = false
     let absolute = (directory as NSString).appendingPathComponent(descriptor.path)
+    let root = directory
     let outcome = await Task.detached(priority: .utility) { () -> Outcome? in
+      // Refuse to read through a symlink that escapes the workroom root. The Files tree lists repo
+      // files (git ls-files / jj file list), so a committed symlink like `notes -> ~/.ssh/id_rsa`
+      // would otherwise display the target's contents from outside the workroom (review).
+      guard PlainFileViewer.isContained(path: absolute, within: root) else { return nil }
       guard
         let data = try? Data(contentsOf: URL(fileURLWithPath: absolute), options: .mappedIfSafe)
       else { return nil }
@@ -198,6 +203,18 @@ struct PlainFileViewer: View {
   }
 
   // MARK: Pure helpers (unit-tested)
+
+  /// Whether `path`, after resolving symlinks, is the workroom `root` itself or a descendant of it.
+  /// Guards the file read against a repo-committed symlink that points outside the workroom. Compares
+  /// resolved path *components* so `/a/bc` isn't treated as inside `/a/b`. Pure — unit-tested.
+  static func isContained(path: String, within root: String) -> Bool {
+    let resolvedRoot = URL(fileURLWithPath: root).resolvingSymlinksInPath().standardizedFileURL
+    let resolved = URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL
+    let rootComponents = resolvedRoot.pathComponents
+    let components = resolved.pathComponents
+    guard components.count >= rootComponents.count else { return false }
+    return Array(components.prefix(rootComponents.count)) == rootComponents
+  }
 
   /// Classify a file's bytes into a render outcome. Empty → `.empty`; over `byteCap` → `.tooLarge`;
   /// a NUL byte in the first 8 KB or non-UTF-8 → `.binary`; else the decoded text.

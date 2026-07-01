@@ -55,6 +55,7 @@ struct MarkdownPreviewView: NSViewRepresentable {
 
     scrollView.documentView = textView
     context.coordinator.textView = textView
+    textView.delegate = context.coordinator  // gate link clicks to web/mail schemes only
     textView.textStorage?.setAttributedString(attributed)
     context.coordinator.appliedVersion = version
     return scrollView
@@ -70,8 +71,28 @@ struct MarkdownPreviewView: NSViewRepresentable {
     }
   }
 
-  final class Coordinator {
+  final class Coordinator: NSObject, NSTextViewDelegate {
     weak var textView: NSTextView?
     var appliedVersion = -1
+
+    /// Web/mail schemes a rendered-Markdown link may open. A workroom file is untrusted content, so
+    /// a `file:` / `javascript:` / custom-scheme link must not reach `NSWorkspace` — its default
+    /// click action would launch an app or invoke a scheme handler on one click.
+    private static let openableSchemes: Set<String> = ["http", "https", "mailto"]
+
+    /// Intercept link clicks so only allowlisted schemes open; anything else is dropped. Returning
+    /// `true` suppresses AppKit's default `NSWorkspace.open` for every link.
+    func textView(_ textView: NSTextView, clickedOnLink link: Any, at charIndex: Int) -> Bool {
+      let url: URL? =
+        switch link {
+        case let value as URL: value
+        case let value as String: URL(string: value)
+        default: nil
+        }
+      if let url, let scheme = url.scheme?.lowercased(), Self.openableSchemes.contains(scheme) {
+        NSWorkspace.shared.open(url)
+      }
+      return true
+    }
   }
 }

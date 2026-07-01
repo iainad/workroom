@@ -428,7 +428,12 @@ final class AppStore: ObservableObject {
     }
     // Record each focused-tab change for back/forward history (issue #26), unless we're replaying.
     terminals.onFocusChange = { [weak self] _, _ in
-      guard let self, !self.isNavigatingHistory else { return }
+      guard let self else { return }
+      // The in-file find is tied to the focused file pane (the model is shared across panes). Any
+      // focused-tab change ends that session: close it so ⌘G can't step a hidden find from a
+      // terminal/diff pane, and the bar doesn't reappear pre-filled on the next file (review).
+      if self.fileFind.isOpen { self.fileFind.close() }
+      guard !self.isNavigatingHistory else { return }
       self.recordCurrentLocation()
     }
     // Prune dead entries when tabs are closed/reaped, so canGoBack/Forward stay honest (issue #26).
@@ -2697,7 +2702,12 @@ final class AppStore: ObservableObject {
       surface.searchModel.navigate(forward ? .next : .previous)
       return true
     }
-    if fileFind.isOpen, fileFind.hasMatches {
+    // Only when a file pane is actually focused: the find model is shared, so a stale open state
+    // must not let ⌘G step a hidden file find from a terminal/diff pane (review). `onFocusChange`
+    // already closes it on focus-away; this is the defence-in-depth read-side check.
+    if let target = selectedTarget, let tab = terminals.focusedTab(for: target),
+      case .file = tab.content, fileFind.isOpen, fileFind.hasMatches
+    {
       forward ? fileFind.next() : fileFind.previous()
       return true
     }
@@ -3047,12 +3057,8 @@ final class AppStore: ObservableObject {
     let state =
       Self.targetIDString(for: selectedTargetID)
       .flatMap { Defaults[.inspectorPaneStates][$0] } ?? .default
-    // One Files section was added (3 → 4): a pre-Files persisted layout (count 3) is discarded back
-    // to the all-expanded/equal default rather than mis-mapped onto the new ordering.
-    let count = InspectorSectionKind.allCases.count
-    let collapsed =
-      state.collapsed.count == count ? state.collapsed : Array(repeating: false, count: count)
-    let weights = state.weights.count == count ? state.weights : Array(repeating: 1.0, count: count)
+    let (collapsed, weights) = Self.reconcileInspectorState(
+      state, sectionCount: InspectorSectionKind.allCases.count)
     isLoadingInspectorState = true
     changesSectionCollapsed = collapsed[0]
     filesSectionCollapsed = collapsed[1]
@@ -3060,6 +3066,19 @@ final class AppStore: ObservableObject {
     notificationsSectionCollapsed = collapsed[3]
     inspectorSizeWeights = weights
     isLoadingInspectorState = false
+  }
+
+  /// Reconcile a persisted inspector layout against the current section count. One Files section was
+  /// added (3 → 4): a pre-Files layout (count 3) is discarded to the all-expanded / equal-weight
+  /// default rather than mis-mapped onto the new 4-section ordering. `nonisolated` + pure so the
+  /// migration is unit-testable without an `AppStore` / `Defaults` (issue #24).
+  nonisolated static func reconcileInspectorState(
+    _ state: InspectorPaneState, sectionCount count: Int
+  ) -> (collapsed: [Bool], weights: [Double]) {
+    let collapsed =
+      state.collapsed.count == count ? state.collapsed : Array(repeating: false, count: count)
+    let weights = state.weights.count == count ? state.weights : Array(repeating: 1.0, count: count)
+    return (collapsed, weights)
   }
 
   /// Persist the live inspector layout to the selected workroom's entry. No-op while loading or when

@@ -462,11 +462,15 @@ struct ProjectSidebar: View {
   private func terminalRow(_ tab: TerminalTab, target: TerminalTarget, parent: SidebarID)
     -> some View
   {
-    // A diff (content) tab gets the same `plusminus` glyph the tab strip uses (#66), so a glance at
-    // the row says "this isn't a terminal"; a terminal tab keeps the terminal glyph.
+    // A diff/file (content) tab gets the same glyph the tab strip uses (#66), so a glance at the row
+    // says "this isn't a terminal"; a terminal tab keeps the terminal glyph. Exhaustive so a future
+    // `TabContent` case can't silently fall through to the terminal glyph.
     let glyph: String = {
-      if case .diff = tab.content { return "plusminus" }
-      return "terminal"
+      switch tab.content {
+      case .diff: return "plusminus"
+      case .file: return "doc"
+      case .terminal: return "terminal"
+      }
     }()
     HStack(spacing: 6) {
       // Leading glyph centered in the shared caret slot, same size/weight as the root house and the

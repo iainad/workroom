@@ -688,6 +688,23 @@ extension View {
         }
         Divider()
       }
+      // A file tab gets the same actions as a diff tab (open in editor, pin a preview), so the new
+      // file panes right-click like diff panes (they share this menu via PaneTreeView).
+      if case .file(let descriptor) = tab.content {
+        Button {
+          store.openFileInEditor(path: descriptor.path)
+        } label: {
+          Label("Open File in…", systemImage: "doc.text")
+        }
+        if tab.isPreview {
+          Button {
+            sessions.persist(tab.id, for: target)
+          } label: {
+            Label("Keep Open", systemImage: "pin")
+          }
+        }
+        Divider()
+      }
       // Split this tab. Disabled for a tab outside the visible split (review D5) so right-clicking a
       // chip that isn't part of the shown split can't silently replace it.
       let splitDisabled =

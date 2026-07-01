@@ -144,28 +144,83 @@ final class FileTreeTests: XCTestCase {
     XCTAssertEqual(PlainFileViewer.splitLines(""), [""])
   }
 
-  // MARK: FileHighlightMapper (line bucketing)
+  // MARK: FileHighlightMapper.nsAttributedString (the string CodeTextView actually renders)
 
-  @MainActor func testHighlightMapperLineCountAndPlainTextWithoutSpans() {
+  @MainActor func testNsAttributedStringPlainKeepsContentAndFont() {
     let tokens = ThemeService.shared.tokens
     let content = "let x = 1\nfoo"
-    let lines = FileHighlightMapper.attributedLines(content: content, spans: [], tokens: tokens)
-    XCTAssertEqual(lines.count, 2)
-    XCTAssertEqual(String(lines[0].characters), "let x = 1")
-    XCTAssertEqual(String(lines[1].characters), "foo")
+    let s = FileHighlightMapper.nsAttributedString(
+      content: content, spans: [], tokens: tokens, font: PlainFileViewer.font)
+    XCTAssertEqual(s.string, content)
+    XCTAssertEqual(s.attribute(.font, at: 0, effectiveRange: nil) as? NSFont, PlainFileViewer.font)
+    XCTAssertEqual(
+      s.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor, tokens.nsFg)
   }
 
-  @MainActor func testHighlightMapperDropsTrailingNewlineLine() {
+  @MainActor func testNsAttributedStringKeepsContentVerbatimIncludingTrailingNewline() {
+    // Unlike the line-bucketed form, the whole-file string is kept verbatim — the trailing newline
+    // is preserved (the NSTextView renders the raw file), and empty content yields an empty string.
     let tokens = ThemeService.shared.tokens
-    let lines = FileHighlightMapper.attributedLines(content: "a\n", spans: [], tokens: tokens)
-    XCTAssertEqual(lines.count, 1)
-    XCTAssertEqual(String(lines[0].characters), "a")
+    let s = FileHighlightMapper.nsAttributedString(
+      content: "a\n", spans: [], tokens: tokens, font: PlainFileViewer.font)
+    XCTAssertEqual(s.string, "a\n")
+    let empty = FileHighlightMapper.nsAttributedString(
+      content: "", spans: [], tokens: tokens, font: PlainFileViewer.font)
+    XCTAssertEqual(empty.string, "")
+    XCTAssertEqual(empty.length, 0)
   }
 
-  @MainActor func testHighlightMapperEmptyContent() {
+  @MainActor func testNsAttributedStringRecolorsCapturedSpan() {
     let tokens = ThemeService.shared.tokens
-    XCTAssertTrue(
-      FileHighlightMapper.attributedLines(content: "", spans: [], tokens: tokens).isEmpty)
+    let content = "let x = 1"  // recolor bytes 0..<3 ("let") as a keyword
+    let s = FileHighlightMapper.nsAttributedString(
+      content: content, spans: [HighlightSpan(byteRange: 0..<3, capture: "keyword")],
+      tokens: tokens, font: PlainFileViewer.font)
+    XCTAssertEqual(s.string, content)
+    let captured = s.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor
+    let plain = s.attribute(.foregroundColor, at: 5, effectiveRange: nil) as? NSColor
+    XCTAssertEqual(plain, tokens.nsFg, "text outside a span stays the default foreground")
+    XCTAssertNotEqual(captured, plain, "a keyword span should recolor away from the default")
+  }
+
+  // MARK: FileTree sort (case-insensitive, exact-name tie-break)
+
+  func testBuildSortsCaseInsensitivelyWithExactTieBreak() {
+    // Case-insensitive alphabetical (apple < File/file < Zebra), and a case-only tie
+    // ("File.txt" vs "file.txt") breaks by raw `<` — uppercase 'F' sorts before lowercase 'f'.
+    let roots = FileTreeBuilder.build(from: ["Zebra.txt", "apple.txt", "file.txt", "File.txt"])
+    XCTAssertEqual(roots.map(\.name), ["apple.txt", "File.txt", "file.txt", "Zebra.txt"])
+  }
+
+  // MARK: PlainFileViewer.classify (boundary cases)
+
+  func testClassifyAtExactByteCapIsText() {
+    // Only strictly over the cap is `.tooLarge`; exactly at the cap still loads.
+    let data = Data("abcdefghij".utf8)  // 10 bytes
+    XCTAssertEqual(PlainFileViewer.classify(data: data, byteCap: 10), .text("abcdefghij"))
+  }
+
+  func testClassifyNulPastScanWindowIsText() {
+    // The binary probe only scans the first 8 KB; a NUL past that window isn't detected, so an
+    // otherwise-valid-UTF-8 file still classifies as text (documented, bounded-scan behaviour).
+    var bytes = [UInt8](repeating: 0x41, count: 9000)  // 'A' × 9000, past the 8 KB scan
+    bytes[8500] = 0x00
+    guard case .text = PlainFileViewer.classify(data: Data(bytes)) else {
+      return XCTFail("a NUL past the 8 KB scan window must not trip the binary probe")
+    }
+  }
+
+  // MARK: PlainFileViewer.isContained (symlink-escape guard)
+
+  func testIsContainedAcceptsRootAndDescendants() {
+    XCTAssertTrue(PlainFileViewer.isContained(path: "/repo", within: "/repo"))
+    XCTAssertTrue(PlainFileViewer.isContained(path: "/repo/src/a.swift", within: "/repo"))
+  }
+
+  func testIsContainedRejectsSiblingPrefixDirectory() {
+    // Component-wise, not string-prefix: "/repo-evil" is NOT inside "/repo".
+    XCTAssertFalse(PlainFileViewer.isContained(path: "/repo-evil/x", within: "/repo"))
+    XCTAssertFalse(PlainFileViewer.isContained(path: "/elsewhere/x", within: "/repo"))
   }
 }
 
