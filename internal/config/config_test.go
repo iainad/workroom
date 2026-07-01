@@ -200,6 +200,47 @@ func TestWorkroomsDirExpandsTilde(t *testing.T) {
 	}
 }
 
+func TestSetProjectVCSUpdatesAndPreservesWorkrooms(t *testing.T) {
+	c := newTestConfig(t)
+	if err := c.AddWorkroom("/project", "foo", "/foo", "jj"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := c.SetProjectVCS("/project", "git"); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := c.Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	project := data["/project"].(map[string]any)
+	if project["vcs"] != "git" {
+		t.Fatalf("expected vcs git, got %v", project["vcs"])
+	}
+	workrooms, ok := project["workrooms"].(map[string]any)
+	if !ok {
+		t.Fatal("workrooms map was clobbered")
+	}
+	if _, ok := workrooms["foo"].(map[string]any); !ok {
+		t.Fatalf("expected workroom foo preserved, got %v", workrooms)
+	}
+}
+
+func TestSetProjectVCSAbsentProjectIsNoOp(t *testing.T) {
+	c := newTestConfig(t)
+	if err := c.SetProjectVCS("/nope", "git"); err != nil {
+		t.Fatal(err)
+	}
+	data, err := c.Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := data["/nope"]; exists {
+		t.Fatal("SetProjectVCS must not create an absent project")
+	}
+}
+
 func TestFindCurrentProjectAsProject(t *testing.T) {
 	c := newTestConfig(t)
 	if err := c.AddWorkroom("/project", "foo", "/foo", "jj"); err != nil {

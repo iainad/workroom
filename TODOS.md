@@ -503,11 +503,15 @@ via `add-project` and only fails later, at workroom creation.
 **Why:** Surfaced by the Codex outside-voice pass during `/plan-eng-review` of issue #103 (the
 create-project work). It's a pre-existing robustness gap — the existing-path `add-project` already
 has it; #103's create flow inits a real repo so its happy path is unaffected — but a stricter check
-would fail fast with a clear error instead of a confusing late failure.
+would fail fast with a clear error instead of a confusing late failure. Re-confirmed by the Codex
+pass during the jj→git stale-vcs fix: the new reconcile-on-list (`Service.effectiveVCS`) also uses
+marker-file truth, so a *present-but-broken* `.jj` dir would still reconcile as jj — hardening
+`Detect` fixes both the late-failure gap and the reconcile accuracy in one place.
 
 **How to start:** In `Detect`, validate beyond existence — e.g. `git rev-parse --git-dir` (or read
 `.git`/`HEAD`) for git, and confirm `.jj/repo` for jj. Weigh that `Detect` runs on every
-create/list/delete, so keep it cheap (a stat-level check may suffice over forking git).
+create/list/delete (now also list-reconcile), so keep it cheap (a stat-level check may suffice over
+forking git).
 
 **Depends on:** nothing; touches all VCS consumers (`create`, `list`, `delete`, `add-project`).
 

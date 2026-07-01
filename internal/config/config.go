@@ -213,6 +213,26 @@ func (c *Config) AddProject(parentPath, vcs string) error {
 	})
 }
 
+// SetProjectVCS updates the stored vcs type for an already-registered project. It is a
+// no-op (returning nil) if the project isn't in the config — it never creates a project,
+// and it preserves the project's workrooms map. Used to reconcile the persisted type when
+// a project's on-disk VCS has changed (e.g. a colocated jj repo whose .jj dir was removed,
+// leaving plain git); see Service.effectiveVCS.
+func (c *Config) SetProjectVCS(parentPath, vcs string) error {
+	return c.withLock(func() error {
+		data, err := c.Read()
+		if err != nil {
+			return err
+		}
+		project, ok := data[parentPath].(map[string]any)
+		if !ok {
+			return nil
+		}
+		project["vcs"] = vcs
+		return c.Write(data)
+	})
+}
+
 // RemoveWorkroom removes a workroom entry. If the parent has no remaining workrooms, it is removed.
 func (c *Config) RemoveWorkroom(parentPath, name string) error {
 	return c.withLock(func() error {
