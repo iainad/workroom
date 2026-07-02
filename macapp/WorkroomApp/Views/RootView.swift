@@ -18,10 +18,11 @@ struct RootView: View {
   /// View-menu command (WorkroomCommands) toggles the same value.
   @Default(.showNotifications) private var showNotifications
 
-  /// Drives the add-project importer — set from `store.requestAddProject`, which both ⇧⌘O and the
-  /// sidebar's Add-Project buttons raise. Hosted here (vs the sidebar) so the ⇧⌘O command presents it
-  /// even if the sidebar is collapsed via the standard toggle.
-  @State private var showImporter = false
+  /// Drives the New Project sheet — set from `store.requestAddProject`, which both the menu command
+  /// and the sidebar's Add-Project buttons raise. Hosted here (vs the sidebar) so the command presents
+  /// it even if the sidebar is collapsed via the standard toggle. The sheet (issue #103) offers two
+  /// modes: add an existing repo, or create + git-init a new directory.
+  @State private var showAddProject = false
 
   /// Presents the theme picker (issue #36), raised by the `Theme…` (⌘⇧K) command via notification.
   @State private var showThemePicker = false
@@ -121,8 +122,12 @@ struct RootView: View {
     } detail: {
       HStack(spacing: 0) {
         if store.sidebarVisible {
-          SidebarColumn()
-            .transition(.move(edge: .leading))
+          SidebarColumn(
+            paneDrag: $workroomChipDrag,
+            localize: { workroomChipLocal($0) },
+            dropTarget: { workroomChipDropTarget(at: $0) }
+          )
+          .transition(.move(edge: .leading))
         }
         detail
           .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -165,14 +170,17 @@ struct RootView: View {
       // commands and the sidebar's own buttons.
       .onChange(of: store.requestAddProject) { _, request in
         if request {
-          showImporter = true
+          showAddProject = true
           store.requestAddProject = false
         }
       }
-      .fileImporter(isPresented: $showImporter, allowedContentTypes: [.folder]) { result in
-        if case .success(let url) = result {
-          Task { await store.addProject(url) }
-        }
+      .sheet(isPresented: $showAddProject) {
+        AddProjectSheet(
+          onAdd: { path, create in
+            showAddProject = false
+            Task { await store.addProject(path, create: create) }
+          },
+          onCancel: { showAddProject = false })
       }
       // New Workroom picker (⌘N, issue #81): same store-flag bridge as the importer above, packaged as
       // a modifier so this large `body` stays within the type-checker's budget (like EdgeRevealSidebars).
@@ -183,7 +191,7 @@ struct RootView: View {
       // One of several sibling `.sheet` presenters on this view — only one is ever active at a time.
       .modifier(OpenWorkroomPresenter(store: store))
       .confirmationDialog(
-        store.pendingDeletion.map { "Delete '\($0.workroom.name)'?" } ?? "Delete workroom?",
+        store.pendingDeletion.map { "Delete '\($0.workroom.displayName)'?" } ?? "Delete workroom?",
         isPresented: Binding(
           get: { store.pendingDeletion != nil }, set: { if !$0 { store.pendingDeletion = nil } }),
         titleVisibility: .visible
@@ -225,11 +233,23 @@ struct RootView: View {
       .sheet(item: $store.pendingProjectDeletion) { pending in
         DeleteProjectSheet(
           project: pending.project,
-          onDelete: { withWorkrooms in
+          onDelete: { scope in
             store.pendingProjectDeletion = nil
-            store.deleteProject(pending.project, deleteWorkrooms: withWorkrooms)
+            store.deleteProject(pending.project, scope: scope)
           },
           onCancel: { store.pendingProjectDeletion = nil })
+      }
+      // Set/edit a workroom's display label (issue #41). Same `.sheet(item:)` bridge as project
+      // deletion above — the id-keyed item rebuilds the sheet per workroom, resetting its field.
+      .sheet(item: $store.pendingWorkroomLabel) { pending in
+        WorkroomLabelSheet(
+          workroom: pending.workroom,
+          project: pending.project,
+          onSet: { label in
+            store.pendingWorkroomLabel = nil
+            store.setWorkroomLabel(pending.workroom, in: pending.project, to: label)
+          },
+          onCancel: { store.pendingWorkroomLabel = nil })
       }
   }
 
@@ -242,7 +262,10 @@ struct RootView: View {
       // so this large `body` stays within the type-checker's budget.
       .modifier(
         EdgeRevealSidebars(
-          sidebarVisible: store.sidebarVisible, inspectorVisible: showNotifications)
+          sidebarVisible: store.sidebarVisible, inspectorVisible: showNotifications,
+          paneDrag: $workroomChipDrag,
+          localize: { workroomChipLocal($0) },
+          dropTarget: { workroomChipDropTarget(at: $0) })
       )
       // Foreground toasts (issue #31): pinned bottom-right of the window, over the split + inspector.
       // Only ever populated while the inspector is closed, so it never overlaps the open inspector.
@@ -400,8 +423,12 @@ struct RootView: View {
   }
 
   /// The content-local point for a chip drag at `global`, or nil when the cursor is still over the bar
-  /// (→ a reorder, not a drop-into-content).
+  /// (→ a reorder, not a drop-into-content). The detail content frame spans the full window height —
+  /// its top sits *under* the title bar — so a point still within the title-bar strip is a reorder, not
+  /// a drop-into-pane (without this guard every horizontal reorder drag, staying at chip height, would
+  /// be mistaken for a split — the chips could never be reordered).
   private func workroomChipLocal(_ global: CGPoint) -> CGPoint? {
+    guard global.y >= WorkroomTitlebar.height else { return nil }
     guard detailContentFrame.contains(global) else { return nil }
     return CGPoint(x: global.x - detailContentFrame.minX, y: global.y - detailContentFrame.minY)
   }
@@ -479,10 +506,13 @@ struct RootView: View {
         layout: store.visibleWorkroomLayout(for: selected),
         resolve: { store.target(for: $0) },
         focusedID: selected,
-        externalDrag: workroomChipDrag,
+        externalDrag: $workroomChipDrag,
+        localize: { workroomChipLocal($0) },
+        dropTarget: { workroomChipDropTarget(at: $0) },
         onFocus: { selectWorkroomTab($0) },
         onSetRatio: { store.setWorkroomSplitRatio($0, forSplit: $1) },
-        onClose: { store.removeWorkroomSplitMember($0) }
+        onClose: { store.removeWorkroomSplitMember($0) },
+        onMove: { store.insertWorkroomSplit($0, beside: $1, edge: $2) }
       )
     } else {
       targetTerminalBody(focused)

@@ -128,10 +128,16 @@ struct DiffViewer: View {
       return
     }
     // Resolve a grammar from the new path, falling back to the old (rename/delete) path.
-    let grammar =
+    let pathGrammar =
       SyntaxLanguage.grammar(forPath: descriptor.path)
       ?? diff.renamedFrom.flatMap { SyntaxLanguage.grammar(forPath: $0) }
-    guard let grammar else {
+    // An extension-less file may still be detectable via its shebang, which needs the content — so
+    // don't bail before fetching in that case. A file with a known-but-unsupported extension still
+    // short-circuits to plain (no wasted content fetch).
+    let extensionless =
+      (descriptor.path as NSString).pathExtension.isEmpty
+      && (diff.renamedFrom.map { ($0 as NSString).pathExtension.isEmpty } ?? true)
+    guard pathGrammar != nil || extensionless else {
       highlightedLines = [:]
       return
     }
@@ -142,6 +148,12 @@ struct DiffViewer: View {
       : await DiffResolver().fileContent(for: descriptor, in: directory)
     guard !Task.isCancelled else { return }
     guard let content else {
+      highlightedLines = [:]
+      return
+    }
+    // Path detection first, then the shebang on the first line (extension-less scripts).
+    let firstLine = String(content.prefix { $0 != "\n" && $0 != "\r" })
+    guard let grammar = pathGrammar ?? SyntaxLanguage.grammar(forShebang: firstLine) else {
       highlightedLines = [:]
       return
     }

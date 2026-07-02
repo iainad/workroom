@@ -131,9 +131,16 @@ func (c *Config) withLock(fn func() error) error {
 
 // CanonicalPath resolves a path to an absolute, symlink-evaluated form so that
 // the same project referenced via a symlink or trailing slash maps to one key.
-// If the path does not exist (EvalSymlinks fails), the absolute form is returned.
+// A leading ~ (or ~/) is expanded to the user's home directory first — a shell
+// does this before a program sees the path, but a path typed into the app's New
+// Project dialog reaches the CLI raw. If the path does not exist (EvalSymlinks
+// fails), the absolute form is returned.
 func CanonicalPath(p string) (string, error) {
-	abs, err := filepath.Abs(p)
+	expanded, err := expandTilde(p)
+	if err != nil {
+		return "", err
+	}
+	abs, err := filepath.Abs(expanded)
 	if err != nil {
 		return "", err
 	}
@@ -141,6 +148,23 @@ func CanonicalPath(p string) (string, error) {
 		return resolved, nil
 	}
 	return abs, nil
+}
+
+// expandTilde expands a leading "~" or "~/" to the user's home directory. Other
+// forms (e.g. "~user") are left untouched — only the current user's home is
+// resolved.
+func expandTilde(p string) (string, error) {
+	if p != "~" && !strings.HasPrefix(p, "~/") {
+		return p, nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	if p == "~" {
+		return home, nil
+	}
+	return filepath.Join(home, p[2:]), nil
 }
 
 // AddWorkroom adds a workroom entry under the given parent project path.
@@ -185,6 +209,26 @@ func (c *Config) AddProject(parentPath, vcs string) error {
 		} else {
 			data[parentPath] = map[string]any{"vcs": vcs, "workrooms": map[string]any{}}
 		}
+		return c.Write(data)
+	})
+}
+
+// SetProjectVCS updates the stored vcs type for an already-registered project. It is a
+// no-op (returning nil) if the project isn't in the config — it never creates a project,
+// and it preserves the project's workrooms map. Used to reconcile the persisted type when
+// a project's on-disk VCS has changed (e.g. a colocated jj repo whose .jj dir was removed,
+// leaving plain git); see Service.effectiveVCS.
+func (c *Config) SetProjectVCS(parentPath, vcs string) error {
+	return c.withLock(func() error {
+		data, err := c.Read()
+		if err != nil {
+			return err
+		}
+		project, ok := data[parentPath].(map[string]any)
+		if !ok {
+			return nil
+		}
+		project["vcs"] = vcs
 		return c.Write(data)
 	})
 }

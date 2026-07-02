@@ -123,10 +123,27 @@ private final class StderrCollector: @unchecked Sendable {
   }
 }
 
+/// The subset of `WorkroomCLI` that `AppStore` drives, expressed as a protocol so
+/// tests can inject a fake (issue #103). `WorkroomCLI` is the production conformer;
+/// `bundledBinaryURL` and the process plumbing stay concrete (not used by AppStore).
+protocol WorkroomCLIProtocol {
+  func list(warnings: String, project: String?) async throws -> ListResponse
+  func addProject(_ path: String, create: Bool) async throws -> String
+  func create(
+    project: String,
+    onLog: ((String) -> Void)?,
+    onReady: ((_ name: String, _ path: String, _ hasSetup: Bool) -> Void)?
+  ) async throws -> CreateResponse
+  func delete(name: String, project: String, onLog: ((String) -> Void)?) async throws
+  func deleteProject(
+    _ path: String, withWorkrooms: Bool, fromDisk: Bool, onLog: ((String) -> Void)?
+  ) async throws -> [URL]
+}
+
 /// Drives the bundled `workroom` binary over its `--json` contract. All work runs
 /// off the main thread. Mutations are rare and one-shot; the binary itself forks to
 /// git/jj, so the subprocess spawn is negligible.
-final class WorkroomCLI {
+final class WorkroomCLI: WorkroomCLIProtocol {
   static let shared = WorkroomCLI()
   private init() {}
 
@@ -139,9 +156,16 @@ final class WorkroomCLI {
     return try decode(ListResponse.self, from: result)
   }
 
-  func addProject(_ path: String) async throws {
-    let result = try await run(["add-project", path, "--json"], timeout: 15)
-    try throwIfError(result)
+  /// Registers a project. With `create`, the CLI creates and git-initializes the
+  /// directory if it does not already exist (issue #103); otherwise the path must
+  /// already be a Git/JJ repo. Returns the canonical path the CLI registered (used
+  /// to select the project after a reload). The git init + initial commit can take
+  /// a moment, so the timeout is generous.
+  func addProject(_ path: String, create: Bool) async throws -> String {
+    var args = ["add-project", path, "--json"]
+    if create { args.append("--create") }
+    let result = try await run(args, timeout: 60)
+    return try decode(AddProjectResponse.self, from: result).path
   }
 
   /// Creates a workroom. `onReady(name, path, hasSetup)` fires when the workroom exists
@@ -177,20 +201,32 @@ final class WorkroomCLI {
     try throwIfError(result)
   }
 
-  /// Removes a project from the config. By default this is config-only — nothing on disk
-  /// is touched (worktree dirs, branches, and files all stay). With `withWorkrooms` it
-  /// first tears down every registered workroom (worktree dirs + files; branches are
-  /// always kept), streaming teardown output via `onLog`. `--confirm` echoes the path
-  /// (the type-to-confirm guard lives in the sheet; this just satisfies the CLI gate).
-  func deleteProject(_ path: String, withWorkrooms: Bool, onLog: ((String) -> Void)? = nil)
-    async throws
-  {
+  /// Removes a project from the config. Three modes (mutually exclusive on disk):
+  /// - default (config-only): nothing on disk is touched (worktree dirs, branches, files stay).
+  /// - `withWorkrooms`: also tears down every registered workroom (hard-deletes worktree dirs +
+  ///   files; branches are always kept), streaming teardown output via `onLog`.
+  /// - `fromDisk`: runs each workroom's teardown, drops the project from config, and RETURNS the
+  ///   directories (project root first, then workrooms) for the app to move to the Bin — the CLI
+  ///   never deletes them itself (issue #108). The returned `[URL]` is empty in the other modes.
+  ///
+  /// `--confirm` echoes the path (the type-to-confirm guard lives in the sheet; this just
+  /// satisfies the CLI gate).
+  @discardableResult
+  func deleteProject(
+    _ path: String, withWorkrooms: Bool, fromDisk: Bool, onLog: ((String) -> Void)? = nil
+  ) async throws -> [URL] {
     var args = ["delete-project", path, "--json", "--confirm", path]
     if withWorkrooms { args.append("--with-workrooms") }
-    let result = try await run(args, timeout: withWorkrooms ? 600 : 15) { event in
+    if fromDisk { args.append("--from-disk") }
+    let result = try await run(args, timeout: (withWorkrooms || fromDisk) ? 600 : 15) { event in
       if event.type == "log", let text = event.text { onLog?(text) }
     }
-    try throwIfError(result)
+    guard fromDisk else {
+      try throwIfError(result)
+      return []
+    }
+    let response = try decode(DeleteProjectResponse.self, from: result)
+    return (response.trashPaths ?? []).map { URL(fileURLWithPath: $0) }
   }
 
   // MARK: Binary location

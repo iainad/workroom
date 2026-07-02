@@ -150,6 +150,49 @@ func (s *Service) vcsForType(t vcs.Type) (vcs.VCS, error) {
 	return vcs.New(t)
 }
 
+// effectiveVCS returns the project's real VCS type, preferring live on-disk detection over
+// the stored type so a project converted between VCSes (e.g. a colocated jj repo whose .jj
+// dir was removed, leaving plain git) is reported correctly. It falls back to `stored` when
+// the directory is absent or has no supported VCS — preserving the ability to list a project
+// whose directory is gone. When persist is true and the detected type differs from stored, it
+// heals the config (best-effort: the returned type is already correct even if the write fails).
+func (s *Service) effectiveVCS(path, stored string, persist bool) string {
+	v, err := vcs.Detect(path)
+	if err != nil {
+		return stored
+	}
+	detected := string(v.Type())
+	if detected != stored && persist {
+		_ = s.Config.SetProjectVCS(path, detected)
+	}
+	return detected
+}
+
+// vcsWorkspaceSet lists a project's VCS workspaces exactly once and returns them as a
+// membership set. It returns nil on any error (empty type, unknown type, non-repo directory,
+// or a failed VCS command) to signal "couldn't determine" — callers must treat a nil set as
+// "don't warn" (fail-open), distinct from a non-nil empty set which authoritatively means the
+// repo has no workspaces. git lists bare basenames; jj lists "workroom/<name>" (callers check
+// both keys).
+func (s *Service) vcsWorkspaceSet(path, vcsType string) map[string]bool {
+	if vcsType == "" {
+		return nil
+	}
+	v, err := s.vcsForType(vcs.Type(vcsType))
+	if err != nil {
+		return nil
+	}
+	listed, err := v.ListWorkrooms(path)
+	if err != nil {
+		return nil
+	}
+	set := make(map[string]bool, len(listed))
+	for _, w := range listed {
+		set[w] = true
+	}
+	return set
+}
+
 // CreateResult describes a newly created workroom. SetupOutput is captured for the
 // human renderer and is not part of the machine payload. HasSetup reports whether a
 // setup script exists for the project (resolved before OnReady fires) so a GUI can
@@ -364,11 +407,10 @@ func (s *Service) List(cwd string) error {
 			return nil
 		}
 
-		vcsType := ""
-		if v, ok := project["vcs"].(string); ok {
-			vcsType = v
-		}
-		s.listWorkrooms(workrooms, vcsType, cwd)
+		stored, _ := project["vcs"].(string)
+		vcsType := s.effectiveVCS(projectPath, stored, true)
+		vcsSet := s.vcsWorkspaceSet(projectPath, vcsType)
+		s.listWorkrooms(workrooms, vcsType, vcsSet)
 		return nil
 	}
 
@@ -386,15 +428,17 @@ func (s *Service) List(cwd string) error {
 	for path, proj := range projects {
 		s.say(fmt.Sprintf("%s:", ui.DisplayPath(path)))
 		workrooms, _ := proj["workrooms"].(map[string]any)
-		vcsType, _ := proj["vcs"].(string)
-		s.listWorkrooms(workrooms, vcsType, path)
+		stored, _ := proj["vcs"].(string)
+		vcsType := s.effectiveVCS(path, stored, true)
+		vcsSet := s.vcsWorkspaceSet(path, vcsType)
+		s.listWorkrooms(workrooms, vcsType, vcsSet)
 		s.say("")
 	}
 
 	return nil
 }
 
-func (s *Service) listWorkrooms(workrooms map[string]any, vcsType, dir string) {
+func (s *Service) listWorkrooms(workrooms map[string]any, vcsType string, vcsSet map[string]bool) {
 	var rows [][]string
 	for name, info := range workrooms {
 		infoMap, ok := info.(map[string]any)
@@ -402,7 +446,7 @@ func (s *Service) listWorkrooms(workrooms map[string]any, vcsType, dir string) {
 			continue
 		}
 		wrPath, _ := infoMap["path"].(string)
-		warnings := s.workroomWarnings(name, wrPath, vcsType, dir)
+		warnings := s.workroomWarnings(name, wrPath, vcsType, vcsSet)
 
 		row := []string{ui.Bold(name), ui.Dim(ui.DisplayPath(wrPath))}
 		if len(warnings) > 0 {
@@ -413,50 +457,18 @@ func (s *Service) listWorkrooms(workrooms map[string]any, vcsType, dir string) {
 	ui.PrintTable(s.output(), rows, 2)
 }
 
-func (s *Service) workroomWarnings(name, wrPath, vcsType, dir string) []string {
+// workroomWarnings computes the display warnings for one workroom: a missing directory, and —
+// when vcsSet is non-nil (the project's VCS workspaces were listed successfully) — a missing
+// VCS workspace. A nil vcsSet means membership is unknown, so no VCS warning is emitted
+// (fail-open). git lists bare basenames; jj lists "workroom/<name>", so both keys are checked.
+func (s *Service) workroomWarnings(name, wrPath, vcsType string, vcsSet map[string]bool) []string {
 	var warnings []string
 	if _, err := os.Stat(wrPath); os.IsNotExist(err) {
 		warnings = append(warnings, "directory not found")
 	}
-
-	// Check VCS workspace existence
-	if s.VCS != nil {
-		vcsName := "workroom/" + name
-		if vcsType == "jj" {
-			if jj, ok := s.VCS.(*vcs.JJ); ok {
-				workspaces, err := jj.ListWorkrooms(dir)
-				if err == nil {
-					found := false
-					for _, w := range workspaces {
-						if w == vcsName {
-							found = true
-							break
-						}
-					}
-					if !found {
-						warnings = append(warnings, "jj workspace not found")
-					}
-				}
-			}
-		} else if vcsType == "git" {
-			if git, ok := s.VCS.(*vcs.Git); ok {
-				workrooms, err := git.ListWorkrooms(dir)
-				if err == nil {
-					found := false
-					for _, w := range workrooms {
-						if w == name {
-							found = true
-							break
-						}
-					}
-					if !found {
-						warnings = append(warnings, "git workspace not found")
-					}
-				}
-			}
-		}
+	if vcsSet != nil && !vcsSet[name] && !vcsSet["workroom/"+name] {
+		warnings = append(warnings, vcsType+" workspace not found")
 	}
-
 	return warnings
 }
 
@@ -566,17 +578,16 @@ func (s *Service) InteractiveDelete(dir string) error {
 	return nil
 }
 
-func (s *Service) deleteByName(dir, name string) error {
+// RunTeardown runs the teardown script for a workroom. It resolves the workroom
+// directory via the config WorkroomsDir, streams output to the NDJSON log sink (in
+// --json mode) or a live log panel (in human mode), and respects Pretend mode.
+// Returns the script error if the script fails; returns nil when the script is absent.
+func (s *Service) RunTeardown(dir, name string) error {
 	wrPath, err := s.workroomPath(name)
 	if err != nil {
 		return err
 	}
 
-	// Run teardown script, streaming its output as it runs. --json mode supplies an
-	// NDJSON sink (ScriptLogWriter); otherwise the human terminal gets a live log
-	// panel. When neither applies (output discarded, no sink) the stream is nil, so
-	// script.Run keeps the captured output in the returned error instead of dropping
-	// it.
 	teardownScript := filepath.Join(dir, "scripts", "workroom_teardown")
 	if _, err := os.Stat(teardownScript); err == nil {
 		s.sayStatus("teardown", fmt.Sprintf("Running %s from %q", teardownScript, wrPath))
@@ -600,6 +611,23 @@ func (s *Service) deleteByName(dir, name string) error {
 				s.say("")
 			}
 		}
+	}
+	return nil
+}
+
+func (s *Service) deleteByName(dir, name string) error {
+	wrPath, err := s.workroomPath(name)
+	if err != nil {
+		return err
+	}
+
+	// Run teardown script, streaming its output as it runs. --json mode supplies an
+	// NDJSON sink (ScriptLogWriter); otherwise the human terminal gets a live log
+	// panel. When neither applies (output discarded, no sink) the stream is nil, so
+	// script.Run keeps the captured output in the returned error instead of dropping
+	// it.
+	if err := s.RunTeardown(dir, name); err != nil {
+		return err
 	}
 
 	// Delete VCS workspace

@@ -23,6 +23,13 @@ struct ToastStack: View {
     store.previewingRight ? [] : store.toasts
   }
 
+  /// Origin label for a toast, resolved from the live model so a workroom's display label
+  /// (issue #41) shows and tracks renames; falls back to the snapshot when the target is gone.
+  private func resolvedSource(forTargetID id: TerminalTarget.ID, fallback: String) -> String {
+    let live = store.notificationSource(forTargetID: id)
+    return live.isEmpty ? fallback : live
+  }
+
   var body: some View {
     // ONE container (issue #67): live run toasts ride above the transient notification toasts, so the
     // two never overlap in the bottom-right corner (they'd collide as separate overlays).
@@ -30,6 +37,7 @@ struct ToastStack: View {
       ForEach(store.runToastItems) { item in
         RunToastView(
           item: item,
+          source: resolvedSource(forTargetID: item.targetID, fallback: item.source),
           onTap: {
             // Tap anywhere on the card → open the run terminal AND dismiss the toast (it won't
             // reappear; you're now looking at the run). Mirrors the notification toast's tap.
@@ -47,6 +55,7 @@ struct ToastStack: View {
       ForEach(visibleToasts) { toast in
         ToastView(
           item: toast,
+          source: resolvedSource(forTargetID: toast.targetID, fallback: toast.source),
           onTap: {
             store.openTerminal(targetID: toast.targetID, tabID: toast.tabID, notifID: toast.id)
             store.dismissToast(toast.id)
@@ -87,6 +96,8 @@ struct ToastStack: View {
 /// auto-dismisses after 5s unless the pointer is over it.
 private struct ToastView: View {
   let item: WorkroomNotification
+  /// Origin label, resolved by the parent so it reflects a workroom's display label (issue #41).
+  let source: String
   let onTap: () -> Void
   let onDismiss: () -> Void
 
@@ -174,8 +185,8 @@ private struct ToastView: View {
         Text(subtext).font(.footnote).foregroundStyle(.secondary).lineLimit(2)
       }
       HStack(spacing: 4) {
-        if !item.source.isEmpty {
-          Text(item.source).lineLimit(1)
+        if !source.isEmpty {
+          Text(source).lineLimit(1)
           Text("·")
         }
         Text(item.date, style: .relative)
@@ -190,7 +201,7 @@ private struct ToastView: View {
 
   private var accessibilityText: String {
     let headline = item.title.isEmpty ? (item.body ?? "") : item.title
-    let parts = [item.source, headline].filter { !$0.isEmpty }
+    let parts = [source, headline].filter { !$0.isEmpty }
     return parts.isEmpty ? "Notification" : "Notification: \(parts.joined(separator: ", "))"
   }
 
@@ -213,6 +224,8 @@ private struct ToastView: View {
 /// store (the source of truth); this view only renders + forwards the two actions.
 private struct RunToastView: View {
   let item: AppStore.RunToastItem
+  /// Origin label, resolved by the parent so it reflects a workroom's display label (issue #41).
+  let source: String
   let onTap: () -> Void
   let onDismiss: () -> Void
 
@@ -228,8 +241,8 @@ private struct RunToastView: View {
         if !item.command.isEmpty {
           Text(item.command).font(.caption).foregroundStyle(.secondary).lineLimit(1)
         }
-        if !item.source.isEmpty {
-          Text(item.source).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+        if !source.isEmpty {
+          Text(source).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
         }
       }
       .frame(maxWidth: .infinity, alignment: .leading)
@@ -282,7 +295,7 @@ private struct RunToastView: View {
   }
 
   private var accessibilityText: String {
-    let parts = [item.source, statusText, item.command].filter { !$0.isEmpty }
+    let parts = [source, statusText, item.command].filter { !$0.isEmpty }
     return "Run: " + parts.joined(separator: ", ")
   }
 

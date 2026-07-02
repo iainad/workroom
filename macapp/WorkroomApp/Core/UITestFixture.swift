@@ -44,6 +44,14 @@ enum UITestFixture {
     return (cmd?.isEmpty == false) ? cmd : nil
   }
 
+  /// When set (`-WorkroomUITestTwoTabs 1`), the fixture seeds a SECOND workroom and the app opens a
+  /// terminal for both on launch, so the workroom tab bar (issue #23) shows two chips — the scenario
+  /// the drag-to-reorder / window-drag XCUITest (`WindowDragUITests`) needs. Default (unset) keeps the
+  /// single-workroom fixture the other tests rely on.
+  static var twoTabs: Bool {
+    UserDefaults.standard.bool(forKey: "WorkroomUITestTwoTabs")
+  }
+
   /// When set (`-WorkroomUITestGitWorkroom 1`), the fixture workroom reports a **git** working tree
   /// (a flat changed-file list, no jj groups) instead of the default jj change — so the diff-viewer
   /// UI tests can exercise the `.gitWorktree` diff source. Default (unset) keeps the jj scenario the
@@ -92,6 +100,8 @@ enum UITestFixture {
   static let projectName = "UITestProject"
   /// Stable name of the fixture workroom (`sidebar.workroom.<name>`).
   static let workroomName = "uitest-room"
+  /// Stable name of the SECOND fixture workroom, seeded only under `twoTabs` (drag/reorder test).
+  static let workroomName2 = "uitest-room-2"
 
   /// The fake project list. Idempotent within a launch: the backing temp directories are created if
   /// missing so each target's terminal can start a shell. The project is reported as `git` so the
@@ -103,19 +113,23 @@ enum UITestFixture {
     let base = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
       .appendingPathComponent("workroom-uitest", isDirectory: true)
     let projectDir = base.appendingPathComponent(projectName, isDirectory: true)
-    let workroomDir = base.appendingPathComponent("workrooms", isDirectory: true)
-      .appendingPathComponent(workroomName, isDirectory: true)
-    for dir in [projectDir, workroomDir] {
+    let workroomsBase = base.appendingPathComponent("workrooms", isDirectory: true)
+    let workroomDir = workroomsBase.appendingPathComponent(workroomName, isDirectory: true)
+    // A second workroom only for the drag/reorder scenario, so the tab bar has two chips to swap.
+    let workroomDir2 = workroomsBase.appendingPathComponent(workroomName2, isDirectory: true)
+    var dirs = [projectDir, workroomDir]
+    var workrooms = [
+      Workroom(name: workroomName, path: workroomDir.path, vcsName: "git", warnings: [])
+    ]
+    if twoTabs {
+      dirs.append(workroomDir2)
+      workrooms.append(
+        Workroom(name: workroomName2, path: workroomDir2.path, vcsName: "git", warnings: []))
+    }
+    for dir in dirs {
       try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
     }
-    return [
-      Project(
-        path: projectDir.path,
-        vcs: "git",
-        workrooms: [
-          Workroom(name: workroomName, path: workroomDir.path, vcsName: "git", warnings: [])
-        ])
-    ]
+    return [Project(path: projectDir.path, vcs: "git", workrooms: workrooms)]
   }
 
   // MARK: - Changes-inspector status

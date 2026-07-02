@@ -121,17 +121,28 @@ extension Defaults.Keys {
   /// view-construct time, so the choice applies to newly opened diff tabs (a narrow pane falls back
   /// to unified regardless). Stored as the bare raw string via `DiffViewMode: PreferRawRepresentable`.
   static let diffViewMode = Key<DiffViewMode>("diffViewMode", default: .unified)
+
+  /// Per-workroom display label (issue #41), keyed by the workroom's `targetIDString`
+  /// ("wr|<project>|<name>", via `TerminalTarget.workroomID`). A label is a display-only alias —
+  /// the real workroom name and its Git/JJ workspace are unchanged. Absence of a key means no
+  /// label. Invariant: stored values are always trimmed and non-empty (normalised at the write
+  /// boundary in `AppStore.setWorkroomLabel`); a cleared label removes the key rather than storing
+  /// "". A single project-scoped map (mirrors `inspectorPaneStates`/`runCommands`): `Defaults` keys
+  /// are static, so per-workroom keys aren't an option, and the project-scoped id keeps same-named
+  /// workrooms in different projects from colliding. The key *string* `workroomLabels` is a
+  /// stored-data contract — keep it byte-for-byte stable once shipped.
+  static let workroomLabels = Key<[String: String]>("workroomLabels", default: [:])
 }
 
 /// One workroom's persisted inspector layout: the collapse state and relative pane heights of the
-/// three sections, ordered as `InspectorSectionKind.allCases` (Changes, Pull Request,
+/// sections, ordered as `InspectorSectionKind.allCases` (Changes, Files, Pull Request,
 /// Notifications). `weights` are relative (renormalised among the expanded panes at layout time),
-/// so they survive inspector-width/height changes; equal weights == the three-equal-sections
-/// default.
+/// so they survive inspector-width/height changes; equal weights == the equal-sections default. A
+/// layout saved before the Files section existed (3 entries) is discarded to this default on load.
 struct InspectorPaneState: Codable, Defaults.Serializable, Equatable {
   var collapsed: [Bool]
   var weights: [Double]
 
   static let `default` = InspectorPaneState(
-    collapsed: [false, false, false], weights: [1, 1, 1])
+    collapsed: [false, false, false, false], weights: [1, 1, 1, 1])
 }

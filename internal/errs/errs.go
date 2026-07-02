@@ -5,6 +5,7 @@ import "errors"
 var (
 	ErrInWorkroom          = errors.New("looks like you are already in a workroom. Run this command from the root of your main development directory, not from within an existing workroom")
 	ErrUnsupportedVCS      = errors.New("no supported VCS detected in this directory. Workroom requires either Git or Jujutsu to manage workspaces")
+	ErrNotDirectory        = errors.New("path exists but is not a directory")
 	ErrInvalidName         = errors.New("workroom name must be alphanumeric (dashes and underscores allowed), and must not start or end with a dash or underscore")
 	ErrDirExists           = errors.New("workroom directory already exists")
 	ErrJJWorkspaceExists   = errors.New("JJ workspace already exists")
@@ -14,6 +15,7 @@ var (
 	ErrSetup               = errors.New("setup script failed")
 	ErrTeardown            = errors.New("teardown script failed")
 	ErrConfirmMismatch     = errors.New("confirmation value does not match the workroom name")
+	ErrUnsafeDeletePath    = errors.New("refusing to delete an unsafe or reserved path")
 	ErrCancelled           = errors.New("operation cancelled")
 	ErrConfigRead          = errors.New("failed to read config")
 	ErrConfigWrite         = errors.New("failed to write config")
@@ -31,6 +33,8 @@ func Code(err error) string {
 		return "InWorkroom"
 	case errors.Is(err, ErrUnsupportedVCS):
 		return "UnsupportedVCS"
+	case errors.Is(err, ErrNotDirectory):
+		return "NotADirectory"
 	case errors.Is(err, ErrInvalidName):
 		return "InvalidName"
 	case errors.Is(err, ErrDirExists):
@@ -41,6 +45,8 @@ func Code(err error) string {
 		return "WorkspaceNotFound"
 	case errors.Is(err, ErrConfirmMismatch):
 		return "ConfirmationMismatch"
+	case errors.Is(err, ErrUnsafeDeletePath):
+		return "UnsafeDeletePath"
 	case errors.Is(err, ErrCancelled):
 		return "Cancelled"
 	case errors.Is(err, ErrSetup):
@@ -67,9 +73,9 @@ func ExitCode(err error) int {
 	switch Code(err) {
 	case "":
 		return 0
-	case "ConfirmationMismatch":
+	case "ConfirmationMismatch", "UnsafeDeletePath":
 		return 2
-	case "UnsupportedVCS", "WorkspaceNotFound", "DirExists", "WorkspaceExists", "InvalidName", "InWorkroom":
+	case "UnsupportedVCS", "WorkspaceNotFound", "DirExists", "WorkspaceExists", "InvalidName", "InWorkroom", "NotADirectory":
 		return 3
 	case "Cancelled":
 		return 4

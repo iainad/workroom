@@ -120,6 +120,13 @@ extension KeyboardShortcutsView {
         ShortcutItem(label: "Scroll to Bottom", keys: "⌘↓"),
       ]),
     ShortcutGroup(
+      title: "Find",
+      items: [
+        ShortcutItem(label: "Find…", keys: "⌘F"),
+        ShortcutItem(label: "Find Next", keys: "⌘G"),
+        ShortcutItem(label: "Find Previous", keys: "⇧⌘G"),
+      ]),
+    ShortcutGroup(
       title: "Run",
       items: [
         ShortcutItem(label: "Run", keys: "⌘R"),

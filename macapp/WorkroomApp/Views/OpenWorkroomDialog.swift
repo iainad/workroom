@@ -66,7 +66,9 @@ struct OpenWorkroomDialog: View {
     OpenTargetRow(target: target, isHighlighted: target.id == highlightedID)
       .contentShape(Rectangle())
       .onTapGesture { pick(target) }
-      .accessibilityIdentifier("openWorkroom.target.\(target.title)")
+      // Keyed on the immutable real name (not the label-derived `title`) so it stays a stable
+      // UI-test handle even when a display label changes what's shown (issue #41).
+      .accessibilityIdentifier("openWorkroom.target.\(target.name)")
       .id(target.id)
   }
 

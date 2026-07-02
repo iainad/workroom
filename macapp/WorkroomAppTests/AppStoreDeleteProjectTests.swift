@@ -102,24 +102,92 @@ final class AppStoreDeleteProjectTests: XCTestCase {
     XCTAssertFalse(DeleteProjectSheetModel.nameMatches(typed: "", displayName: "app"))
   }
 
-  func testSheetDeleteLabelEscalatesWithCascade() {
+  func testSheetDeleteLabelPerScope() {
     XCTAssertEqual(
-      DeleteProjectSheetModel.deleteLabel(workroomCount: 3, cascade: false), "Delete Project")
+      DeleteProjectSheetModel.deleteLabel(scope: .configOnly, workroomCount: 3), "Delete Project")
     XCTAssertEqual(
-      DeleteProjectSheetModel.deleteLabel(workroomCount: 3, cascade: true),
+      DeleteProjectSheetModel.deleteLabel(scope: .workrooms, workroomCount: 3),
       "Delete Project & 3 Workrooms")
     XCTAssertEqual(
-      DeleteProjectSheetModel.deleteLabel(workroomCount: 1, cascade: true),
+      DeleteProjectSheetModel.deleteLabel(scope: .workrooms, workroomCount: 1),
       "Delete Project & 1 Workroom", "singular workroom")
+    XCTAssertEqual(
+      DeleteProjectSheetModel.deleteLabel(scope: .fromDisk, workroomCount: 3),
+      "Delete Everything to Bin")
   }
 
-  func testSheetEffectFooterReflectsToggle() {
+  func testSheetEffectFooterPerScope() {
     XCTAssertTrue(
-      DeleteProjectSheetModel.effectFooter(workroomCount: 2, cascade: false)
-        .contains("Worktrees, branches, and files on disk are kept"))
-    let warned = DeleteProjectSheetModel.effectFooter(workroomCount: 2, cascade: true)
-    XCTAssertTrue(warned.contains("Permanently deletes 2 worktree directories"))
-    XCTAssertTrue(
-      warned.contains("Branches are kept"), "cascade footer must still promise branches survive")
+      DeleteProjectSheetModel.effectFooter(scope: .configOnly, workroomCount: 2)
+        .contains("Files on disk are kept"))
+
+    // Level-2 is PERMANENT (the recoverability inversion must be explicit) and keeps branches.
+    let lvl2 = DeleteProjectSheetModel.effectFooter(scope: .workrooms, workroomCount: 2)
+    XCTAssertTrue(lvl2.contains("Permanently removes 2 worktree directories"))
+    XCTAssertTrue(lvl2.contains("NOT recoverable"), "the inversion vs from-disk must be explicit")
+    XCTAssertTrue(lvl2.contains("Branches are kept"))
+
+    // From-disk moves to the Bin (restorable) and is honest that teardowns still run.
+    let disk = DeleteProjectSheetModel.effectFooter(scope: .fromDisk, workroomCount: 2)
+    XCTAssertTrue(disk.contains("to the Bin"))
+    XCTAssertTrue(disk.lowercased().contains("restorable"))
+    XCTAssertTrue(disk.contains("teardown"), "must not oversell recoverability (T2)")
+
+    // No-workroom project: the from-disk copy collapses (no workroom/teardown mention).
+    let diskNoWR = DeleteProjectSheetModel.effectFooter(scope: .fromDisk, workroomCount: 0)
+    XCTAssertTrue(diskNoWR.contains("to the Bin"))
+    XCTAssertFalse(diskNoWR.contains("workroom"))
+  }
+
+  // MARK: from-disk trash orchestration (issue #108)
+
+  /// Records trash requests and fails for any URL in `failURLs`, so the from-disk trash
+  /// orchestration is asserted without touching the real user Trash.
+  private final class FakeTrasher: Trashing {
+    private(set) var trashed: [URL] = []
+    var failURLs: Set<URL> = []
+    struct TrashError: Error {}
+    func trash(_ url: URL) throws {
+      trashed.append(url)
+      if failURLs.contains(url) { throw TrashError() }
+    }
+  }
+
+  func testTrashToBinMovesEveryPathWhenAllSucceed() {
+    let store = makeStore([])
+    let fake = FakeTrasher()
+    store.trasher = fake
+    let urls = [URL(fileURLWithPath: "/a"), URL(fileURLWithPath: "/b/c")]
+
+    let failed = store.trashToBin(urls)
+
+    XCTAssertEqual(fake.trashed, urls, "every path must be sent to the Bin, in order")
+    XCTAssertTrue(failed.isEmpty, "no failures expected")
+  }
+
+  func testTrashToBinAttemptsAllAndReportsTheUnmovable() {
+    let store = makeStore([])
+    let fake = FakeTrasher()
+    let bad = URL(fileURLWithPath: "/locked")
+    fake.failURLs = [bad]
+    store.trasher = fake
+    let urls = [URL(fileURLWithPath: "/ok"), bad, URL(fileURLWithPath: "/ok2")]
+
+    let failed = store.trashToBin(urls)
+
+    XCTAssertEqual(fake.trashed, urls, "all paths attempted even after a failure")
+    XCTAssertEqual(failed, [bad], "only the failing path is reported back")
+  }
+
+  func testPresentTrashFailureNamesTheLeftoverDirs() {
+    let store = makeStore([])
+    let p = project("/Users/me/dev/app", workrooms: [])
+
+    store.presentTrashFailure(p, failedPaths: [URL(fileURLWithPath: "/Users/me/dev/app")])
+
+    XCTAssertEqual(store.errorTitle, "Some files of ‘app’ could not be moved to the Bin")
+    let message = store.errorMessage ?? ""
+    XCTAssertTrue(message.contains("/Users/me/dev/app"), "must name the leftover dir")
+    XCTAssertTrue(message.contains("removed from Workroom"), "must clarify the project IS gone")
   }
 }

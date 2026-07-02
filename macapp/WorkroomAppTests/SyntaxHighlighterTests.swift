@@ -153,4 +153,53 @@ final class SyntaxHighlighterTests: XCTestCase {
     XCTAssertEqual(
       SyntaxLanguage.detect(newPath: "data.unknownext", oldPath: "data.json", byteCount: 10), .json)
   }
+
+  // MARK: - Shebang detection (extension-less scripts)
+
+  func testShebangDirectInterpreter() {
+    XCTAssertEqual(SyntaxLanguage.grammar(forShebang: "#!/bin/bash"), .bash)
+    XCTAssertEqual(SyntaxLanguage.grammar(forShebang: "#!/bin/sh"), .bash)
+    XCTAssertEqual(SyntaxLanguage.grammar(forShebang: "#!/usr/bin/zsh"), .bash)
+  }
+
+  func testShebangViaEnvAndVersionSuffix() {
+    XCTAssertEqual(SyntaxLanguage.grammar(forShebang: "#!/usr/bin/env bash"), .bash)
+    XCTAssertEqual(SyntaxLanguage.grammar(forShebang: "#!/usr/bin/env python3"), .python)
+    XCTAssertEqual(SyntaxLanguage.grammar(forShebang: "#!/usr/bin/python3.11"), .python)
+    XCTAssertEqual(SyntaxLanguage.grammar(forShebang: "#!/usr/bin/env ruby"), .ruby)
+    XCTAssertEqual(SyntaxLanguage.grammar(forShebang: "#!/usr/bin/env node"), .javascript)
+  }
+
+  func testShebangEnvSkipsFlags() {
+    // `env -S python3 -u` → the interpreter is python3, not the `-S` flag.
+    XCTAssertEqual(SyntaxLanguage.grammar(forShebang: "#!/usr/bin/env -S python3 -u"), .python)
+  }
+
+  func testShebangEnvWithNoInterpreterIsNil() {
+    // `env` with nothing (or only flags) after it names no interpreter → no language.
+    XCTAssertNil(SyntaxLanguage.grammar(forShebang: "#!/usr/bin/env"))
+    XCTAssertNil(SyntaxLanguage.grammar(forShebang: "#!/usr/bin/env -S"))
+  }
+
+  func testShebangToleratesTrailingCR() {
+    // A CRLF first line leaves a trailing `\r` on the interpreter token — must still match.
+    XCTAssertEqual(SyntaxLanguage.grammar(forShebang: "#!/bin/bash\r"), .bash)
+    XCTAssertEqual(SyntaxLanguage.grammar(forShebang: "#!/usr/bin/env python3\r"), .python)
+  }
+
+  func testShebangNonShebangOrUnknownIsNil() {
+    XCTAssertNil(SyntaxLanguage.grammar(forShebang: "not a shebang"))
+    XCTAssertNil(SyntaxLanguage.grammar(forShebang: "#!/usr/bin/env perl"))
+    XCTAssertNil(SyntaxLanguage.grammar(forShebang: "#!"))
+  }
+
+  func testGrammarForPathPrefersExtensionThenShebang() {
+    // A `.sh` extension wins without needing the shebang.
+    XCTAssertEqual(SyntaxLanguage.grammar(forPath: "run.sh", firstLine: nil), .bash)
+    // No extension, but a bash shebang → bash.
+    XCTAssertEqual(
+      SyntaxLanguage.grammar(forPath: "scripts/deploy", firstLine: "#!/usr/bin/env bash"), .bash)
+    // No extension, no shebang → plain.
+    XCTAssertNil(SyntaxLanguage.grammar(forPath: "scripts/deploy", firstLine: "echo hi"))
+  }
 }

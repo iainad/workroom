@@ -3,20 +3,22 @@ package workroom
 import (
 	"os"
 	"sort"
-
-	"github.com/joelmoss/workroom/internal/vcs"
 )
 
 // WarningsLevel controls how much work ListData does to compute per-workroom warnings.
 type WarningsLevel string
 
 const (
-	// WarningsNone reads config only — zero filesystem or VCS calls (fastest).
+	// WarningsNone reads config only — zero filesystem or VCS calls (fastest). Each project's
+	// stored vcs is reported verbatim (no on-disk reconciliation).
 	WarningsNone WarningsLevel = "none"
-	// WarningsFast adds an os.Stat per workroom to flag missing directories.
+	// WarningsFast adds an os.Stat per workroom to flag missing directories, and re-detects
+	// each project's VCS from disk (a project-level .jj/.git stat) — reporting the real type
+	// and healing the stored vcs on drift (e.g. a colocated jj repo whose .jj dir was removed).
+	// No per-project VCS command is run at this level.
 	WarningsFast WarningsLevel = "fast"
-	// WarningsFull additionally verifies VCS workspace membership, listing once per
-	// project (not once per workroom).
+	// WarningsFull additionally verifies VCS workspace membership using the reconciled type,
+	// listing once per project (not once per workroom).
 	WarningsFull WarningsLevel = "full"
 )
 
@@ -72,6 +74,12 @@ func (s *Service) ListData(level WarningsLevel) (ListResult, error) {
 	for _, ppath := range paths {
 		project := projects[ppath]
 		vcsType, _ := project["vcs"].(string)
+		// Reconcile the stored vcs against on-disk reality (and heal config on drift) so a
+		// project converted between VCSes is reported correctly. Skipped for WarningsNone,
+		// which is contractually zero-filesystem.
+		if level != WarningsNone {
+			vcsType = s.effectiveVCS(ppath, vcsType, true)
+		}
 		pinfo := ProjectInfo{Path: ppath, VCS: vcsType, Workrooms: []WorkroomInfo{}}
 
 		wrMap, _ := project["workrooms"].(map[string]any)
@@ -81,17 +89,11 @@ func (s *Service) ListData(level WarningsLevel) (ListResult, error) {
 		}
 		sort.Strings(names)
 
-		// For full warnings, list the project's VCS workspaces exactly once.
+		// For full warnings, list the project's VCS workspaces exactly once. A nil set means
+		// the listing was unavailable (fail-open — no warnings); a non-nil set is authoritative.
 		var vcsSet map[string]bool
-		if level == WarningsFull && vcsType != "" {
-			if v, err := s.vcsForType(vcs.Type(vcsType)); err == nil {
-				if listed, err := v.ListWorkrooms(ppath); err == nil {
-					vcsSet = make(map[string]bool, len(listed))
-					for _, w := range listed {
-						vcsSet[w] = true
-					}
-				}
-			}
+		if level == WarningsFull {
+			vcsSet = s.vcsWorkspaceSet(ppath, vcsType)
 		}
 
 		for _, name := range names {

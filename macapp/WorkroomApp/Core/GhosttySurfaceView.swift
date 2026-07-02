@@ -18,6 +18,13 @@ final class GhosttySurfaceView: NSView {
   /// runtime callbacks (via `ghostty_surface_userdata`) read it; all writes happen on the main thread.
   nonisolated(unsafe) private(set) var surface: ghostty_surface_t?
 
+  /// Set once `tearDown()` runs — the view is dead and must NEVER re-spawn its surface. SwiftUI/AppKit
+  /// can re-mount a still-referenced view after its tab closed (a `closeTab` teardown racing a pending
+  /// view update); without this, `viewDidMoveToWindow` → `createSurface` would relaunch the command on
+  /// the dead view, spawning an UNTRACKED duplicate the app can't stop — for a run command that's a
+  /// phantom dev server orphaned on its port ("A server is already running" next start; issue #7).
+  private(set) var isTornDown = false
+
   /// The cwd the surface spawned its shell in. `internal` (not `private`) so tests can assert it
   /// (e.g. the quick terminal at `~/`).
   let workingDirectory: String
@@ -62,15 +69,21 @@ final class GhosttySurfaceView: NSView {
   /// them without a confirm, since the process is gone); ordinary tabs leave it nil and keep
   /// forwarding keys / staying in place after the shell exits (issue #7).
   var onCloseRequested: (() -> Void)?
-  /// The user pressed ⌃C in this (run) surface. The host marks the run interrupted so the imminent
-  /// child-exit reads as a user-initiated stop (no failure toast/icon) regardless of exit code
-  /// (issue #79). Fired from `keyDown` BEFORE the keystroke is forwarded — the surface still sends
-  /// SIGINT to the PTY. Only run tabs wire this; ordinary tabs leave it nil. Value-type capture only.
-  var onInterrupt: (() -> Void)?
+  /// True while this run surface is stopped but kept open under the supervisor (issue #7): the
+  /// supervisor process is still alive (so `processHasExited` is false), but the user's command has
+  /// exited and the supervisor printed "Process exited. Press any key to close the terminal.". A key
+  /// then closes the tab via `onCloseRequested`, matching libghostty's native wait_after_command UX.
+  /// The host flips this true on a stop/exit and false on a (re)start.
+  var runStoppedAwaitingClose = false
   /// This pane became first responder (mouse click or programmatic focus) — the host makes it the
   /// selection (issue #3, splits). `becomeFirstResponder` is the single chokepoint for every focus
   /// path, so one hook covers them all. Value-type captures only.
   var onFocused: (() -> Void)?
+
+  /// Scrollback find (⌘F): the observable bridge between this surface and its SwiftUI find bar.
+  /// libghostty owns the search itself; this carries the needle out and the match counts back (see
+  /// `TerminalSearch.swift`). Per-surface, so each tab/split keeps its own search.
+  let searchModel = TerminalSearchModel()
 
   /// Set from `GHOSTTY_ACTION_MOUSE_OVER_LINK` (an OSC 8 / detected URL is under the pointer).
   var hasOSC8LinkUnderCursor = false
@@ -147,6 +160,16 @@ final class GhosttySurfaceView: NSView {
     setAccessibilityIdentifier("terminal.surface")
     let dir = URL(fileURLWithPath: workingDirectory).lastPathComponent
     setAccessibilityLabel(dir.isEmpty ? "Terminal" : "Terminal — \(dir)")
+    // The find bar's only channel to the engine: every search action runs as a libghostty keybind
+    // action on this surface.
+    searchModel.perform = { [weak self] action in
+      guard let self else { return }
+      self.performBindingAction(action.bindingString)
+      // Closing the bar (Esc / ✕) hands keyboard focus back to the terminal — otherwise first
+      // responder is left on the now-removed search field (→ the window), and the next keystroke
+      // wouldn't reach the shell until you clicked the pane.
+      if action == .end { self.window?.makeFirstResponder(self) }
+    }
   }
 
   @available(*, unavailable)
@@ -154,10 +177,16 @@ final class GhosttySurfaceView: NSView {
 
   // MARK: Surface lifecycle (A1)
 
+  /// Whether a (re-)spawn should proceed now. One predicate gates every entry into `createSurface`
+  /// (window mount, background `ensureSurfaceCreated`, deferred `setFrameSize`/`layout`) so no path can
+  /// slip through: a torn-down view must NEVER re-spawn (issue #7 phantom respawn — SwiftUI can re-mount
+  /// a closed run tab's view, which would relaunch its command as an untracked dev server orphaned on
+  /// its port), a test view (`spawnsSurface == false`) stays surface-less, and an already-spawned one
+  /// isn't duplicated. Exposed so the lifecycle guards are unit-testable without a live libghostty surface.
+  var canSpawnSurface: Bool { !isTornDown && spawnsSurface && surface == nil }
+
   private func createSurface() {
-    // Test seam: mount the view without a live libghostty surface (see `spawnsSurface`).
-    guard spawnsSurface else { return }
-    guard surface == nil, let app = GhosttyApp.shared.app else { return }
+    guard canSpawnSurface, let app = GhosttyApp.shared.app else { return }
     guard let backingSize = backingPixelSize() else {
       pendingSurfaceCreation = true
       return
@@ -256,6 +285,7 @@ final class GhosttySurfaceView: NSView {
   /// Explicit teardown on close/delete (plan A1). Clears callbacks first so a late libghostty
   /// callback resolving this view via `userdata` can't invoke a dangling closure, then frees.
   func tearDown() {
+    isTornDown = true  // dead view: block any later re-spawn (issue #7 phantom respawn)
     setHandCursor(false)
     onActivity = nil
     onOpenURL = nil
@@ -660,7 +690,7 @@ final class GhosttySurfaceView: NSView {
     // libghostty shows the prompt but never emits a close action here, so close the tab ourselves on
     // the next key. Only run tabs wire `onCloseRequested`; ordinary tabs fall through and forward
     // keys as usual (a finished login shell just keeps its pane) (issue #7).
-    if let onCloseRequested, processHasExited {
+    if let onCloseRequested, processHasExited || runStoppedAwaitingClose {
       onCloseRequested()
       return
     }
@@ -673,13 +703,6 @@ final class GhosttySurfaceView: NSView {
     if flags.contains(.control), !flags.contains(.command), !flags.contains(.option),
       !hasMarkedText()
     {
-      // ⌃C in a run surface: tell the host this is a user interrupt (issue #79) BEFORE forwarding,
-      // so the run's imminent child-exit reads as a user stop (no failure toast/icon) regardless of
-      // exit code. We still forward the keystroke below, so SIGINT reaches the PTY as normal. The
-      // `processHasExited` early-return above already excludes the "press any key to close" prompt.
-      if onInterrupt != nil, event.charactersIgnoringModifiers == "c" {
-        onInterrupt?()
-      }
       var keyEvent = buildKeyEvent(from: event, action: action)
       let text = Self.filterSpecialCharacters(event.characters ?? "")
       if text.isEmpty {
@@ -818,18 +841,20 @@ final class GhosttySurfaceView: NSView {
     // Menu commands that pair Command with Shift or Option fail the command-only guard below, so
     // reserve them explicitly. Without this they reach the terminal, and a TUI in an enhanced
     // keyboard mode (Claude/Codex) consumes the keystroke so the menu key-equivalent never fires.
-    // ⇧⌘D = Split Down; ⇧⌘K = Theme picker (issue #36/#53); ⇧⌘L = dark/light toggle (issue #57);
-    // ⇧⌘N = Next Notification; ⇧⌘R = Stop run; ⌥⌘N = Notifications toggle; ⌥⌘R = Restart run (issue #7).
+    // ⇧⌘D = Split Down; ⇧⌘G = Find Previous; ⇧⌘K = Theme picker (issue #36/#53); ⇧⌘L = dark/light
+    // toggle (issue #57); ⇧⌘N = Next Notification; ⇧⌘R = Stop run; ⌥⌘N = Notifications toggle;
+    // ⌥⌘R = Restart run (issue #7).
     if flags == [.command, .shift] {
-      return key == "d" || key == "k" || key == "l" || key == "n" || key == "r"
+      return key == "d" || key == "g" || key == "k" || key == "l" || key == "n" || key == "r"
     }
     if flags == [.command, .option] { return key == "n" || key == "r" }
     guard flags == .command else { return false }
     if ("1"..."9").contains(ch) { return true }  // focus tab N
     // ⌘N is New Window (issue #70); ⌘T/⌘W/⌘O/⌘D are real menu commands; ⌘Q/⌘H/⌘M/⌘, are system
-    // standards; ⌘[ / ⌘] are Back/Forward navigation (issue #26); ⌘R is Run (issue #7) — all reserved
-    // so the menu key-equivalent fires instead of being swallowed by the terminal.
-    return ["n", "t", "w", "o", "d", "q", "h", "m", ",", "[", "]", "r"].contains(key)
+    // standards; ⌘[ / ⌘] are Back/Forward navigation (issue #26); ⌘R is Run (issue #7); ⌘F opens the
+    // scrollback find bar and ⌘G / ⇧⌘G step through matches — all reserved so the menu key-equivalent
+    // fires instead of being swallowed by the terminal (a no-op via the menu when no find bar is open).
+    return ["n", "t", "w", "o", "d", "q", "h", "m", ",", "[", "]", "r", "f", "g"].contains(key)
   }
 
   /// ⌘↑ / ⌘↓ jump the viewport to the top / bottom of the scrollback (issue #42). libghostty has no
@@ -842,10 +867,10 @@ final class GhosttySurfaceView: NSView {
     guard flags == .command else { return false }
     switch event.keyCode {
     case 126:
-      performScrollBindingAction("scroll_to_top")
+      performBindingAction("scroll_to_top")
       return true  // ↑
     case 125:
-      performScrollBindingAction("scroll_to_bottom")
+      performBindingAction("scroll_to_bottom")
       return true  // ↓
     default: return false
     }
@@ -854,16 +879,26 @@ final class GhosttySurfaceView: NSView {
   /// Jump the viewport to the top / bottom of the scrollback (issue #42). Public so the Go menu can
   /// drive the focused surface; the ⌘↑/⌘↓ shortcuts reach these via `handleScrollKeyEquivalent`, and
   /// the overlay button calls `scrollToBottom()`.
-  func scrollToTop() { performScrollBindingAction("scroll_to_top") }
-  func scrollToBottom() { performScrollBindingAction("scroll_to_bottom") }
+  func scrollToTop() { performBindingAction("scroll_to_top") }
+  func scrollToBottom() { performBindingAction("scroll_to_bottom") }
 
-  /// Run a libghostty keybind action by name (e.g. `scroll_to_top`, `scroll_to_bottom`) on this
-  /// surface, bypassing the keymap. Used for the ⌘↑/⌘↓ shortcuts and the go-to-bottom button.
-  private func performScrollBindingAction(_ name: String) {
+  /// Open the scrollback find bar on this surface (⌘F / Edit ▸ Find). Drives libghostty's
+  /// `start_search`; the bar then appears via the `START_SEARCH` callback (the model also shows it
+  /// optimistically). The bar feeds the needle / navigation / close back through `searchModel.perform`.
+  func startSearch() { searchModel.start() }
+
+  /// Run a libghostty keybind action by name (e.g. `scroll_to_top`, `start_search`, `search:foo`) on
+  /// this surface, bypassing the keymap. Used for the ⌘↑/⌘↓ shortcuts, the go-to-bottom button, and
+  /// every find-bar action (via `searchModel.perform`).
+  private func performBindingAction(_ name: String) {
     guard let surface else { return }
     let count = name.utf8.count
     name.withCString { _ = ghostty_surface_binding_action(surface, $0, UInt(count)) }
   }
+
+  /// Feed a libghostty search apprt-action callback (START/TOTAL/SELECTED/END) into the find model.
+  /// Called from `GhosttyRuntimeAdapter` on the main thread, where the action callbacks fire.
+  func applySearchEvent(_ event: TerminalSearchState.Event) { searchModel.apply(event) }
 
   private func buildKeyEvent(from event: NSEvent, action: ghostty_input_action_e)
     -> ghostty_input_key_s

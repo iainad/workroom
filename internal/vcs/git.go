@@ -34,6 +34,25 @@ func (g *Git) Delete(dir, _, path string) (string, error) {
 	return g.Executor.Run(dir, "git", "worktree", "remove", path, "--force")
 }
 
+// Init runs `git init` in dir, creating a new empty Git repository.
+func (g *Git) Init(dir string) (string, error) {
+	return g.Executor.Run(dir, "git", "init")
+}
+
+// InitialCommit creates an empty initial commit so a freshly-init'd repo has a
+// HEAD (workroom creation branches from it; on git < 2.42 `git worktree add`
+// otherwise fails on a zero-commit repo). Identity and signing are pinned via
+// `-c` overrides and hooks skipped with `--no-verify` so the commit succeeds on
+// a brand-new machine with no global git config (no user.name/email,
+// commit.gpgsign=true, or template hooks) — the exact first-run case.
+func (g *Git) InitialCommit(dir string) (string, error) {
+	return g.Executor.Run(dir, "git",
+		"-c", "user.name=Workroom",
+		"-c", "user.email=workroom@localhost",
+		"-c", "commit.gpgsign=false",
+		"commit", "--allow-empty", "--no-verify", "-m", "Initial commit")
+}
+
 func (g *Git) ListWorkrooms(dir string) ([]string, error) {
 	paths, err := g.listWorktreePaths(dir)
 	if err != nil {

@@ -15,13 +15,36 @@ struct Workroom: Codable, Identifiable, Hashable {
   let path: String
   let vcsName: String
   let warnings: [Warning]
+  /// GUI-only display alias (issue #41). NOT part of the `--json` contract — the CLI never sends
+  /// it; it's injected post-decode in `AppStore.apply` from `Defaults[.workroomLabels]`. Absent
+  /// from `CodingKeys` (with a default) so the synthesised decoder skips it. Intentionally a
+  /// stored property, so synthesised `Equatable`/`Hashable` include it: a label change must make
+  /// the value compare unequal for SwiftUI to re-render. Identity stays `id == name` (the
+  /// immutable workspace name), so routing/selection/terminal-keying are unaffected, and nothing
+  /// keys a dict/set on a whole `Workroom`, so the hash change is harmless.
+  var label: String? = nil
 
   var id: String { name }
   var hasBlockingWarning: Bool { warnings.contains { $0.kind == "DirectoryMissing" } }
 
+  /// The name to show in the UI: the label when one is set, else the real workspace name. The
+  /// single place the label-vs-name choice is made; every display site routes through this.
+  var displayName: String { Workroom.normalizedLabel(label) ?? name }
+
+  /// Canonical label normaliser (issue #41): trim surrounding whitespace; treat empty/whitespace-only
+  /// as "no label" (nil). The one definition reused by `displayName`, `AppStore.setWorkroomLabel`'s
+  /// write boundary, and `WorkroomLabelSheetModel`'s validation — so the "is this blank?" rule can't
+  /// drift between them.
+  static func normalizedLabel(_ raw: String?) -> String? {
+    guard let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty
+    else { return nil }
+    return trimmed
+  }
+
   enum CodingKeys: String, CodingKey {
     case name, path, warnings
     case vcsName = "vcs_name"
+    // `label` is deliberately omitted — it's a GUI-only field, not part of the CLI JSON contract.
   }
 }
 
@@ -77,11 +100,14 @@ struct TerminalTarget: Identifiable, Hashable {
 }
 
 extension Workroom {
-  /// The terminal target for this workroom within `projectPath`.
+  /// The terminal target for this workroom within `projectPath`. `title` is the `displayName`
+  /// (label when set, else name), so every consumer that reads `target.title` off a resolved target
+  /// — missing-directory messages, split accessibility — shows the label automatically (issue #41).
+  /// The id stays keyed on the immutable `name`.
   func target(inProject projectPath: String) -> TerminalTarget {
     TerminalTarget(
       id: TerminalTarget.workroomID(project: projectPath, name: name),
-      title: name, path: path, isMissing: hasBlockingWarning)
+      title: displayName, path: path, isMissing: hasBlockingWarning)
   }
 }
 
@@ -175,6 +201,25 @@ struct CreateResponse: Codable {
   let path: String
   let vcs: String
   let project: String
+}
+
+/// `add-project` success payload. `path` is the canonical (symlink-resolved,
+/// ~-expanded) project path the CLI registered — the app selects the project by
+/// it after a reload. `vcs` is "git" or "jj".
+struct AddProjectResponse: Codable {
+  let path: String
+  let vcs: String
+}
+
+/// `delete-project --from-disk` success payload. The CLI runs teardowns + drops the project
+/// from config, then returns the directories (project root first, then workrooms) for the app
+/// to move to the Bin — the CLI never deletes them itself (issue #108).
+struct DeleteProjectResponse: Codable {
+  let trashPaths: [String]?
+
+  enum CodingKeys: String, CodingKey {
+    case trashPaths = "trash_paths"
+  }
 }
 
 /// A streamed event from the CLI's stderr in --json mode (one NDJSON object per line)

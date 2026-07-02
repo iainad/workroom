@@ -6,7 +6,7 @@ Spin up a workroom, get a terminal, get notified.
 
 <p align="center">
   <img src="docs/workroom-app.png" width="900"
-    alt="The Workroom macOS app: a sidebar tree of projects and their workrooms with current branches and unread badges, a split terminal running a test suite and a dev server, and a notifications inspector.">
+    alt="The Workroom macOS app: a sidebar tree of several projects and their workrooms with current branches and change badges; two workrooms open side by side, one with a vertically split terminal running a test suite and a dev server, the other showing a syntax-highlighted file diff; and an inspector with Changes, Pull Request, and Notifications panels.">
 </p>
 
 <p align="center">

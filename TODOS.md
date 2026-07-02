@@ -493,3 +493,43 @@ invisible (the panes' own borders mark the boundary).
 Codex outside-voice pass during `/plan-eng-review`.
 
 **Priority:** P3 (8pt already doubles the old 4pt target; only revisit if users still find it tight).
+
+## Harden `vcs.Detect` to validate a real repo (CLI) — #103 follow-up
+
+**What:** `vcs.Detect` (`internal/vcs/vcs.go`) currently treats a directory as a repo if `.jj` is a
+dir OR `.git` merely *exists* (file or dir). A bogus/empty `.git` therefore registers as a project
+via `add-project` and only fails later, at workroom creation.
+
+**Why:** Surfaced by the Codex outside-voice pass during `/plan-eng-review` of issue #103 (the
+create-project work). It's a pre-existing robustness gap — the existing-path `add-project` already
+has it; #103's create flow inits a real repo so its happy path is unaffected — but a stricter check
+would fail fast with a clear error instead of a confusing late failure. Re-confirmed by the Codex
+pass during the jj→git stale-vcs fix: the new reconcile-on-list (`Service.effectiveVCS`) also uses
+marker-file truth, so a *present-but-broken* `.jj` dir would still reconcile as jj — hardening
+`Detect` fixes both the late-failure gap and the reconcile accuracy in one place.
+
+**How to start:** In `Detect`, validate beyond existence — e.g. `git rev-parse --git-dir` (or read
+`.git`/`HEAD`) for git, and confirm `.jj/repo` for jj. Weigh that `Detect` runs on every
+create/list/delete (now also list-reconcile), so keep it cheap (a stat-level check may suffice over
+forking git).
+
+**Depends on:** nothing; touches all VCS consumers (`create`, `list`, `delete`, `add-project`).
+
+**Priority:** P3 (pre-existing; create-new path inits a valid repo, so not blocking #103).
+
+## Make `add-project --pretend` a real dry-run for the non-create path (CLI) — #103 follow-up
+
+**What:** With #103, `add-project --create --pretend` is a true dry-run (reports `would_create`,
+mutates nothing). But `add-project --pretend` WITHOUT `--create` still writes config — today's
+pre-existing behaviour, left unchanged by #103 to avoid an unrelated behavior change.
+
+**Why:** Leaves an asymmetry in the `--pretend` contract: one mode honors it, the other ignores it.
+Nobody hits it today (the macOS app never sends `--pretend` to `add-project`), but it's inconsistent.
+Surfaced by the Codex outside-voice pass during `/plan-eng-review`.
+
+**How to start:** In `cmd/add_project.go`, gate the no-`--create` path's `Config.AddProject` write
+behind `!pretend`, emitting a dry-run envelope instead (mirror the `--create` dry-run shape).
+
+**Depends on:** nothing.
+
+**Priority:** P3 (unused flag combination; consistency cleanup).

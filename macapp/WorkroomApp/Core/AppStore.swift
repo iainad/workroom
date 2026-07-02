@@ -57,6 +57,16 @@ struct PendingProjectDeletion: Identifiable {
   var id: String { project.path }
 }
 
+/// A workroom awaiting a display-label edit (issue #41). Held on the store (and `Identifiable` so it
+/// drives a `.sheet(item:)`) so the sidebar row's and tab chip's "Set/Edit Label…" items share one
+/// piece of state. `id` is the workroom's project-scoped target id, so re-targeting a different
+/// workroom rebuilds the sheet (resetting its typed `@State`).
+struct PendingWorkroomLabel: Identifiable {
+  let workroom: Workroom
+  let project: Project
+  var id: String { TerminalTarget.workroomID(project: project.path, name: workroom.name) }
+}
+
 /// App-wide state and actions. A single shared instance is used so the App, views,
 /// and menu Commands all act on the same store. All CLI work is awaited (it runs off
 /// the main thread inside WorkroomCLI), keeping the UI responsive.
@@ -68,6 +78,18 @@ final class AppStore: ObservableObject {
   /// so views/menus observing this store still re-render when the shared data changes.
   let projectStore: ProjectStore
   private var projectStoreObservation: AnyCancellable?
+
+  /// Seam over the bundled `workroom` CLI (issue #103). Production uses
+  /// `WorkroomCLI.shared`; tests inject a fake to drive mutations without a real
+  /// subprocess. Injected like `projectStore` (in the init body, not as a default
+  /// arg, which is evaluated nonisolated).
+  private let cli: WorkroomCLIProtocol
+
+  /// Seam over the macOS Trash (issue #108): a from-disk project delete moves dirs to the Bin via
+  /// `FileManager.trashItem` (Finder "Put Back", no TCC prompt). Injectable so tests assert the
+  /// orchestration with a fake recorder instead of polluting the real Trash. Mirrors the
+  /// `CommandExecutor` mock seam.
+  var trasher: Trashing = SystemTrasher()
 
   /// The `NSWindow` hosting this store, resolved once the view tree is in a window (issue #70). Weak:
   /// the window outlives the store's need for it, and the registry holds the authoritative mapping.
@@ -131,6 +153,8 @@ final class AppStore: ObservableObject {
       scheduleSelectedStatusRefresh()
       // Swap the inspector to the newly-selected workroom's saved layout (issue #24).
       if selectedTargetID != oldValue { loadInspectorState() }
+      // The Files tree is re-pointed lazily by `FilesPanel` (only while that section is shown), not
+      // here — so selecting a workroom doesn't list its files unless you're actually browsing them.
     }
   }
   /// Project paths the user has collapsed in the sidebar (issue #14). Held here as `@Published`
@@ -236,6 +260,10 @@ final class AppStore: ObservableObject {
   @Published var changesSectionCollapsed = false {
     didSet { persistInspectorState() }
   }
+  /// Collapse state of the Files section (the repo file tree). Sits second, right under Changes.
+  @Published var filesSectionCollapsed = false {
+    didSet { persistInspectorState() }
+  }
   @Published var prSectionCollapsed = false {
     didSet { persistInspectorState() }
   }
@@ -258,7 +286,14 @@ final class AppStore: ObservableObject {
   /// `InspectorSectionKind.allCases`. Equal == the default three-equal-sections layout; updated when
   /// the user drags a divider (via `updateInspectorSizeWeights`) and persisted per workroom. Not set
   /// directly by the view — the `NSSplitView` reports drag results back through the store.
-  @Published var inspectorSizeWeights: [Double] = [1, 1, 1]
+  @Published var inspectorSizeWeights: [Double] = [1, 1, 1, 1]
+  /// The repo file tree behind the inspector's Files section. Re-pointed at the selected target's
+  /// directory whenever the selection changes (see `selectedTargetID.didSet`); the `FilesPanel`
+  /// observes it. Owned here so it survives inspector re-renders and tracks selection centrally.
+  let fileTree = FileTreeModel()
+  /// Shared in-file find state for the read-only file viewer (⌘F in a file pane). Only the focused
+  /// `PlainFileViewer` feeds + shows it; routed to from `startFindInFocusedPane`.
+  let fileFind = FileFindModel()
   /// True while `loadInspectorState` is writing the three collapse flags + weights, so their
   /// `didSet`s don't persist the values straight back (and the load isn't mistaken for a user edit).
   private var isLoadingInspectorState = false
@@ -291,6 +326,9 @@ final class AppStore: ObservableObject {
   /// A project awaiting type-to-confirm deletion (drives the DeleteProjectSheet). Set by the
   /// project row's context menu; cleared when the sheet's Delete/Cancel resolves.
   @Published var pendingProjectDeletion: PendingProjectDeletion?
+  /// A workroom awaiting a display-label edit (drives the WorkroomLabelSheet, issue #41). Set by the
+  /// sidebar row's / tab chip's "Set Label…"/"Edit Label…" item; cleared when the sheet resolves.
+  @Published var pendingWorkroomLabel: PendingWorkroomLabel?
   /// Setup logs scoped per terminal target (a workroom's target id), rendered under that
   /// workroom's terminal. Kept until the user closes them (or the workroom is deleted) so
   /// the output stays available for review. Keyed on the target id (project-scoped) so
@@ -370,12 +408,13 @@ final class AppStore: ObservableObject {
   /// Production builds one store per window (issue #70), each sharing `ProjectStore.shared`; tests
   /// build an isolated `AppStore()` (own fresh `ProjectStore`), inject `projects`, and drive the real
   /// recording/navigation paths. `init` does no CLI work (only `bootstrap()`/`load()` do).
-  init(projectStore: ProjectStore? = nil) {
+  init(projectStore: ProjectStore? = nil, cli: WorkroomCLIProtocol? = nil) {
     // Default to a fresh, isolated store (so `AppStore()` in tests never touches the singleton);
     // production passes `.shared`. Constructed here in the main-actor init body, not as a default
     // argument (default args are evaluated nonisolated, which can't call a @MainActor initializer).
     let store = projectStore ?? ProjectStore()
     self.projectStore = store
+    self.cli = cli ?? WorkroomCLI.shared
     // Re-publish the shared project store's changes so views and menus observing THIS store
     // re-render when the proxied `projects` / `rootRefs` / `workroomStatuses` / … change (issue #70).
     projectStoreObservation = store.objectWillChange.sink { [weak self] _ in
@@ -389,7 +428,12 @@ final class AppStore: ObservableObject {
     }
     // Record each focused-tab change for back/forward history (issue #26), unless we're replaying.
     terminals.onFocusChange = { [weak self] _, _ in
-      guard let self, !self.isNavigatingHistory else { return }
+      guard let self else { return }
+      // The in-file find is tied to the focused file pane (the model is shared across panes). Any
+      // focused-tab change ends that session: close it so ⌘G can't step a hidden find from a
+      // terminal/diff pane, and the bar doesn't reappear pre-filled on the next file (review).
+      if self.fileFind.isOpen { self.fileFind.close() }
+      guard !self.isNavigatingHistory else { return }
       self.recordCurrentLocation()
     }
     // Prune dead entries when tabs are closed/reaped, so canGoBack/Forward stay honest (issue #26).
@@ -562,7 +606,8 @@ final class AppStore: ObservableObject {
       return projects.first { $0.id == path }?.displayName ?? defaultWindowTitle
     case .workroom(let path, let name):
       guard let project = projects.first(where: { $0.id == path })?.displayName else { return name }
-      return "\(project) — \(name)"
+      // Show the workroom's display label when set (issue #41); falls back to the real name.
+      return "\(project) — \(displayName(forWorkroom: name, inProject: path))"
     case .project, nil:
       return defaultWindowTitle
     }
@@ -955,45 +1000,48 @@ final class AppStore: ObservableObject {
     }
   }
 
-  /// Build the libghostty `command` string (A3): run the user's login+interactive shell so the
-  /// command inherits their PATH/aliases/version-manager shims, then `-c` the command. POSIX shells
-  /// (zsh/bash/sh/dash/ksh) get `-lic` with POSIX single-quote escaping (shell path quoted too —
-  /// Codex #8); a non-POSIX `$SHELL` (fish/nu/csh) falls back to a login `/bin/sh -lc`, whose
-  /// interactive rc won't load — a documented limitation (issue #7, fold #7).
+  /// The bundled run supervisor (issue #7) — the long-lived shell that owns each run command's
+  /// process tree inside its terminal (start/stop/restart serialized there, controlled by signals +
+  /// a status file). Resolved from `Bundle.main`; the fallback keeps tests (no bundled resource)
+  /// building — they assert the invocation's shape, not a real path.
+  static func supervisorScriptPath() -> String {
+    Bundle.main.resourceURL?.appendingPathComponent("run-supervisor/supervisor.sh").path
+      ?? "run-supervisor/supervisor.sh"
+  }
+
+  /// The supervisor's status file (it writes `running`/`stopped`/`exited <code>` etc. here, atomically;
+  /// the app watches it). Derived from the per-run control-file path so they share one lifecycle.
+  static func supervisorStatusPath(forPidPath pidPath: String) -> String {
+    (pidPath as NSString).deletingPathExtension + ".status"
+  }
+
+  /// Build the libghostty `command` string (A3): launch the run SUPERVISOR as the surface's PTY child
+  /// (set once, never replaced). The supervisor owns the user command — it runs it in the user's
+  /// login+interactive shell (so it inherits PATH/aliases/version-manager shims), in the tty
+  /// FOREGROUND so interactive servers can read the keyboard, and the app drives stop/restart by
+  /// signalling the supervisor (its pid lands in `pidPath`) and reading the status file. POSIX `$SHELL`
+  /// (zsh/bash/sh/dash/ksh) gets `-lic`; a non-POSIX `$SHELL` (fish/nu/csh) falls back to a login
+  /// `/bin/sh -lc`, whose interactive rc won't load — a documented limitation (issue #7, fold #7).
+  /// libghostty runs this whole string via `sh -c`, which execs `/bin/sh <supervisor> …`, so the
+  /// supervisor becomes the session-leader PTY child (its `kill -INT 0` group-stop stays scoped to the
+  /// run's own session).
   private func runCommandLine(_ raw: String, pidPath: String) -> String {
     let shell = ShellEnvironment.loginShell()
     let name = (shell as NSString).lastPathComponent
     let isPOSIX = ["zsh", "bash", "sh", "dash", "ksh"].contains(name)
     let runner = isPOSIX ? shell : "/bin/sh"
-    // Capture the run command's pid so the app can resolve its process group (`getpgid`, in Swift)
-    // and SIGINT the whole group — exactly what a typed Ctrl-C does (SIGINT to the PTY's foreground
-    // group), the only thing that reliably stops these servers (the synthetic terminal Ctrl-C never
-    // reached the PTY from a toolbar/sidebar action; issue #7). The GROUP matters: bin/dev-style
-    // launchers fork through bundle/dotenv/rails to a leaf server that can end up a different pid AND
-    // outlive the launcher — but it stays in this group, which (captured at launch) the app reaps on
-    // child-exit. `exec "$3" -c "$2"` runs the command ($2) via a child shell so compound commands
-    // (`cd web && npm run dev`, `FOO=bar rails s`, pipes) work. ($1=pid file, $3=runner shell.)
-    let script = "echo $$ > \"$1\"; exec \"$3\" -c \"$2\""
-    let quotedScript = CommandLineInstaller.shellQuoted(script)
-    let quotedPid = CommandLineInstaller.shellQuoted(pidPath)
-    // Record the command's REAL exit status to a file (issue #79). libghostty's child-exit code is
-    // unreliable in this embedding (GhosttyKit 1.2.3 always reports 0), so the run-failure signal
-    // reads this file instead. This runs inside the exec'd runner shell, so `$?` is the command's own
-    // status; it's written just before the shell exits, so it's on disk by the time the child-exit
-    // callback fires. A signalled command (Ctrl-C / Stop) may not reach this line — that path is a
-    // user stop, not a failure, and is keyed off the `interrupted` flag instead.
-    let exitPath = Self.runExitPath(forPidPath: pidPath)
-    // An EXIT trap records the code however the shell ends — a normal finish, OR an explicit
-    // `exit N` in the user's command (which would otherwise skip a trailing capture line). The path
-    // is held in a var so the trap body needs no nested path-quoting. A signal (Ctrl-C / Stop) kills
-    // the shell without running the EXIT trap, so no file is written — that's the user-stop path,
-    // handled by the `interrupted` flag, not this code.
-    let exitVar = "__wr_f=\(CommandLineInstaller.shellQuoted(exitPath))"
-    let captured = "\(exitVar); trap 'printf %s \"$?\" > \"$__wr_f\"' EXIT\n\(raw)"
-    let quotedCommand = CommandLineInstaller.shellQuoted(captured)
-    let quotedRunner = CommandLineInstaller.shellQuoted(runner)
-    let outer = isPOSIX ? "\(CommandLineInstaller.shellQuoted(shell)) -lic" : "/bin/sh -lc"
-    return "\(outer) \(quotedScript) workroom-run \(quotedPid) \(quotedCommand) \(quotedRunner)"
+    let q = CommandLineInstaller.shellQuoted
+    // The child the supervisor runs: the user's login-interactive shell, which `exec`s the command
+    // through the runner with `-c` (so compound commands — `cd web && npm run dev`, `FOO=bar rails s`,
+    // pipes — work, and the exec keeps the pid stable so the supervisor's `$!` is the live server).
+    let innerScript = "exec \(q(runner)) -c \(q(raw))"
+    let childOuter =
+      isPOSIX ? "\(q(shell)) -lic \(q(innerScript))" : "/bin/sh -lc \(q(innerScript))"
+    // config.command = /bin/sh <supervisor> <controlFile> <statusFile> <childArgv…>
+    let sup = q(Self.supervisorScriptPath())
+    let ctl = q(pidPath)
+    let status = q(Self.supervisorStatusPath(forPidPath: pidPath))
+    return "/bin/sh \(sup) \(ctl) \(status) \(childOuter)"
   }
 
   /// Per-target temp file holding the run command's pid (written by the run wrapper, read to resolve
@@ -1010,23 +1058,7 @@ final class AppStore: ObservableObject {
       .appendingPathComponent("workroom-run-\(UUID().uuidString).pid")
   }
 
-  /// The file the run wrapper writes the command's real exit code to (issue #79) — derived from the
-  /// pid path so it shares the per-run lifecycle and cleanup. libghostty's own child-exit code is
-  /// unreliable in this embedding (GhosttyKit 1.2.3 always reports 0).
-  static func runExitPath(forPidPath pidPath: String) -> String {
-    (pidPath as NSString).deletingPathExtension + ".exit"
-  }
-
-  /// The command's real exit code as recorded by the wrapper (issue #79), or nil if it hasn't been
-  /// written — the command was signalled before it could record, or the file is missing/garbled.
-  private func capturedRunExitCode(for targetID: TerminalTarget.ID) -> Int32? {
-    guard let pidPath = runPidFiles[targetID],
-      let raw = try? String(contentsOfFile: Self.runExitPath(forPidPath: pidPath), encoding: .utf8)
-    else { return nil }
-    return Int32(raw.trimmingCharacters(in: .whitespacesAndNewlines))
-  }
-
-  /// The pid the run wrapper captured for a target (its `echo $$`).
+  /// The supervisor's pid (it `echo $$`s into the control file). Used to signal it (stop/restart/quit).
   private func runPid(for targetID: TerminalTarget.ID) -> pid_t? {
     guard let path = runPidFiles[targetID],
       let raw = try? String(contentsOfFile: path, encoding: .utf8),
@@ -1066,7 +1098,8 @@ final class AppStore: ObservableObject {
   /// enumerate every pid (`proc_listallpids`) and keep those whose `getsid` matches — the generic way
   /// to find everything a run command spawned, whatever process group its launcher forked the leaf
   /// server into (issue #7). Returns empty for the app's own session, so a reap can never hit the app
-  /// itself or another terminal.
+  /// itself or another terminal. Now used only by the forked-free backstop (a leaf that outlived the
+  /// supervisor); the supervisor itself owns the normal stop/restart.
   private func runSessionMembers(_ sid: pid_t) -> [pid_t] {
     guard sid > 1, sid != getsid(0) else { return [] }  // never our own (the app's) session
     let n = proc_listallpids(nil, 0)
@@ -1088,28 +1121,107 @@ final class AppStore: ObservableObject {
     for pid in runSessionMembers(sid) { _ = kill(pid, sig) }
   }
 
-  /// SIGINT every process in session `sid` — a session-scoped Ctrl-C (issue #7).
-  private func reapRunSession(_ sid: pid_t) { signalRunSession(sid, SIGINT) }
-
-  /// SIGINT the target's run command — the reliable replacement for the synthetic terminal Ctrl-C
-  /// (issue #7), and exactly what a typed Ctrl-C does. Signals the whole SESSION so it catches a leaf
-  /// server forked into another process group; used by Stop/Restart and, on child-exit, to reap a
-  /// server that outlived the launcher. Refreshes the session from the live pid when possible.
-  private func interruptRun(for targetID: TerminalTarget.ID) {
-    let pid = runPid(for: targetID)
-    if let pid, getsid(pid) > 1 { runSessions[targetID] = getsid(pid) }  // refresh while alive
-    // Session-scoped Ctrl-C — stable across bin/dev's forks — plus the captured pid directly (fast path).
-    reapRunSession(runSessions[targetID] ?? -1)
-    if let pid { _ = kill(pid, SIGINT) }
-  }
-
   /// Forget (and delete) a target's captured pid file + group once its run has exited/closed, so a
   /// later reuse of that pid/group can't be signalled.
   private func clearRunPidFile(for targetID: TerminalTarget.ID) {
     runSessions[targetID] = nil
+    lastRunStatus[targetID] = nil
     if let path = runPidFiles.removeValue(forKey: targetID) {
       try? FileManager.default.removeItem(atPath: path)
-      try? FileManager.default.removeItem(atPath: Self.runExitPath(forPidPath: path))  // issue #79
+      try? FileManager.default.removeItem(atPath: Self.supervisorStatusPath(forPidPath: path))
+    }
+  }
+
+  // MARK: Run command — supervisor control (issue #7)
+  //
+  // The run command runs under a long-lived SUPERVISOR (Resources/run-supervisor/supervisor.sh) that
+  // is the surface's PTY child. The app controls it by signalling the supervisor's pid (in the
+  // control file) and reads run STATE from the status file it writes — start/stop/restart are
+  // serialized inside the terminal, so the surface is never freed/respawned for a restart and a
+  // relaunch only happens after the previous child fully exits (no "A server is already running").
+
+  /// Test seam: capture supervisor signals (and return whether a live supervisor was "signalled")
+  /// without a real process. Production signals the control-file pid via `kill`.
+  var signalSupervisorForTesting: ((Int32, TerminalTarget.ID) -> Bool)?
+
+  /// Send `sig` to the target's run supervisor (USR1 = restart, USR2 = stop/keep-pane, TERM = quit →
+  /// supervisor exits → surface frees). Returns false when there's no live supervisor to signal, so a
+  /// caller can fall back to respawning the surface.
+  @discardableResult
+  private func signalSupervisor(_ sig: Int32, for targetID: TerminalTarget.ID) -> Bool {
+    if let signalSupervisorForTesting { return signalSupervisorForTesting(sig, targetID) }
+    guard let pid = runPid(for: targetID) else { return false }
+    return kill(pid, sig) == 0
+  }
+
+  /// Last status line applied per target, so the poller reacts only to CHANGES (and doesn't re-fire
+  /// the auto-dismiss timer each tick). Cleared in `clearRunPidFile`.
+  private var lastRunStatus: [TerminalTarget.ID: String] = [:]
+
+  /// Poll the supervisor's status file — the AUTHORITATIVE run state (issue #7) — while the run pane is
+  /// open, applying each change. Replaces inferring state from child-exit + an `interrupted` flag (which
+  /// caused the Stop-then-Run swallow). Self-terminates once the run tab is gone.
+  private func pollRunStatus(for target: TerminalTarget) {
+    guard runStates[target.id]?.tab != nil, let ctl = runPidFiles[target.id] else { return }
+    let statusPath = Self.supervisorStatusPath(forPidPath: ctl)
+    if let raw = try? String(contentsOfFile: statusPath, encoding: .utf8) {
+      let line = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+      if !line.isEmpty, lastRunStatus[target.id] != line {
+        lastRunStatus[target.id] = line
+        applyRunStatus(line, for: target)
+      }
+    }
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+      self?.pollRunStatus(for: target)
+    }
+  }
+
+  /// Test seam: production schedules the status poll on the main queue; tests drive transitions by
+  /// calling `applyRunStatus` directly, so they never start the poller.
+  /// Apply one status line from the supervisor to `RunState`/`RunOutcome` (issue #7).
+  /// Flip the run surface's "stopped — press any key to close" flag (issue #7): while stopped (the
+  /// supervisor is parked, processHasExited is false), a key in the run pane closes the tab; cleared
+  /// on a (re)start.
+  private func setRunStoppedAwaitingClose(
+    _ value: Bool, tab: TerminalTab.ID, target: TerminalTarget.ID
+  ) {
+    terminals.view(forTab: tab, inTarget: target)?.runStoppedAwaitingClose = value
+  }
+
+  func applyRunStatus(_ line: String, for target: TerminalTarget) {
+    guard let tab = runStates[target.id]?.tab else { return }
+    let parts = line.split(separator: " ")
+    switch parts.first.map(String.init) ?? "" {
+    case "starting", "running":
+      runStates[target.id] = .running(tab: tab, interrupted: false)
+      runOutcomes[target.id] = nil
+      setRunStoppedAwaitingClose(false, tab: tab, target: target.id)
+    case "stopping":
+      break  // keep the in-flight state (running(interrupted) for a stop, restarting for a restart)
+    case "stopped":
+      runStates[target.id] = .stopped(tab: tab)
+      runOutcomes[target.id] = .stoppedByUser
+      scheduleRunToastAutoDismiss(for: target.id)
+      setRunStoppedAwaitingClose(true, tab: tab, target: target.id)
+    case "exited", "failed":
+      let code = parts.count > 1 ? (Int32(parts[1]) ?? 0) : 0
+      runStates[target.id] = .stopped(tab: tab)
+      setRunStoppedAwaitingClose(true, tab: tab, target: target.id)
+      // 130 = SIGINT (typed Ctrl-C / our group stop), 143 = SIGTERM (quit): user-initiated, not a crash.
+      if code == 0 {
+        runOutcomes[target.id] = .exited(code: 0)
+      } else if code == 130 || code == 143 {
+        runOutcomes[target.id] = .stoppedByUser
+      } else {
+        runOutcomes[target.id] = .exited(code: code)
+      }
+      scheduleRunToastAutoDismiss(for: target.id)
+      if Self.runOutcomeIsBannerWorthy(runOutcomes[target.id]) {
+        postRunFailureBannerIfBackgrounded(
+          targetID: target.id, tabID: tab, title: "Run failed", body: "exited with code \(code)")
+      }
+    default:
+      break
     }
   }
 
@@ -1149,16 +1261,28 @@ final class AppStore: ObservableObject {
     }
     runStates[target.id] = .running(tab: tab.id, interrupted: false)
     runPidFiles[target.id] = pidPath  // after the tab exists, so cleanup can't wipe it
-    captureRunSession(for: target.id, pidPath: pidPath)  // record the session for reliable stop
-    // Child-exit flips run-state to stopped; the pane stays open (wait_after_command). The captured
-    // `target` value is stable for the workroom's lifetime (a delete reaps everything anyway).
+    lastRunStatus[target.id] = nil
+    // record the session for the forked-free backstop
+    captureRunSession(for: target.id, pidPath: pidPath)
+    pollRunStatus(for: target)  // status file drives state from here (issue #7)
+    // The surface child here is the SUPERVISOR; its exit means the whole run is over (quit/crash), not
+    // a user-command stop. State during run/stop/restart is driven by the status file (above).
     tab.surface?.onChildExited = { [weak self] code in
       self?.markRunExited(for: target, exitCode: code)
     }
-    // ⌃C typed into the run terminal marks the run interrupted, so its exit reads as a user stop —
-    // no failure toast/icon regardless of exit code (issue #79).
-    tab.surface?.onInterrupt = { [weak self] in
-      self?.markRunInterruptedByKey(for: target)
+    wireRunClose(tab.id, for: target)
+  }
+
+  /// The "press any key to close" / wait_after_command close for a run tab MUST go through the graceful
+  /// stop (SIGTERM the supervisor + wait for it to fully exit) BEFORE freeing the surface — a raw
+  /// `closeTab` frees the surface, which PTY-hangs-up (SIGHUP) the supervisor and can orphan a
+  /// still-draining server on its port ("A server is already running" next start; issue #7).
+  private func wireRunClose(_ tabID: TerminalTab.ID, for target: TerminalTarget) {
+    terminals.tab(tabID, for: target)?.surface?.onCloseRequested = { [weak self] in
+      guard let self else { return }
+      self.closingRunTab(tabID, for: target.id) { [weak self] in
+        self?.terminals.closeTab(tabID, for: target)
+      }
     }
   }
 
@@ -1198,15 +1322,13 @@ final class AppStore: ObservableObject {
     }
     runStates[target.id] = .running(tab: tab.id, interrupted: false)
     runPidFiles[target.id] = pidPath  // after respawnRunTab's closeTab cleanup, so it survives
-    captureRunSession(for: target.id, pidPath: pidPath)  // record the session for reliable stop
+    lastRunStatus[target.id] = nil
+    captureRunSession(for: target.id, pidPath: pidPath)
+    pollRunStatus(for: target)
     tab.surface?.onChildExited = { [weak self] code in
       self?.markRunExited(for: target, exitCode: code)
     }
-    // ⌃C typed into the run terminal marks the run interrupted, so its exit reads as a user stop —
-    // no failure toast/icon regardless of exit code (issue #79).
-    tab.surface?.onInterrupt = { [weak self] in
-      self?.markRunInterruptedByKey(for: target)
-    }
+    wireRunClose(tab.id, for: target)
   }
 
   /// Toggle a specific target's run command from the sidebar: running → stop; otherwise start (or
@@ -1234,7 +1356,13 @@ final class AppStore: ObservableObject {
   func runOrFocusRunCommand() {
     guard !isEditingTextField, let target = selectedTarget, !target.isMissing else { return }
     switch runStates[target.id] {
-    case .running(let tab, _), .restarting(let tab):
+    case .running(_, true):
+      // Stop-then-Run (issue #7): the user stopped it (a Ctrl-C is in flight, the server is draining)
+      // and is now asking for it again. Don't just focus a dying server — restart it, which waits out
+      // the stop and respawns a fresh run. Otherwise the start is silently swallowed (the pane just
+      // focuses) and the user is left with nothing running after a quick Stop→Run.
+      restartRunCommand(for: target)
+    case .running(let tab, false), .restarting(let tab):
       terminals.focus(tab, for: target)
     case .stopped:
       restartRunCommand(for: target)  // re-run a stopped-but-open tab (close + respawn)
@@ -1285,118 +1413,72 @@ final class AppStore: ObservableObject {
     terminals.focus(runTab, for: target)
   }
 
-  /// ⌃C was typed directly into the run terminal (issue #79). The keystroke already sends SIGINT to
-  /// the PTY (the surface forwards it); we only flip `interrupted` so the resulting child-exit reads
-  /// as a user stop — no failure toast/icon, whatever the exit code. Only meaningful while the
-  /// process is live and not already interrupted; a no-op otherwise (stopped/restarting/armed), and
-  /// it never sends a signal itself (so it can't escalate or double-fire like the Stop button does).
-  func markRunInterruptedByKey(for target: TerminalTarget) {
-    if case .running(let tab, false) = runStates[target.id] {
-      runStates[target.id] = .running(tab: tab, interrupted: true)
-    }
-  }
-
-  /// Stop the run command. 1st press: Ctrl-C (graceful SIGINT to the foreground group), recorded on the
-  /// state. 2nd press: hard kill by closing the run tab — freeing the surface hangs up the PTY (SIGHUP),
-  /// the only reliable kill libghostty exposes (no child PID). For a process that ignores SIGINT (OV-D).
+  /// Stop the run command (issue #7): one press tells the SUPERVISOR to stop the child gracefully and
+  /// keep the pane (SIGUSR2 — it SIGINTs the child's foreground group, waits for it to fully exit, and
+  /// SIGKILLs on a 6s timeout for a process that ignores SIGINT). No second-press hard-kill / surface
+  /// free — the supervisor owns the teardown. State flips to `.running(interrupted)` (stop in flight),
+  /// then the status file drives it to `.stopped`.
   func stopRunCommand(for target: TerminalTarget) {
     switch runStates[target.id] {
-    case .running(let tab, let interrupted):
-      if interrupted {
-        // 2nd press → close the run tab, but wait for the process to actually exit first (the SIGINT
-        // from the 1st press is in flight). A bare close frees the surface mid-shutdown — a PTY hangup
-        // (SIGHUP) the dev server ignores — orphaning it on its port + pidfile ("A server is already
-        // running" next start). onTabsRemoved clears state on close.
-        closingRunTab(tab, for: target.id) { [weak self] in
-          self?.terminals.closeTab(tab, for: target)
-        }
-      } else {
-        interruptRun(for: target.id)  // 1st press → SIGINT the run process directly (issue #7)
-        runStates[target.id] = .running(tab: tab, interrupted: true)
-      }
-    case .restarting(let tab):
-      // Stop during a graceful restart: drop the respawn intent. The Ctrl-C is already in flight, so
-      // on exit the pane just stops; a further Stop (now interrupted) hard-kills a wedged process — so
-      // the first Stop after a Restart stays graceful instead of an immediate kill (review #3).
+    case .running(let tab, _), .restarting(let tab):
+      signalSupervisor(SIGUSR2, for: target.id)
       runStates[target.id] = .running(tab: tab, interrupted: true)
     case .armed, .stopped, .none:
       break  // nothing executing to stop
     }
   }
 
-  /// Restart (C1, graceful — releases the port before the new instance binds). Running: Ctrl-C, then
-  /// respawn once the process actually exits (`markRunExited`). Stopped/open: close + start now. Armed
-  /// or none: just start.
+  /// Restart the run command (issue #7): tell the SUPERVISOR (SIGUSR1) to stop the child, wait for it to
+  /// fully exit, then relaunch — all serialized inside the terminal, so the surface/tab/split slot are
+  /// untouched and the new instance can't boot into the old one's still-held port/pidfile. Works from
+  /// running, in-flight, OR a parked-but-stopped pane; only if the supervisor itself is gone (quit/crash)
+  /// do we respawn a fresh surface.
   func restartRunCommand(for target: TerminalTarget) {
     switch runStates[target.id] {
-    case .running(let tab, _):
-      interruptRun(for: target.id)  // SIGINT the run process directly (issue #7)
-      runStates[target.id] = .restarting(tab: tab)  // await child-exit → close + respawn
-    case .restarting:
-      break  // already restarting → don't double-send Ctrl-C
-    case .stopped(let tab):
-      respawnRunCommand(replacing: tab, for: target)  // close + respawn in the old tab's slot (#40)
+    case .running(let tab, _), .restarting(let tab), .stopped(let tab):
+      if signalSupervisor(SIGUSR1, for: target.id) {
+        runStates[target.id] = .restarting(tab: tab)  // status: stopping → running
+      } else {
+        respawnRunCommand(replacing: tab, for: target)  // supervisor gone → fresh surface
+      }
     case .armed, .none:
       startRunCommand(for: target)
     }
   }
 
-  /// The run command's process exited (child-exit). `.running` → stopped (pane stays open). `.restarting`
-  /// → the old process is gone, so close its pane and respawn (C1).
-  ///
-  /// This runs inside libghostty's child-exit callback (the surface is mid-callback on the stack), so
-  /// the restart's close+respawn — which frees the old surface — MUST be deferred to the next runloop
-  /// tick; freeing the surface synchronously here is a re-entrant use-after-free that crashes the app.
-  /// The deferred guard re-reads the state, so a tab the user closed in between isn't double-closed.
+  /// The surface's PTY child exited — under the supervisor model that's the SUPERVISOR itself, so the
+  /// whole run is over (a quit/teardown, or a supervisor crash), not a user-command stop (those are
+  /// driven by the status file). Mark terminal; the pane stays open (`wait_after_command`). If the
+  /// status file already recorded an outcome (the usual case — the supervisor wrote `exited <code>`
+  /// before exiting), keep it; otherwise fall back to libghostty's code. The forked-free backstop
+  /// (SIGKILL the captured session) guards against a leaf that outlived the supervisor.
   private func markRunExited(for target: TerminalTarget, exitCode: UInt32) {
-    switch runStates[target.id] {
-    case .running(let tab, let interrupted):
-      // The PTY child exited — but a server may have forked free of it and still be alive (bin/dev;
-      // issue #7). SIGINT the whole session, then wait it out and SIGKILL any straggler, so a forked
-      // server can't linger and trip "A server is already running" on the next start.
-      let sid = runSessions[target.id] ?? -1
-      // The wrapper records the command's REAL exit code to a file; read it BEFORE clearing the pid
-      // file (issue #79). libghostty's `exitCode` is unreliable here (GhosttyKit 1.2.3 reports 0), so
-      // prefer the recorded value and fall back to libghostty's only when the file is absent (e.g. a
-      // signalled command never reached the record step — that's the user-stop path anyway).
-      let recorded = capturedRunExitCode(for: target.id)
-      interruptRun(for: target.id)
-      clearRunPidFile(for: target.id)
-      // Record how the run ended for the toast (issue #67): a Stop/Restart Ctrl-C (`interrupted`) is a
-      // user action, not a failure; otherwise it exited on its own — code 0 is clean, non-zero a crash.
-      let code = recorded ?? Int32(truncatingIfNeeded: exitCode)
-      runOutcomes[target.id] = interrupted ? .stoppedByUser : .exited(code: code)
-      runStates[target.id] = .stopped(tab: tab)
-      scheduleRunToastAutoDismiss(for: target.id)  // terminal state → linger then auto-dismiss
-      if Self.runOutcomeIsBannerWorthy(runOutcomes[target.id]) {
-        // A backgrounded run crashed — push a native banner if the app isn't frontmost (Arch #7).
-        postRunFailureBannerIfBackgrounded(
-          targetID: target.id, tabID: tab, title: "Run failed", body: "exited with code \(code)")
-      }
-      waitForSessionsExit(sid > 1 ? [sid] : [], deadline: Date().addingTimeInterval(6)) {}
-    case .restarting:
-      // The launcher exited, but the server it forked may still be shutting down (Puma drains its
-      // workers, then frees its port + pidfile). Respawning now would boot the new instance into the
-      // old one's still-held port/pidfile ("A server is already running"; the intermittent issue #7
-      // restart bug). So wait for the whole session to actually exit — SIGKILL on timeout — before
-      // respawning. Generic: works for any run command, not just ones that honour SIGINT promptly.
-      let sid = runSessions[target.id] ?? -1
-      interruptRun(for: target.id)
-      // Old launcher pid no longer needed; the respawn captures a fresh one.
-      clearRunPidFile(for: target.id)
-      // Defer off libghostty's child-exit callback stack first (a synchronous respawn frees the old
-      // surface re-entrantly — a use-after-free crash), then do the session wait. Re-read the state at
-      // each hop so a tab the user closed in between isn't double-closed (review #1).
-      DispatchQueue.main.async { [weak self] in
-        guard let self, case .restarting = self.runStates[target.id] else { return }
-        self.waitForSessionsExit(sid > 1 ? [sid] : [], deadline: Date().addingTimeInterval(6)) {
-          guard case .restarting(let tab) = self.runStates[target.id] else { return }
-          self.respawnRunCommand(replacing: tab, for: target)  // new tab keeps the split slot (#40)
-        }
-      }
-    case .armed, .stopped, .none:
-      break
+    guard let tab = runStates[target.id]?.tab else { return }
+    let sid = runSessions[target.id] ?? -1
+    // Prefer the supervisor's final status line (authoritative — it wrote `stopped`/`exited <code>`
+    // just before exiting) over libghostty's unreliable exit code, in case the poller hadn't read it
+    // yet when this child-exit callback fired.
+    if runOutcomes[target.id] == nil, let ctl = runPidFiles[target.id],
+      let raw = try? String(
+        contentsOfFile: Self.supervisorStatusPath(forPidPath: ctl), encoding: .utf8)
+    {
+      let line = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+      if !line.isEmpty { applyRunStatus(line, for: target) }
     }
+    runStates[target.id] = .stopped(tab: tab)
+    if runOutcomes[target.id] == nil {
+      runOutcomes[target.id] = .exited(code: Int32(truncatingIfNeeded: exitCode))
+      scheduleRunToastAutoDismiss(for: target.id)
+      if Self.runOutcomeIsBannerWorthy(runOutcomes[target.id]) {
+        postRunFailureBannerIfBackgrounded(
+          targetID: target.id, tabID: tab, title: "Run failed",
+          body: "exited with code \(exitCode)")
+      }
+    }
+    clearRunPidFile(for: target.id)
+    // Backstop: a forked-free leaf (bin/dev/foreman in another pgroup) can outlive the supervisor —
+    // SIGKILL the captured session so it can't linger on the port.
+    waitForSessionsExit(sid > 1 ? [sid] : [], deadline: Date().addingTimeInterval(6)) {}
   }
 
   // MARK: Run command — graceful teardown (issue #7, Option B)
@@ -1416,12 +1498,11 @@ final class AppStore: ObservableObject {
     runStates.keys.contains { liveRunView(for: $0) != nil }
   }
 
-  /// SIGINT the run process of each given target (issue #7) and run `then` once they've all exited —
-  /// or after `timeout`, the fallback where the caller's free then delivers the old SIGHUP (no worse
-  /// than before). Polls `processHasExited` on the main runloop; NEVER frees a surface itself, so it
-  /// can't race libghostty's teardown (the same reason quit avoids a mass-free). The surfaces are
-  /// captured for the wait, keeping them alive to poll. The command stays in the foreground — no
-  /// backgrounding — so a dev server's keyboard shortcuts / `binding.pry` keep working.
+  /// Tell each target's SUPERVISOR to quit (SIGTERM — it stops the child gracefully, waits for it,
+  /// SIGKILLs on a 6s timeout, then exits), and run `then` once every run surface's child (the
+  /// supervisor) has actually exited — or after `timeout` (fallback). Polls `hasLiveProcess` on the
+  /// main runloop; NEVER frees a surface itself, so it can't race libghostty's teardown. The session
+  /// SIGKILL in `pollUntilExited` is the backstop for a forked-free leaf that outlived the supervisor.
   func gracefullyStopRuns(
     _ targetIDs: [TerminalTarget.ID], timeout: TimeInterval = 6, then: @escaping () -> Void
   ) {
@@ -1429,7 +1510,7 @@ final class AppStore: ObservableObject {
     var sids: [pid_t] = []
     for id in targetIDs {
       guard let view = liveRunView(for: id) else { continue }
-      interruptRun(for: id)  // session-scoped Ctrl-C (and the captured pid)
+      signalSupervisor(SIGTERM, for: id)  // supervisor stops the child, then exits → surface frees
       views.append(view)
       if let sid = runSessions[id], sid > 1 { sids.append(sid) }
     }
@@ -1496,8 +1577,10 @@ final class AppStore: ObservableObject {
   private func closingRunTab(
     _ tabID: TerminalTab.ID, for targetID: TerminalTarget.ID, then proceed: @escaping () -> Void
   ) {
-    guard runStates[targetID]?.tab == tabID, liveRunView(for: targetID) != nil else {
-      proceed()
+    let isRunTab = runStates[targetID]?.tab == tabID
+    let live = liveRunView(for: targetID) != nil
+    guard isRunTab, live else {
+      proceed()  // not a live run tab → free directly (no supervisor to gracefully stop)
       return
     }
     gracefullyStopRuns([targetID], then: proceed)
@@ -1604,7 +1687,7 @@ final class AppStore: ObservableObject {
     isLoading = true
     defer { isLoading = false }
     do {
-      let response = try await WorkroomCLI.shared.list(warnings: warnings)
+      let response = try await cli.list(warnings: warnings, project: nil)
       apply(response.projects)
       lastLoadAt = Date()
       resolveBranches()
@@ -1665,6 +1748,11 @@ final class AppStore: ObservableObject {
         // workroom has a terminal (and thus a tab), don't race the pane's first appearance.
         let target = workroom.target(inProject: project.path)
         terminals.ensureTab(for: target)
+        // Two-tab scenario (drag/reorder XCUITest, issue #23): also open a terminal for the second
+        // workroom so the workroom tab bar shows two chips to reorder.
+        if UITestFixture.twoTabs, project.workrooms.count > 1 {
+          terminals.ensureTab(for: project.workrooms[1].target(inProject: project.path))
+        }
         // Seed a representative notification history (the inspector's Notifications panel is otherwise
         // empty in fixture mode) so it gets visual + UI-test coverage. Keyed to the workroom target
         // but synthetic tabs (see `UITestFixture.notifications`) so the window's focus auto-dismiss
@@ -1679,12 +1767,18 @@ final class AppStore: ObservableObject {
     lastLoadAt = Date()
   }
 
-  private func apply(_ fresh: [Project]) {
+  private func apply(_ incoming: [Project]) {
+    // Inject GUI-only display labels (issue #41) onto the decoded workrooms from
+    // `Defaults[.workroomLabels]` — the CLI JSON never carries them — and garbage-collect labels for
+    // workrooms that no longer exist (deleted via the CLI or another build). `incoming` is the full
+    // configured set (`ListData`/`AllProjects`), so pruning anything not present is safe.
+    let fresh0 = enrichLabels(incoming)
+    pruneOrphanedLabels(keeping: fresh0)
     // Sort projects alphabetically by display name (issue #62) so the sidebar order is stable and
     // predictable regardless of CLI/config order. Case-insensitive, with the full path as a
     // tie-break so same-named projects in different dirs keep a deterministic order. Done here at the
     // single source of truth so selection defaults (`fresh.first`) and the rendered tree agree.
-    let fresh = fresh.sorted {
+    let fresh = fresh0.sorted {
       let byName = $0.displayName.localizedCaseInsensitiveCompare($1.displayName)
       return byName == .orderedSame ? $0.path < $1.path : byName == .orderedAscending
     }
@@ -1836,16 +1930,21 @@ final class AppStore: ObservableObject {
 
   // MARK: Mutations
 
-  func addProject(_ url: URL) async {
+  /// Registers a project at `path`. With `create`, a non-existent directory is
+  /// created and git-initialized by the CLI (issue #103, "Create new directory…");
+  /// otherwise `path` must already be a Git/JJ repo ("From existing path…").
+  func addProject(_ path: String, create: Bool) async {
     do {
-      try await WorkroomCLI.shared.addProject(url.path)
+      let canonical = try await cli.addProject(path, create: create)
       await reload()
-      // Select the freshly added project as context (no target — the root is one click away).
-      if let match = projects.first(where: {
-        $0.path == url.path || ($0.path as NSString).lastPathComponent == url.lastPathComponent
-      }) {
+      // Select the freshly added project (by the canonical path the CLI registered —
+      // it resolves symlinks and ~, so it's more reliable than the typed path) and
+      // open a terminal on its root, mirroring workroom creation rather than leaving
+      // the user on the "Nothing selected" empty state (issue #104). A new project
+      // has no workrooms, so the root is the only sensible terminal to open.
+      if let match = projects.first(where: { $0.path == canonical }) {
         selectedProjectID = match.id
-        selectedTargetID = nil
+        selectedTargetID = .root(project: match.path)
       }
     } catch {
       present(error)
@@ -1862,7 +1961,7 @@ final class AppStore: ObservableObject {
     // A blocking session shows its log full-pane (no terminal) until the user dismisses.
     var hasSetup = false
     do {
-      let created = try await WorkroomCLI.shared.create(
+      let created = try await cli.create(
         project: project.path,
         onLog: { text in
           DispatchQueue.main.async { session.append(text) }
@@ -2028,7 +2127,7 @@ final class AppStore: ObservableObject {
     Task {
       let log = ScriptLogSession(title: "Tearing down \(workroom.name)", phase: "teardown")
       do {
-        try await WorkroomCLI.shared.delete(name: workroom.name, project: project.path) { text in
+        try await cli.delete(name: workroom.name, project: project.path) { text in
           DispatchQueue.main.async { log.append(text) }
         }
       } catch {
@@ -2038,12 +2137,113 @@ final class AppStore: ObservableObject {
     }
   }
 
-  /// Drops a workroom from the in-memory project list so the sidebar updates instantly.
-  private func removeWorkroomLocally(_ workroom: Workroom, in project: Project) {
+  /// Drops a workroom from the in-memory project list so the sidebar updates instantly. `internal`
+  /// so the label-cleanup it performs is a unit-test seam (mirrors `removeProjectLocally`).
+  func removeWorkroomLocally(_ workroom: Workroom, in project: Project) {
     guard let idx = projects.firstIndex(where: { $0.id == project.id }) else { return }
     let p = projects[idx]
     projects[idx] = Project(
       path: p.path, vcs: p.vcs, workrooms: p.workrooms.filter { $0.id != workroom.id })
+    forgetLabels(forProject: project.path, workroomNames: [workroom.name])
+  }
+
+  // MARK: - Workroom labels (issue #41)
+
+  /// Inject each workroom's GUI-only display label from `Defaults[.workroomLabels]` onto the freshly
+  /// decoded model. The CLI JSON never carries a label, so this is the one point the app-side store
+  /// is merged into `projects`. Pure transform — no side effects — so it's reused by both `apply`
+  /// (full reload) and the targeted label mutators below. `internal` so it's a unit-test seam (the
+  /// `apply` path that calls it is private).
+  func enrichLabels(_ incoming: [Project]) -> [Project] {
+    let labels = Defaults[.workroomLabels]
+    guard !labels.isEmpty else { return incoming }
+    return incoming.map { project in
+      Project(
+        path: project.path, vcs: project.vcs,
+        workrooms: project.workrooms.map { wr in
+          var wr = wr
+          wr.label = labels[TerminalTarget.workroomID(project: project.path, name: wr.name)]
+          return wr
+        })
+    }
+  }
+
+  /// Garbage-collect labels whose workroom no longer exists in `live` (deleted via the CLI or
+  /// another build) so the map stays bounded and a recreated same-named workroom can't inherit a
+  /// stale label. Safe to run on every load because `apply` always receives the complete configured
+  /// set (`ListData`/`AllProjects`). `internal` so it's a unit-test seam.
+  func pruneOrphanedLabels(keeping live: [Project]) {
+    let labels = Defaults[.workroomLabels]
+    guard !labels.isEmpty else { return }
+    var liveKeys = Set<String>()
+    for project in live {
+      for wr in project.workrooms {
+        liveKeys.insert(TerminalTarget.workroomID(project: project.path, name: wr.name))
+      }
+    }
+    let pruned = labels.filter { liveKeys.contains($0.key) }
+    if pruned.count != labels.count { Defaults[.workroomLabels] = pruned }
+  }
+
+  /// Drop the stored labels for the named workrooms of a project (used by the delete paths so an
+  /// in-app delete clears the label immediately, not just on the next prune-on-load).
+  private func forgetLabels(forProject path: String, workroomNames: [String]) {
+    var labels = Defaults[.workroomLabels]
+    var changed = false
+    for name in workroomNames {
+      if labels.removeValue(forKey: TerminalTarget.workroomID(project: path, name: name)) != nil {
+        changed = true
+      }
+    }
+    if changed { Defaults[.workroomLabels] = labels }
+  }
+
+  /// The name to show for a workroom referenced only by `SidebarID`/name (the tab chip and window
+  /// title, which never hold the `Workroom` value). Resolves through the enriched model so there's a
+  /// single read path, falling back to the real `name` when the workroom isn't in `projects` yet
+  /// (a mid-reload race) — mirroring `windowTitle`'s own fallback.
+  func displayName(forWorkroom name: String, inProject path: String) -> String {
+    projects.first { $0.id == path }?.workrooms.first { $0.id == name }?.displayName ?? name
+  }
+
+  /// Set (or, for a blank value, remove) a workroom's display label (issue #41). Normalises at the
+  /// write boundary so the stored value is always trimmed and non-empty — `displayName`'s guard is
+  /// then just defense-in-depth. App-only: writes `Defaults` and rebuilds the one affected project in
+  /// the shared `projects`, so every window re-renders instantly with no CLI call and without running
+  /// the heavyweight `apply` (which would needlessly re-validate selection and prune splits).
+  func setWorkroomLabel(_ workroom: Workroom, in project: Project, to raw: String) {
+    let key = TerminalTarget.workroomID(project: project.path, name: workroom.name)
+    var labels = Defaults[.workroomLabels]
+    if let normalized = Workroom.normalizedLabel(raw) {
+      labels[key] = normalized
+    } else {
+      // Blank input means "no label". The sheet disables submit on blank, so this branch is reached
+      // only via `removeWorkroomLabel` (or defensively) — removal is the explicit menu action.
+      labels[key] = nil
+    }
+    Defaults[.workroomLabels] = labels
+    relabelLocally(workroom.name, in: project.path, to: labels[key])
+  }
+
+  /// Remove a workroom's display label, restoring its real name everywhere. Raised by the
+  /// "Remove Label" context-menu item.
+  func removeWorkroomLabel(_ workroom: Workroom, in project: Project) {
+    setWorkroomLabel(workroom, in: project, to: "")
+  }
+
+  /// Targeted single-workroom rebuild of the shared `projects` (mirrors `removeWorkroomLocally`):
+  /// replace just the one workroom with a copy carrying the new label, leaving sort order, selection,
+  /// and splits untouched (a label never changes any of them). `internal` so store tests can drive it.
+  func relabelLocally(_ name: String, in projectPath: String, to label: String?) {
+    guard let pIdx = projects.firstIndex(where: { $0.id == projectPath }),
+      let wIdx = projects[pIdx].workrooms.firstIndex(where: { $0.id == name })
+    else { return }
+    var workrooms = projects[pIdx].workrooms
+    var wr = workrooms[wIdx]
+    wr.label = label
+    workrooms[wIdx] = wr
+    let p = projects[pIdx]
+    projects[pIdx] = Project(path: p.path, vcs: p.vcs, workrooms: workrooms)
   }
 
   /// Maps a workroom log key ("wr|<project>|<name>") back to its selection id.
@@ -2062,15 +2262,21 @@ final class AppStore: ObservableObject {
     errorMessage = output.isEmpty ? errorText(error) : output
   }
 
-  /// Removes a project from the sidebar immediately, then removes it from config — and,
-  /// when `deleteWorkrooms`, tears down each of its workrooms first — in the background.
-  /// Mirrors `deleteWorkroom`: optimistic removal + scoped selection/split/status cleanup,
-  /// then graceful run-stop → in-app reap → CLI. On failure we reload (so it reappears if
-  /// it still exists) and surface the error with any captured teardown log.
+  /// Removes a project from the sidebar immediately, then runs the chosen `scope` in the
+  /// background. Mirrors `deleteWorkroom`: optimistic removal + scoped selection/split/status
+  /// cleanup, then graceful run-stop → in-app reap → CLI.
   ///
-  /// Branches/bookmarks are never deleted in either mode — the cascade reuses the same
-  /// per-workroom teardown as `deleteWorkroom`, whose VCS removal leaves refs intact.
-  func deleteProject(_ project: Project, deleteWorkrooms: Bool) {
+  /// - `.configOnly`: drop from config only; nothing on disk is touched.
+  /// - `.workrooms`: also hard-delete every workroom's worktree dir (branches kept) — unchanged.
+  /// - `.fromDisk`: the CLI runs teardowns + drops config and returns the directories
+  ///   (project root + workrooms); the app then moves them to the **Bin** (issue #108).
+  ///
+  /// Failure handling differs by phase: if the CLI throws (teardown/guard failure, or a
+  /// config-only/workrooms delete failure) the config was NOT changed, so we `reload()` (the
+  /// project reappears if it still exists) and surface the error. For `.fromDisk`, once the CLI
+  /// returns the config is already dropped — a subsequent Trash failure leaves the project removed
+  /// and is reported on its own (we do NOT restore it), listing the dirs left behind.
+  func deleteProject(_ project: Project, scope: DeleteProjectScope) {
     let targetIDs = removeProjectLocally(project)
     let stores = affectedStores
     // Clear the project's targets (root + each workroom) from every OTHER window's split + selection
@@ -2089,18 +2295,47 @@ final class AppStore: ObservableObject {
       for store in stores { for id in targetIDs { store.reapTargetLocally(id) } }
       Task {
         let log =
-          deleteWorkrooms
-          ? ScriptLogSession(title: "Deleting \(project.displayName)", phase: "teardown") : nil
+          scope == .configOnly
+          ? nil : ScriptLogSession(title: "Deleting \(project.displayName)", phase: "teardown")
         do {
-          try await WorkroomCLI.shared.deleteProject(
-            project.path, withWorkrooms: deleteWorkrooms
+          let trashPaths = try await self.cli.deleteProject(
+            project.path,
+            withWorkrooms: scope == .workrooms,
+            fromDisk: scope == .fromDisk
           ) { text in DispatchQueue.main.async { log?.append(text) } }
+          if scope == .fromDisk {
+            // CLI already ran teardowns + dropped config; move the returned dirs to the Bin.
+            let failed = self.trashToBin(trashPaths)
+            if !failed.isEmpty { self.presentTrashFailure(project, failedPaths: failed) }
+          }
         } catch {
           await self.reload()
           self.presentDeleteProjectFailure(project, error: error, log: log)
         }
       }
     }
+  }
+
+  /// Moves each path to the Bin via the injected `trasher`, returning the URLs that could NOT be
+  /// moved so the caller can tell the user exactly what was left behind. The project is already
+  /// out of config by this point (the CLI dropped it), so a partial failure does not restore it.
+  /// Internal (not private) so the from-disk trash orchestration is unit-testable with a fake.
+  func trashToBin(_ urls: [URL]) -> [URL] {
+    var failed: [URL] = []
+    for url in urls {
+      do { try trasher.trash(url) } catch { failed.append(url) }
+    }
+    return failed
+  }
+
+  /// A from-disk delete dropped the project from config but some directories could not be moved to
+  /// the Bin. Report which ones so the user can move them manually (they are not lost).
+  func presentTrashFailure(_ project: Project, failedPaths: [URL]) {
+    let list = failedPaths.map(\.path).joined(separator: "\n")
+    errorTitle = "Some files of ‘\(project.displayName)’ could not be moved to the Bin"
+    errorMessage =
+      "‘\(project.displayName)’ was removed from Workroom, but these could not be moved to the "
+      + "Bin — move them manually:\n\(list)"
   }
 
   /// Optimistic, synchronous removal of a project from every piece of in-memory state — the
@@ -2126,6 +2361,10 @@ final class AppStore: ObservableObject {
       removeWorkroomSplitMember(.workroom(project: project.path, name: w.name))
       workroomStatuses[.workroom(project: project.path, name: w.name)] = nil
     }
+    // Drop every label belonging to this project's workrooms (issue #41) — prune-on-load is the
+    // backstop, but clearing here keeps it immediate and prevents a same-named recreate from
+    // inheriting a stale label.
+    forgetLabels(forProject: project.path, workroomNames: project.workrooms.map(\.name))
     return targetIDs
   }
 
@@ -2279,19 +2518,26 @@ final class AppStore: ObservableObject {
     }
   }
 
-  /// Confirm closing `count` tab(s), then run `proceed` on confirm. Owns the modal: the next-runloop
-  /// defer (so the ⌘W key-equivalent / ✕ mouse-tracking event finishes draining first, else the
-  /// modal doesn't reliably become key and the confirming Return is dropped — issue #54), the "Don't
-  /// ask me again" suppression (writes the same `confirmOnCloseTerminal` key the Settings checkbox
-  /// and File-menu toggle bind to), and singular/plural copy. Says "tab(s)", not "terminal", because
-  /// diff/content tabs close through here too. Callers decide *whether* a confirm is needed
-  /// (`closeNeedsConfirm`) — it can't be inferred from `count`. Guarded against reentrant double fire.
+  /// Confirm closing `count` tab(s), then run `proceed` on confirm. Owns the modal: a window-modal
+  /// sheet attached to the key window, the "Don't ask me again" suppression (writes the same
+  /// `confirmOnCloseTerminal` key the Settings checkbox and File-menu toggle bind to), and
+  /// singular/plural copy. Says "tab(s)", not "terminal", because diff/content tabs close through
+  /// here too. Callers decide *whether* a confirm is needed (`closeNeedsConfirm`) — it can't be
+  /// inferred from `count`. Guarded against reentrant double fire.
+  ///
+  /// A *sheet* (not a free-floating `runModal()` alert) is what makes the confirming Return reliable:
+  /// the sheet is hosted by a window that's already key, so its default "Close" button owns Return
+  /// with no race. The old app-modal alert had to *become* key after `runModal()` spun up, which lost
+  /// the keystroke whenever the triggering event (the ⌘W key-equivalent / the ✕'s mouse tracking) was
+  /// still draining; deferring the alert one runloop tick narrowed that window but couldn't close it,
+  /// so Return was still dropped intermittently (issues #54, #100). We still defer one tick so the
+  /// triggering event unwinds before the sheet drops, then fall back to an app-modal alert only when
+  /// there's no window to host the sheet.
   private func confirmCloseThen(count: Int, title: String?, then proceed: @escaping () -> Void) {
     guard !isPresentingCloseConfirm else { return }
     isPresentingCloseConfirm = true
     DispatchQueue.main.async { [weak self] in
       guard let self else { return }
-      defer { self.isPresentingCloseConfirm = false }
       let alert = NSAlert()
       alert.messageText =
         count == 1 ? "Close ‘\(title ?? "this tab")’?" : "Close \(count) tabs?"
@@ -2303,11 +2549,21 @@ final class AppStore: ObservableObject {
       alert.addButton(withTitle: "Cancel")
       alert.showsSuppressionButton = true
       alert.suppressionButton?.title = "Don't ask me again"
-      let confirmed = alert.runModal() == .alertFirstButtonReturn
-      if alert.suppressionButton?.state == .on {
-        Defaults[.confirmOnCloseTerminal] = false
+      // Shared resolution for both the sheet and the no-window fallback: clear the reentrancy guard,
+      // honour "Don't ask me again", and proceed only on the default Close button.
+      let resolve: (NSApplication.ModalResponse) -> Void = { [weak self] response in
+        guard let self else { return }
+        self.isPresentingCloseConfirm = false
+        if alert.suppressionButton?.state == .on {
+          Defaults[.confirmOnCloseTerminal] = false
+        }
+        if response == .alertFirstButtonReturn { proceed() }
       }
-      if confirmed { proceed() }
+      if let window = NSApp.keyWindow ?? NSApp.mainWindow {
+        alert.beginSheetModal(for: window, completionHandler: resolve)
+      } else {
+        resolve(alert.runModal())
+      }
     }
   }
 
@@ -2359,6 +2615,27 @@ final class AppStore: ObservableObject {
       for: target)
   }
 
+  /// Open a repo file as the selected target's single PREVIEW content tab (single-click in the Files
+  /// inspector section), read-only. Shares the preview slot with diffs. No-op if nothing's selected.
+  func openFilePreview(path: String) {
+    guard let target = selectedTarget else { return }
+    terminals.openFilePreview(FileDescriptor(path: path, isPreview: true), for: target)
+  }
+
+  /// Open a repo file as a *persisted* content tab (double-click in the Files section). No-op if
+  /// nothing's selected.
+  func openFilePersistent(path: String) {
+    guard let target = selectedTarget else { return }
+    terminals.openFilePersistent(FileDescriptor(path: path, isPreview: false), for: target)
+  }
+
+  /// Open a repo file in the configured external editor (⌘-click / context menu in the Files
+  /// section), reusing the shared editor path. No-op if nothing's selected.
+  func openFileInEditor(path: String) {
+    guard let target = selectedTarget else { return }
+    openWorkroomFile(relativePath: path, for: target)
+  }
+
   /// Open a workroom-relative file in the configured "Open file paths in" editor — the single path
   /// resolution shared by `openDiffTabFile` (#72) and `openChangedFileInEditor` (#93). Reuses
   /// `TerminalLinkOpener`, so it honours `Defaults[.filePathEditor]`; for a folder-capable editor CLI
@@ -2404,6 +2681,38 @@ final class AppStore: ObservableObject {
   /// menu's "Scroll to Top"/"Scroll to Bottom" items; ⌘↑/⌘↓ also reach the surface directly.
   func scrollFocusedTerminalToTop() { focusedSurface?.scrollToTop() }
   func scrollFocusedTerminalToBottom() { focusedSurface?.scrollToBottom() }
+
+  /// Open the find bar on the focused pane (⌘F / Edit ▸ Find): the terminal's scrollback search for a
+  /// terminal pane, the in-file find for a file pane. A diff pane has no find (no-op).
+  func startFindInFocusedPane() {
+    guard let target = selectedTarget, let tab = terminals.focusedTab(for: target) else { return }
+    switch tab.content {
+    case .terminal: focusedSurface?.startSearch()
+    case .file: fileFind.open()
+    case .diff: break
+    }
+  }
+
+  /// Navigate the focused pane's *active* find to the next/previous match (⌘G / ⇧⌘G), wrapping at the
+  /// ends. Tries the terminal search, then the in-file find. Returns `false` (so the key passes
+  /// through to the terminal) when neither is open. `@discardableResult` for the menu-button call site.
+  @discardableResult
+  func navigateFocusedPaneSearch(forward: Bool) -> Bool {
+    if let surface = focusedSurface, surface.searchModel.isActive {
+      surface.searchModel.navigate(forward ? .next : .previous)
+      return true
+    }
+    // Only when a file pane is actually focused: the find model is shared, so a stale open state
+    // must not let ⌘G step a hidden file find from a terminal/diff pane (review). `onFocusChange`
+    // already closes it on focus-away; this is the defence-in-depth read-side check.
+    if let target = selectedTarget, let tab = terminals.focusedTab(for: target),
+      case .file = tab.content, fileFind.isOpen, fileFind.hasMatches
+    {
+      forward ? fileFind.next() : fileFind.previous()
+      return true
+    }
+    return false
+  }
 
   /// Split the focused pane by opening a new terminal beside it: ⌘D to the right, ⇧⌘D below
   /// (issue #3). The new terminal inherits the focused pane's working directory.
@@ -2699,11 +3008,24 @@ final class AppStore: ObservableObject {
   /// Human-readable origin for a notification: the project name, plus the workroom for a
   /// workroom terminal (e.g. "platform" for a root, "platform / fix-auth" for a workroom).
   /// Resolved against the live projects (no string parsing of the id).
-  private func notificationSource(forTargetID id: TerminalTarget.ID) -> String {
+  func notificationSource(forTargetID id: TerminalTarget.ID) -> String {
+    Self.notificationSource(forTargetID: id, in: projects)
+  }
+
+  /// Human-readable origin of a notification: the project name, or "project / workroom" for a
+  /// workroom terminal, using the workroom's `displayName` so a set label shows here too (issue #41).
+  /// Returns "" when the target isn't in `projects` (deleted) — callers fall back to the snapshot
+  /// captured on the record. Pure + `nonisolated` so it's unit-testable, mirroring
+  /// `sidebarID(forTargetID:in:)`.
+  nonisolated static func notificationSource(
+    forTargetID id: TerminalTarget.ID, in projects: [Project]
+  )
+    -> String
+  {
     for p in projects {
       if TerminalTarget.rootID(project: p.path) == id { return p.displayName }
       for w in p.workrooms where TerminalTarget.workroomID(project: p.path, name: w.name) == id {
-        return "\(p.displayName) / \(w.name)"
+        return "\(p.displayName) / \(w.displayName)"
       }
     }
     return ""
@@ -2735,14 +3057,28 @@ final class AppStore: ObservableObject {
     let state =
       Self.targetIDString(for: selectedTargetID)
       .flatMap { Defaults[.inspectorPaneStates][$0] } ?? .default
-    let collapsed = state.collapsed.count == 3 ? state.collapsed : [false, false, false]
-    let weights = state.weights.count == 3 ? state.weights : [1, 1, 1]
+    let (collapsed, weights) = Self.reconcileInspectorState(
+      state, sectionCount: InspectorSectionKind.allCases.count)
     isLoadingInspectorState = true
     changesSectionCollapsed = collapsed[0]
-    prSectionCollapsed = collapsed[1]
-    notificationsSectionCollapsed = collapsed[2]
+    filesSectionCollapsed = collapsed[1]
+    prSectionCollapsed = collapsed[2]
+    notificationsSectionCollapsed = collapsed[3]
     inspectorSizeWeights = weights
     isLoadingInspectorState = false
+  }
+
+  /// Reconcile a persisted inspector layout against the current section count. One Files section was
+  /// added (3 → 4): a pre-Files layout (count 3) is discarded to the all-expanded / equal-weight
+  /// default rather than mis-mapped onto the new 4-section ordering. `nonisolated` + pure so the
+  /// migration is unit-testable without an `AppStore` / `Defaults` (issue #24).
+  nonisolated static func reconcileInspectorState(
+    _ state: InspectorPaneState, sectionCount count: Int
+  ) -> (collapsed: [Bool], weights: [Double]) {
+    let collapsed =
+      state.collapsed.count == count ? state.collapsed : Array(repeating: false, count: count)
+    let weights = state.weights.count == count ? state.weights : Array(repeating: 1.0, count: count)
+    return (collapsed, weights)
   }
 
   /// Persist the live inspector layout to the selected workroom's entry. No-op while loading or when
@@ -2752,14 +3088,18 @@ final class AppStore: ObservableObject {
       return
     }
     Defaults[.inspectorPaneStates][key] = InspectorPaneState(
-      collapsed: [changesSectionCollapsed, prSectionCollapsed, notificationsSectionCollapsed],
+      collapsed: [
+        changesSectionCollapsed, filesSectionCollapsed, prSectionCollapsed,
+        notificationsSectionCollapsed,
+      ],
       weights: inspectorSizeWeights)
   }
 
   /// Record new pane weights reported by the inspector's `NSSplitView` after a divider drag, and
   /// persist them for the selected workroom.
   func updateInspectorSizeWeights(_ weights: [Double]) {
-    guard weights.count == 3, weights != inspectorSizeWeights else { return }
+    guard weights.count == InspectorSectionKind.allCases.count, weights != inspectorSizeWeights
+    else { return }
     inspectorSizeWeights = weights
     persistInspectorState()
   }

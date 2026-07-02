@@ -12,6 +12,9 @@ struct TerminalTabStrip: View {
   let activeID: TerminalTab.ID?
   let target: TerminalTarget
   @ObservedObject var sessions: TerminalSessions
+  /// In a workroom-split group (issue #110) the strip tightens its leading inset so the leftmost tab
+  /// lines up with the left edge of the group's terminal panel below it. Default (solo) keeps 8pt.
+  var compact: Bool = false
   @EnvironmentObject var store: AppStore
   @EnvironmentObject var notifications: NotificationCenterStore
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -26,11 +29,6 @@ struct TerminalTabStrip: View {
   let localize: (CGPoint) -> CGPoint?
   /// Where a chip dropped at a global location lands (pane + edge), or nil if it isn't over a pane.
   let dropTarget: (CGPoint) -> (tab: TerminalTab.ID, edge: PaneEdge)?
-  /// When this target is a member of a *workroom* split (issue #23 follow-up), the action that removes
-  /// it from the split. Rendered as a trailing control pinned to the strip's right edge — a layout
-  /// sibling of the scrolling tabs, so it never overlaps them no matter how many tabs there are. nil
-  /// (the default) outside a split: no control.
-  var onCloseWorkroomPane: (() -> Void)? = nil
 
   @State private var hoveredTab: TerminalTab.ID?
   @State private var addHovering = false
@@ -157,7 +155,10 @@ struct TerminalTabStrip: View {
           addTerminalButton
         }
         .background(alignment: .leading) { splitWell(tabs) }
-        .padding(.horizontal, 8)
+        // In a split group the leftmost tab lines up with the group's terminal panel below (2pt compact
+        // gutter, issue #110); solo keeps the 8pt inset. Trailing stays 8pt either way.
+        .padding(.leading, compact ? 4 : 8)
+        .padding(.trailing, 8)
         .onPreferenceChange(TabWidthKey.self) { widths = $0 }
       }
       // Hug the chips' height; otherwise the horizontal ScrollView grabs all the vertical slack
@@ -165,14 +166,9 @@ struct TerminalTabStrip: View {
       .fixedSize(horizontal: false, vertical: true)
       // Per-current-tab actions (issue #72), pinned to the strip's right edge as a fixed-size layout
       // sibling of the scrolling tabs — so the chip area yields first in a cramped split pane and the
-      // toolbar never overlaps the chips. Sits left of the remove-from-split control below.
+      // toolbar never overlaps the chips. The remove-from-split ✕ used to sit to its right; it now
+      // lives in the workroom-split group title bar (issue #110).
       tabToolbar
-      // Remove-from-split control (issue #23 follow-up), pinned to the strip's right edge as a layout
-      // sibling of the scrolling tabs — so it never overlaps them however many tabs there are. Only a
-      // workroom split member gets one (the callback is nil otherwise).
-      if let onCloseWorkroomPane {
-        CloseWorkroomPaneButton(action: onCloseWorkroomPane)
-      }
     }
     // No top padding: the strip sits flush at the top of the detail pane so the terminal tabs align
     // with the top of the sidebar (the pane's own top inset is dropped too — see `WorkroomPaneLeaf`).
@@ -412,6 +408,13 @@ private struct TerminalTabChip: View {
           .foregroundStyle(theme.tokens.fgMuted)
           .accessibilityHidden(true)
       }
+      // A file (content) tab gets a document glyph, same intent as the diff glyph above.
+      if case .file = tab.content {
+        Image(systemName: "doc")
+          .font(.system(size: 9, weight: .semibold))
+          .foregroundStyle(theme.tokens.fgMuted)
+          .accessibilityHidden(true)
+      }
       // Unread activity is marked by a leading accent dot (+ accent title) — a different visual
       // primitive from the selected tab's neutral fill, so the two never read alike.
       if hasActivity {
@@ -623,20 +626,22 @@ private struct DiffModeSwitch: View {
   }
 }
 
-/// The remove-from-split (✕) control for a workroom split member (issue #23 follow-up). Pinned at the
-/// tab strip's right edge in the normal case, and also surfaced as a corner overlay by
-/// `TargetTerminalDetail` while a setup script blocks the strip (so a mid-setup member can still leave
-/// the split). A view (not an inline button) so it carries its own `onHover` — which both gives the
-/// subtle hover feedback the other strip controls have AND ensures the `.help` tooltip's tracking area
-/// is installed (a bare `.help` without any hover tracking can silently fail to show).
+/// The remove-from-split (✕) control for a workroom split member. Hosted in the split-group title bar
+/// (`WorkroomSplitGroupTitleBar`, issue #110) — present above every member regardless of its terminal
+/// count or a blocking setup script, which is why it no longer needs to ride the tab strip or a
+/// setup-overlay corner. A view (not an inline button) so it carries its own `onHover` — which both
+/// gives the subtle hover feedback the other strip controls have AND ensures the `.help` tooltip's
+/// tracking area is installed (a bare `.help` without any hover tracking can silently fail to show).
 struct CloseWorkroomPaneButton: View {
   let action: () -> Void
   @State private var hovering = false
 
   var body: some View {
     Button(action: action) {
-      Image(systemName: "xmark.circle.fill")
-        .font(.system(size: 12))
+      // `pip.exit` (a pane with an arrow leaving its corner) reads as "pop this workroom out of the
+      // split", not "close the workroom" — the ✕ was ambiguous (issue #110).
+      Image(systemName: "pip.exit")
+        .font(.system(size: 10))
         .foregroundStyle(hovering ? .primary : .secondary)
     }
     .buttonStyle(.plain)
@@ -674,6 +679,23 @@ extension View {
           Label("Open File in…", systemImage: "doc.text")
         }
         .disabled(descriptor.change == .deleted)
+        if tab.isPreview {
+          Button {
+            sessions.persist(tab.id, for: target)
+          } label: {
+            Label("Keep Open", systemImage: "pin")
+          }
+        }
+        Divider()
+      }
+      // A file tab gets the same actions as a diff tab (open in editor, pin a preview), so the new
+      // file panes right-click like diff panes (they share this menu via PaneTreeView).
+      if case .file(let descriptor) = tab.content {
+        Button {
+          store.openFileInEditor(path: descriptor.path)
+        } label: {
+          Label("Open File in…", systemImage: "doc.text")
+        }
         if tab.isPreview {
           Button {
             sessions.persist(tab.id, for: target)

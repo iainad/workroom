@@ -10,7 +10,7 @@ VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 .DEFAULT_GOAL := help
 .PHONY: help \
         cli-build cli-test cli-install cli-lint cli-clean \
-        app-run app-build app-test app-generate app-format app-lint app-release app-icon app-clean
+        app-run app-build app-test app-test-supervisor app-generate app-format app-lint app-release app-icon app-clean
 
 help: ## List available targets
 	@grep -hE '^[a-z][a-zA-Z0-9_-]*:.*## ' $(MAKEFILE_LIST) \
@@ -67,6 +67,9 @@ app-test: ## Run the app's unit tests
 
 app-uitest: ## Run the app's UI tests (XCUITest — needs a real GUI login session, not headless)
 	cd macapp && xcodegen generate && xcodebuild -project $(APP_PROJECT) -scheme WorkroomAppUITests -configuration Debug -derivedDataPath DerivedData -clonedSourcePackagesDirPath DerivedData/SourcePackages -destination 'platform=macOS' test $(APP_SIGN_FLAGS)
+
+app-test-supervisor: ## Run the run-command supervisor PTY integration test (real shell + fake server)
+	python3 macapp/Tests/run-supervisor/test_supervisor.py
 
 app-generate: ## Force-regenerate the (gitignored) .xcodeproj from project.yml
 	cd macapp && xcodegen generate

@@ -11,12 +11,12 @@ import SwiftUI
 /// the blocking log is dismissed. Only workrooms ever have a log; for a root, `logs[target.id]` is nil.
 struct TargetTerminalDetail: View {
   let target: TerminalTarget
-  /// When co-displayed in a workroom split (issue #23 follow-up), the action that removes this workroom
-  /// from the split — forwarded to the tab strip's trailing control. nil (default) for a solo target.
-  var onCloseWorkroomPane: (() -> Void)? = nil
   /// Whether this workroom pane is the focused one — gates terminal first-responder so a co-displayed
   /// non-focused workroom doesn't steal focus on mount (issue #23 follow-up). `true` for a solo target.
   var surfaceActive: Bool = true
+  /// Forwarded to the terminals view — a split member (issue #110) draws a tighter gutter to its group
+  /// card. Default `false` keeps the solo gutter.
+  var compact: Bool = false
   @EnvironmentObject var store: AppStore
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -26,8 +26,8 @@ struct TargetTerminalDetail: View {
       if !isBlocking {
         VStack(spacing: 0) {
           WorkroomTerminalsView(
-            target: target, sessions: store.terminals, onCloseWorkroomPane: onCloseWorkroomPane,
-            surfaceActive: surfaceActive)
+            target: target, sessions: store.terminals, surfaceActive: surfaceActive,
+            compact: compact)
 
           if let log = store.logs[target.id] {
             Divider()
@@ -44,17 +44,9 @@ struct TargetTerminalDetail: View {
         }
         .transition(.opacity.combined(with: .scale(scale: 0.97, anchor: .center)))
         .zIndex(1)
-
-        // While the setup script blocks, the terminals view (and so its tab-strip ✕) is withheld —
-        // a split member mid-setup would otherwise be stuck in the split. Surface the
-        // remove-from-split control in the corner, above the overlay, so the pane can still leave
-        // the split (issue #23 follow-up; the strip handles the non-blocking empty case).
-        if let onCloseWorkroomPane {
-          CloseWorkroomPaneButton(action: onCloseWorkroomPane)
-            .padding(8)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
-            .zIndex(2)
-        }
+        // A split member mid-setup can still leave the split via the title bar's ✕ (issue #110), which
+        // the leaf draws above this view — present regardless of the blocking overlay — so no
+        // corner-overlay remove control is needed here any more.
       }
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity)

@@ -13,6 +13,18 @@ struct ProjectSidebar: View {
   @EnvironmentObject var notifications: NotificationCenterStore
   @EnvironmentObject var terminals: TerminalSessions
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+  /// Live drag of a root/workroom row into the detail content to form a workroom split (issue #101) —
+  /// the same pipeline the title-bar tab bar uses (`WorkroomTabBar`). Bound to `RootView`'s
+  /// `workroomChipDrag` so `WorkroomSplitView.externalDrag` highlights the drop edge while dragging.
+  /// The defaults make the gesture an inert no-op for previews / any host that doesn't wire it.
+  var paneDrag: Binding<WorkroomPaneDrag?> = .constant(nil)
+  /// Maps a global drag point into detail-content-local coords, or nil when it's outside the detail
+  /// area (→ not a drop). Owned by `RootView` (it knows the content frame).
+  var localize: (CGPoint) -> CGPoint? = { _ in nil }
+  /// Where a drop at a global point lands (workroom pane + edge), or nil if it isn't over a pane.
+  var dropTarget: (CGPoint) -> (sid: SidebarID, edge: PaneEdge)? = { _ in nil }
+
   @State private var hovered: SidebarID?
   /// The terminal row currently under the cursor (issue #30). Keyed by the tab's UUID rather than a
   /// `SidebarID` — terminal rows aren't selectable `List` rows, so they sit outside `hovered`.
@@ -53,6 +65,33 @@ struct ProjectSidebar: View {
     default:
       break
     }
+  }
+
+  /// The drag-to-split gesture for a root/workroom row (issue #101). Mirrors the tab-bar chip
+  /// (`WorkroomTabBar`), minus the reorder math: while dragging into the detail content it previews the
+  /// drop edge (driving the shared `paneDrag`), and on release over a pane it forms/extends the
+  /// workroom split via the same `insertWorkroomSplit` the chip uses. Attached with
+  /// `.simultaneousGesture` so it coexists with the List's vertical scroll; `minimumDistance` keeps a
+  /// plain click selecting the row (a zero-translation tap never starts the drag).
+  private func rowSplitDrag(_ id: SidebarID) -> some Gesture {
+    DragGesture(minimumDistance: 6, coordinateSpace: .global)
+      .onChanged { value in
+        paneDrag.wrappedValue = localize(value.location).map {
+          WorkroomPaneDrag(sid: id, location: $0)
+        }
+      }
+      .onEnded { value in
+        if let drop = dropTarget(value.location) {
+          store.insertWorkroomSplit(id, beside: drop.sid, edge: drop.edge)
+        }
+        paneDrag.wrappedValue = nil
+      }
+  }
+
+  /// Whether `id`'s row is the one currently being dragged into a split — drives a light dim cue
+  /// (the primary affordance is the detail-side accent drop band via `externalDrag`).
+  private func isDraggingForSplit(_ id: SidebarID) -> Bool {
+    paneDrag.wrappedValue?.sid == id
   }
 
   var body: some View {
@@ -287,7 +326,11 @@ struct ProjectSidebar: View {
         RowRunButton(target: target)
       }
     }.contentShape(Rectangle())
+      .opacity(isDraggingForSplit(id) ? 0.5 : 1)
       .onTapGesture { selectTarget(id) }
+      // Drag this root onto a displayed workroom pane to split them (issue #101). Simultaneous so the
+      // List still scrolls vertically; the tap above still selects.
+      .simultaneousGesture(rowSplitDrag(id))
       .help(style.tooltip)
       .accessibilityElement(children: .ignore)
       .accessibilityAddTraits(.isButton)
@@ -314,7 +357,8 @@ struct ProjectSidebar: View {
       // workrooms read as aligned siblings.
       leadingSlot(for: target, id: id, root: false)
       // lineLimit so a long name yields to the VCS badges — truncation priority: name first (#24).
-      Text(workroom.name).font(.callout).lineLimit(1).truncationMode(.tail)
+      // Shows the display label when one is set (issue #41), else the real workroom name.
+      Text(workroom.displayName).font(.callout).lineLimit(1).truncationMode(.tail)
       // VCS status sub-cluster: after the name, before the Spacer. The dirty dot is dropped
       // (`showDot: false`) — the leading cube glyph's tint carries that signal — leaving ahead/behind.
       VCSStatusCluster(
@@ -335,7 +379,7 @@ struct ProjectSidebar: View {
         if terminals.isRunning(forTargetID: targetID), hovered != id {
           RunningSpinner()
         }
-        DeleteRowButton(name: workroom.name, visible: hovered == id) {
+        DeleteRowButton(name: workroom.displayName, visible: hovered == id) {
           store.pendingDeletion = PendingWorkroomDeletion(workroom: workroom, project: project)
         }
       }
@@ -348,17 +392,36 @@ struct ProjectSidebar: View {
           .accessibilityIdentifier("sidebar.workroom.\(workroom.name).run")
       }
     }.contentShape(Rectangle())
+      .opacity(isDraggingForSplit(id) ? 0.5 : 1)
       .onTapGesture { selectTarget(id) }
+      // Drag this workroom onto a displayed pane to split them (issue #101). Simultaneous so the List
+      // still scrolls vertically; the tap above still selects.
+      .simultaneousGesture(rowSplitDrag(id))
       .accessibilityIdentifier("sidebar.workroom.\(workroom.name)")
       .accessibilityAddTraits(.isButton)
       .onHover { inside in
         if inside { hovered = id } else if hovered == id { hovered = nil }
       }
       .contextMenu {
+        // Set/edit the display label, and remove it when one is set (issue #41). A label is a
+        // display-only alias — the workroom name and its branch are unchanged.
+        Button {
+          store.pendingWorkroomLabel = PendingWorkroomLabel(workroom: workroom, project: project)
+        } label: {
+          Label(workroom.label == nil ? "Set Label…" : "Edit Label…", systemImage: "pencil")
+        }
+        if workroom.label != nil {
+          Button {
+            store.removeWorkroomLabel(workroom, in: project)
+          } label: {
+            Label("Remove Label", systemImage: "pencil.slash")
+          }
+        }
+        Divider()
         Button(role: .destructive) {
           store.pendingDeletion = PendingWorkroomDeletion(workroom: workroom, project: project)
         } label: {
-          Label("Delete \(workroom.name)", systemImage: "trash")
+          Label("Delete \(workroom.displayName)", systemImage: "trash")
         }
       }
   }
@@ -399,11 +462,15 @@ struct ProjectSidebar: View {
   private func terminalRow(_ tab: TerminalTab, target: TerminalTarget, parent: SidebarID)
     -> some View
   {
-    // A diff (content) tab gets the same `plusminus` glyph the tab strip uses (#66), so a glance at
-    // the row says "this isn't a terminal"; a terminal tab keeps the terminal glyph.
+    // A diff/file (content) tab gets the same glyph the tab strip uses (#66), so a glance at the row
+    // says "this isn't a terminal"; a terminal tab keeps the terminal glyph. Exhaustive so a future
+    // `TabContent` case can't silently fall through to the terminal glyph.
     let glyph: String = {
-      if case .diff = tab.content { return "plusminus" }
-      return "terminal"
+      switch tab.content {
+      case .diff: return "plusminus"
+      case .file: return "doc"
+      case .terminal: return "terminal"
+      }
     }()
     HStack(spacing: 6) {
       // Leading glyph centered in the shared caret slot, same size/weight as the root house and the

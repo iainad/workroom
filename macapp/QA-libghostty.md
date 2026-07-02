@@ -107,3 +107,24 @@ the likeliest suspects.
       mime is ignored (no garbage on the pasteboard).
 - [ ] OSC 52 **read** works (permissive default — deferred-policy item; just confirm it
       doesn't crash/hang).
+
+## M. Scrollback find (⌘F)
+- [ ] `⌘F` (or Edit ▸ Find…) → a find bar appears top-right over the focused terminal; the field
+      is focused and ready to type.
+- [ ] Type a term present in the scrollback → matches highlight in the viewport and the bar shows
+      "n / total"; an absent term shows **No results**.
+- [ ] **Next / Previous**: `⌘G` / `⇧⌘G` (and the bar's ▲/▼ buttons, and ↩/⇧↩) step through matches
+      and the "n /" index updates; it **wraps** at the ends (next past the last → first, previous
+      before the first → last), with no visible flicker through the in-between matches. The wrap is
+      synthesized host-side (the engine doesn't wrap), so verify it on a needle with **many** matches.
+- [ ] `⌘G` / `⇧⌘G` with **no find bar open** → no-op (the menu command is app-owned, so the key is
+      consumed rather than reaching the terminal). Find Next / Previous still shown in Edit ▸ Find.
+- [ ] **Esc** (or the ✕ button) closes the bar and clears the highlights; focus returns to the
+      terminal.
+- [ ] Clear the field → highlights clear (empty needle cancels the search) without closing the bar.
+- [ ] **Find from selection**: select text, then start search → the bar opens pre-filled with the
+      selection (if wired to `search_selection`).
+- [ ] **Per-surface isolation**: open a search in one tab, switch to another → the second tab has no
+      bar; switching back restores the first tab's search state. Same across split panes (only the
+      **focused** pane shows the bar).
+- [ ] Find disabled when no terminal is focused (Edit ▸ Find… greyed; ⌘F a no-op).

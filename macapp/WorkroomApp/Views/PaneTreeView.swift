@@ -426,6 +426,13 @@ private struct PaneLeafView: View {
     switch content {
     case .terminal(let s):
       TerminalContainerView(view: s.view, isFocusedPane: focused)
+        // Scrollback find bar (⌘F), pinned top-trailing over the focused pane only — search state is
+        // per-surface, and only the focused pane can be searched. Renders nothing until active.
+        .overlay(alignment: .topTrailing) {
+          if focused {
+            TerminalSearchBar(model: s.view.searchModel)
+          }
+        }
     case .diff(let descriptor):
       // The diff pane body carries the SAME context menu as its tab chip (issue #72) — fetch the live
       // tab so "Keep Open" / split-guard reflect its current preview / split state. A diff leaf is
@@ -440,6 +447,19 @@ private struct PaneLeafView: View {
         diff.tabChipContextMenu(tab: tab, target: target, store: store, sessions: sessions)
       } else {
         diff
+      }
+    case .file(let descriptor):
+      // Read-only file viewer (Files inspector section). Same rounded clip + chip context menu as the
+      // diff leaf, so "Keep Open"/Close behave identically on a previewed file.
+      let file = PlainFileViewer(
+        descriptor: descriptor, directory: target.path, isFocused: focused, find: store.fileFind
+      )
+      .clipShape(
+        RoundedRectangle(cornerRadius: TerminalPanelMetrics.cornerRadius, style: .continuous))
+      if let tab = sessions.tab(tabID, for: target) {
+        file.tabChipContextMenu(tab: tab, target: target, store: store, sessions: sessions)
+      } else {
+        file
       }
     }
   }
